@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+"""
+Fortress CLI
+
+High-level client that automates authenticated API calls to Linus' Fortress,
+handles the initial provisioning dance (RSA keys, credential exchange), and
+provides helpers for decrypting the encrypted backup archives produced by the
+server. Credentials are stored encrypted-at-rest via the generated RSA keypair
+so subsequent runs can reuse the configuration without retyping secrets.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import sys
+import textwrap
+from dataclasses import dataclass, field
+from getpass import getpass
+from pathlib import Path
+from typing import Any, Dict, Optional, Sequence
+
+import requests
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+import hashlib
+
+
+CONFIG_DIR = Path(os.environ.get("FORTRESS_HOME", Path.home() / ".fortress-cli"))
+CONFIG_PATH = CONFIG_DIR / "config.json"
+PRIVATE_KEY_PATH = CONFIG_DIR / "private_key.pem"
+PUBLIC_KEY_PATH = CONFIG_DIR / "public_key.pem"
+DEFAULT_KEY_BITS = 4096
+DEFAULT_TIMEOUT = 60
+
+
+class FortressCLIError(RuntimeError):
+    """Domain specific exception for CLI failures."""
+
+
+def ensure_storage_dir() -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def keys_exist() -> bool:
+    return PRIVATE_KEY_PATH.exists() and PUBLIC_KEY_PATH.exists()
+
+
+def get_passphrase(confirm: bool = False, preset: Optional[str] = None) -> str:
+    """Prompt for a passphrase, optionally requiring confirmation."""
+    if preset:
+        return preset
+    env_value = os.environ.get("FORTRESS_PASSPHRASE")
+    if env_value:
+        return env_value
+    first = getpass("Passphrase: ")
+    if confirm:
+        second = getpass("Confirm passphrase: ")
+        if first != second:
+            raise FortressCLIError("Passphrases do not match")
+    if not first:
+        raise FortressCLIError("Passphrase cannot be empty")
+    return first
+
+
+def generate_rsa_keypair(bits: int = DEFAULT_KEY_BITS, passphrase: Optional[str] = None) -> None:
+    """Generate a RSA keypair and persist it to disk."""
+    ensure_storage_dir()
+    passphrase = get_passphrase(confirm=True, preset=passphrase)
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
+    private_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.BestAvailableEncryption(passphrase.encode()),
+    )
+    public_key = private_key.public_key()
+    public_bytes = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    PRIVATE_KEY_PATH.write_bytes(private_bytes)
+    PUBLIC_KEY_PATH.write_bytes(public_bytes)
+    print(f"Generated {bits}-bit RSA keypair under {CONFIG_DIR}")
+
+
+def prompt(text: str, default: Optional[str] = None) -> str:
+    suffix = f" [{default}]" if default else ""
+    value = input(f"{text}{suffix}: ").strip()
+    return value or (default or "")
+
+
+def prompt_secret(text: str) -> str:
+    value = getpass(f"{text}: ").strip()
+    return value
+
+
+def load_public_key():
+    try:
+        return serialization.load_pem_public_key(PUBLIC_KEY_PATH.read_bytes())
+    except FileNotFoundError as exc:
+        raise FortressCLIError("Public key missing, run `fortress-cli setup` first") from exc
+
+
+def load_private_key(passphrase: Optional[str] = None):
+    if not PRIVATE_KEY_PATH.exists():
+        raise FortressCLIError("Private key missing, run `fortress-cli setup` first")
+    pw = passphrase or get_passphrase()
+    try:
+        return serialization.load_pem_private_key(PRIVATE_KEY_PATH.read_bytes(), password=pw.encode())
+    except ValueError as exc:
+        raise FortressCLIError("Unable to unlock private key (wrong passphrase?)") from exc
+
+
+def encrypt_secret(raw: str, public_key) -> str:
+    ciphertext = public_key.encrypt(
+        raw.encode(),
+        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+    )
+    return base64.b64encode(ciphertext).decode()
+
+
+def decrypt_secret(ciphertext: str, private_key) -> str:
+    data = base64.b64decode(ciphertext.encode())
+    plaintext = private_key.decrypt(
+        data,
+        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+    )
+    return plaintext.decode()
+
+
+def save_config(config: Dict[str, Any]) -> None:
+    ensure_storage_dir()
+    CONFIG_PATH.write_text(json.dumps(config, indent=2))
+
+
+def load_config() -> Dict[str, Any]:
+    if not CONFIG_PATH.exists():
+        raise FortressCLIError("Configuration not initialized. Run `fortress-cli setup` first.")
+    return json.loads(CONFIG_PATH.read_text())
+
+
+def get_fernet_key(password: str) -> bytes:
+    digest = hashlib.sha256(password.encode()).digest()
+    return base64.urlsafe_b64encode(digest)
+
+
+def load_json_payload(text_value: Optional[str], file_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    if text_value and file_path:
+        raise FortressCLIError("Specify at most one of --json or --json-file")
+    if text_value:
+        try:
+            return json.loads(text_value)
+        except json.JSONDecodeError as exc:
+            raise FortressCLIError(f"Invalid JSON payload: {exc}") from exc
+    if file_path:
+        try:
+            return json.loads(Path(file_path).read_text())
+        except FileNotFoundError as exc:
+            raise FortressCLIError(f"JSON file not found: {file_path}") from exc
+        except json.JSONDecodeError as exc:
+            raise FortressCLIError(f"Invalid JSON file {file_path}: {exc}") from exc
+    return None
+
+
+def parse_kv_pairs(pairs: Optional[Sequence[str]]) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    if not pairs:
+        return params
+    for item in pairs:
+        if "=" not in item:
+            raise FortressCLIError(f"Invalid key=value pair: {item}")
+        key, value = item.split("=", 1)
+        params[key] = value
+    return params
+
+
+@dataclass
+class CredentialContext:
+    config: Dict[str, Any]
+    private_key: Optional[Any] = None
+    cache: Dict[str, str] = field(default_factory=dict)
+
+    def unlock(self, passphrase: Optional[str] = None):
+        if self.private_key is None:
+            self.private_key = load_private_key(passphrase)
+        return self.private_key
+
+    def get_secret(self, name: str, passphrase: Optional[str] = None) -> Optional[str]:
+        stored = self.config.get("stored", {})
+        value = stored.get(name)
+        if not value:
+            return None
+        if name in self.cache:
+            return self.cache[name]
+        private_key = self.unlock(passphrase)
+        secret = decrypt_secret(value, private_key)
+        self.cache[name] = secret
+        return secret
+
+
+class FortressClient:
+    def __init__(self, config: Dict[str, Any], passphrase: Optional[str] = None):
+        self.config = config
+        self.credentials = CredentialContext(config)
+        self.passphrase = passphrase
+        self.base_url = config.get("server_url")
+        if not self.base_url:
+            raise FortressCLIError("server_url missing in config. Re-run setup.")
+        self.verify_tls = config.get("verify_tls", True)
+        self.timeout = config.get("timeout", DEFAULT_TIMEOUT)
+
+    def _resolve_auth(self, override: Optional[str] = None) -> Dict[str, str]:
+        auth_mode = override or self.config.get("preferences", {}).get("auth_mode")
+        headers: Dict[str, str] = {}
+        if auth_mode == "user-token":
+            token = self.credentials.get_secret("user_token", self.passphrase)
+            if not token:
+                raise FortressCLIError("No stored user token available")
+            headers["X-User-Token"] = token
+            return headers
+        api_key = self.credentials.get_secret("api_key", self.passphrase)
+        token = self.credentials.get_secret("user_token", self.passphrase)
+        if api_key:
+            headers["X-API-Key"] = api_key
+        elif token:
+            headers["X-User-Token"] = token
+        else:
+            raise FortressCLIError("No credentials stored. Re-run setup and provide an API key or token.")
+        return headers
+
+    def request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        json_body: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        auth_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        headers = self._resolve_auth(auth_override)
+        url = self.base_url.rstrip("/") + "/" + endpoint.lstrip("/")
+        response = requests.request(
+            method.upper(),
+            url,
+            headers=headers,
+            json=json_body,
+            params=params,
+            timeout=self.timeout,
+            verify=self.verify_tls,
+        )
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+                detail = payload.get("detail", payload)
+            except ValueError:
+                detail = response.text
+            raise FortressCLIError(f"HTTP {response.status_code}: {detail}")
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except ValueError:
+            return {"raw": response.text}
+
+    def stream_download(self, endpoint: str, destination: Path) -> Path:
+        headers = self._resolve_auth()
+        url = self.base_url.rstrip("/") + "/" + endpoint.lstrip("/")
+        with requests.get(url, headers=headers, verify=self.verify_tls, timeout=self.timeout, stream=True) as resp:
+            if resp.status_code >= 400:
+                raise FortressCLIError(f"Download failed with HTTP {resp.status_code}")
+            with destination.open("wb") as fh:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        fh.write(chunk)
+        return destination
+
+
+def setup_command(args: argparse.Namespace) -> None:
+    ensure_storage_dir()
+
+    if args.force_keys or not keys_exist():
+        generate_rsa_keypair(bits=args.key_bits, passphrase=args.key_passphrase)
+    else:
+        print("Existing RSA keypair found, keeping current keys.")
+
+    public_key = load_public_key()
+    existing_config = load_config() if CONFIG_PATH.exists() else {}
+
+    server_url = args.server or existing_config.get("server_url")
+    if not server_url:
+        server_url = prompt("Server base URL (e.g. https://host:8443)")
+
+    verify_tls = existing_config.get("verify_tls", True)
+    if args.insecure:
+        verify_tls = False
+    elif args.secure:
+        verify_tls = True
+
+    stored: Dict[str, Optional[str]] = existing_config.get("stored", {}).copy()
+
+    def capture_secret(name: str, provided: Optional[str], prompt_label: str) -> Optional[str]:
+        if provided == "":
+            stored.pop(name, None)
+            return None
+        if provided:
+            stored[name] = encrypt_secret(provided, public_key)
+            return stored[name]
+        if stored.get(name):
+            return stored[name]
+        value = prompt_secret(prompt_label + " (leave blank to skip)")
+        if value:
+            stored[name] = encrypt_secret(value, public_key)
+        return stored.get(name)
+
+    capture_secret("api_key", args.api_key, "API master key")
+    capture_secret("user_token", args.user_token, "Delegated user token")
+    capture_secret("backup_password", args.backup_password, "Backup encryption password")
+
+    auth_mode = args.auth_mode or existing_config.get("preferences", {}).get("auth_mode")
+    if not auth_mode:
+        auth_mode = "api-key" if stored.get("api_key") else "user-token"
+
+    config = {
+        "server_url": server_url,
+        "verify_tls": verify_tls,
+        "timeout": args.timeout or existing_config.get("timeout", DEFAULT_TIMEOUT),
+        "stored": stored,
+        "keys": {
+            "public": str(PUBLIC_KEY_PATH),
+            "private": str(PRIVATE_KEY_PATH),
+            "bits": args.key_bits,
+        },
+        "preferences": {
+            "auth_mode": auth_mode,
+        },
+    }
+    save_config(config)
+    print(f"Configuration saved to {CONFIG_PATH}")
+
+
+def info_command(_: argparse.Namespace) -> None:
+    config = load_config()
+    sanitized = {k: v for k, v in config.items() if k != "stored"}
+    print(json.dumps(sanitized, indent=2))
+
+
+def call_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    payload = load_json_payload(args.json, args.json_file)
+    params = parse_kv_pairs(args.params)
+    result = client.request(
+        args.method,
+        args.endpoint,
+        json_body=payload,
+        params=params,
+        auth_override=args.auth_mode,
+    )
+    print(json.dumps(result, indent=2))
+
+
+def status_command(args: argparse.Namespace) -> None:
+    args.method = "GET"
+    args.endpoint = "/status"
+    args.json = None
+    args.json_file = None
+    args.params = None
+    call_command(args)
+
+
+def api_users_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    if args.subcommand == "list":
+        result = client.request("GET", "/api-users")
+    elif args.subcommand == "create":
+        payload = {
+            "username": args.username,
+            "permissions": args.permissions,
+            "allowed_containers": args.containers,
+        }
+        result = client.request("POST", "/api-users", json_body=payload)
+    elif args.subcommand == "delete":
+        result = client.request("DELETE", f"/api-users/{args.token}")
+    else:
+        raise FortressCLIError("Unknown api-users subcommand")
+    print(json.dumps(result, indent=2))
+
+
+def backup_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    if args.subcommand == "list":
+        result = client.request("GET", "/backup/list")
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "trigger":
+        result = client.request("POST", f"/backup/{args.container}")
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "download":
+        dest = Path(args.dest or args.filename)
+        client.stream_download(f"/backup/download/{args.filename}", dest)
+        print(f"Downloaded to {dest}")
+        return
+    if args.subcommand == "decrypt":
+        config_ctx = CredentialContext(config)
+        password = args.password
+        if not password:
+            password = config_ctx.get_secret("backup_password", args.passphrase)
+        if not password:
+            password = prompt_secret("Backup password")
+        enc_path = Path(args.input)
+        out_path = Path(args.output or enc_path.with_suffix(".tar.gz"))
+        fernet = Fernet(get_fernet_key(password))
+        decrypted = fernet.decrypt(enc_path.read_bytes())
+        out_path.write_bytes(decrypted)
+        print(f"Decrypted archive written to {out_path}")
+        return
+    raise FortressCLIError("Unsupported backup subcommand")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Client utility for Linus' Fortress",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """Examples:
+              fortress-cli setup --server https://fortress.local:8443 --api-key <key>
+              fortress-cli status
+              fortress-cli call POST /packages/install --json '{"packages": ["vim"]}'
+              fortress-cli backup decrypt backup-name.enc --output backup.tar.gz"""
+        ),
+    )
+    parser.add_argument("--passphrase", help="Passphrase used to unlock the stored private key")
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    setup_parser = subparsers.add_parser("setup", help="Initial configuration and key generation")
+    setup_parser.add_argument("--server", help="Server base URL, e.g. https://host:8443")
+    setup_parser.add_argument("--api-key", help="Master API key (store encrypted). Use empty string to clear.")
+    setup_parser.add_argument("--user-token", help="Delegated API user token")
+    setup_parser.add_argument("--backup-password", help="Backup encryption password")
+    setup_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Default authentication preference")
+    setup_parser.add_argument("--key-bits", type=int, default=DEFAULT_KEY_BITS)
+    setup_parser.add_argument("--timeout", type=int, help="HTTP timeout in seconds")
+    setup_parser.add_argument("--force-keys", action="store_true", help="Regenerate RSA keypair even if one exists")
+    setup_parser.add_argument("--secure", action="store_true", help="Enforce TLS verification")
+    setup_parser.add_argument("--insecure", action="store_true", help="Disable TLS verification (not recommended)")
+    setup_parser.add_argument("--key-passphrase", help="Passphrase for new keys (non-interactive environments)")
+    setup_parser.set_defaults(func=setup_command)
+
+    info_parser = subparsers.add_parser("info", help="Show current configuration metadata")
+    info_parser.set_defaults(func=info_command)
+
+    call_parser = subparsers.add_parser("call", help="Invoke an arbitrary API endpoint")
+    call_parser.add_argument("method", help="HTTP method (GET, POST, ...)")
+    call_parser.add_argument("endpoint", help="API path, e.g. /status")
+    call_parser.add_argument("--json", help="Inline JSON payload")
+    call_parser.add_argument("--json-file", help="Path to JSON file used as payload")
+    call_parser.add_argument("--params", nargs="*", help="Query string parameters in key=value form")
+    call_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    call_parser.set_defaults(func=call_command)
+
+    status_parser = subparsers.add_parser("status", help="Shortcut for GET /status")
+    status_parser.set_defaults(func=status_command)
+
+    api_users_parser = subparsers.add_parser("api-users", help="Manage delegated API users")
+    api_users_sub = api_users_parser.add_subparsers(dest="subcommand")
+    api_users_list = api_users_sub.add_parser("list", help="List API users")
+    api_users_list.set_defaults(func=api_users_command)
+    api_users_create = api_users_sub.add_parser("create", help="Create a new API user")
+    api_users_create.add_argument("username")
+    api_users_create.add_argument("--permissions", nargs="+", required=True)
+    api_users_create.add_argument("--containers", nargs="*")
+    api_users_create.set_defaults(func=api_users_command)
+    api_users_delete = api_users_sub.add_parser("delete", help="Delete an API user by token")
+    api_users_delete.add_argument("token")
+    api_users_delete.set_defaults(func=api_users_command)
+
+    backup_parser = subparsers.add_parser("backup", help="Backup utilities")
+    backup_sub = backup_parser.add_subparsers(dest="subcommand")
+    backup_list = backup_sub.add_parser("list", help="List encrypted backups")
+    backup_list.set_defaults(func=backup_command)
+    backup_trigger = backup_sub.add_parser("trigger", help="Trigger encrypted backup for a container")
+    backup_trigger.add_argument("container")
+    backup_trigger.set_defaults(func=backup_command)
+    backup_download = backup_sub.add_parser("download", help="Download encrypted backup")
+    backup_download.add_argument("filename")
+    backup_download.add_argument("--dest", help="Destination file path")
+    backup_download.set_defaults(func=backup_command)
+    backup_decrypt = backup_sub.add_parser("decrypt", help="Decrypt encrypted backup locally")
+    backup_decrypt.add_argument("input", help="Encrypted .enc file")
+    backup_decrypt.add_argument("--output", help="Decrypted output file path")
+    backup_decrypt.add_argument("--password", help="Override backup password instead of stored secret")
+    backup_decrypt.set_defaults(func=backup_command)
+
+    return parser
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 1
+    try:
+        args.func(args)
+        return 0
+    except FortressCLIError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except requests.RequestException as exc:
+        print(f"Network error: {exc}", file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

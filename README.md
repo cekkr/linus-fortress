@@ -65,6 +65,20 @@ Linus' Fortress is a FastAPI service that centralizes automation for LXD-based V
 - Set filesystem paths (`BACKUP_DIR`, `NGINX_CONFIG_DIR`, `API_USERS_DB`, `SHARED_STORAGE_DIR`) to match your host.
 - Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), and package commands (`apt-get` or `dnf`).
 
+## Client CLI (`fortress-cli.py`)
+
+`fortress-cli.py` is a companion script that securely stores API credentials, automates the HTTPS calls to the server, and handles encrypted backup archives.
+
+1. Run `python fortress-cli.py setup --server https://fortress.example.com:8443` to generate a 4096‑bit RSA keypair (protected by a passphrase) and enter the API master key, delegated user token, and/or backup password. Everything is saved under `~/.fortress-cli` (override via `FORTRESS_HOME`).
+2. Subsequent commands unlock the private key (either interactively or via `--passphrase`/`FORTRESS_PASSPHRASE`) and reuse the stored credentials:
+   - `python fortress-cli.py status` → GET `/status`
+   - `python fortress-cli.py call POST /packages/install --json '{"packages":["vim"]}'`
+   - `python fortress-cli.py backup list|trigger|download|decrypt ...`
+   - `python fortress-cli.py api-users create alice --permissions manage_containers read_status`
+3. Encrypted backups can be downloaded and decrypted locally via `python fortress-cli.py backup download foo.enc --dest ./foo.enc` followed by `python fortress-cli.py backup decrypt ./foo.enc --output ./foo.tar.gz`.
+
+By default TLS certificates are verified; pass `--insecure` during `setup` only if you are pointing at a self-signed lab server. Use the CLI’s `info` command to inspect the stored metadata without revealing secrets.
+
 ## Roadmap
 
 - Split `py/server.py` into modular packages (auth, containers, storage) for maintainability.
