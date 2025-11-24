@@ -54,6 +54,11 @@ Linus' Fortress is a FastAPI service that centralizes automation for LXD-based V
 - `POST /packages/remove` – remove packages on host or container (`package_manage`).
 - `POST /packages/update` – run upgrade/update (set `full_upgrade=true` for `apt dist-upgrade` / `dnf upgrade`) on host or container (`package_manage`).
 
+### Command Register & Auditing
+- Every API call records an immutable entry into `command_log.db` (see `COMMAND_LOG_DB`), capturing `actor`, endpoint, action, target, and sanitized payload details.
+- Internal behaviours such as `lxc exec` commands are also logged with command metadata (sensitive arguments are redacted) so operators can trace suspicious cross-container activity.
+- The register lives alongside other Fortress state under `/var/lib/fortress`; query it via `sqlite3 /var/lib/fortress/command_log.db 'select * from command_log order by id desc limit 20;'`.
+
 ## Deployment Notes
 
 - Server listens via uvicorn (`HOST_INTERFACE`, `HOST_PORT`). For production, terminate TLS via web server or provide `ssl_keyfile`/`ssl_certfile`.

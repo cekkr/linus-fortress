@@ -4,7 +4,8 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 - py/server.py contains the main central server with APIs
 - py/server.py now supports API user tokens, container access controls (SSH/FTP), user/group management, and container connectivity features such as TCP proxying and shared mounts
 - py/server.py also manages host/container package operations (apt + dnf) and firewall rules (ufw + firewalld) and README.md documents all APIs
+- A new fortress.audit module powers the SQLite-based command register that captures all API activity plus container exec behaviour for investigation
 
 ## Next steps
-- Refactor py/server.py into focused libraries/modules to simplify maintenance and testing
-- Add automated tests (unit/integration) that exercise key API workflows and permission enforcement
+- Continue modularizing (auth utilities, container management) to shrink py/server.py and improve reuse
+- Add automated tests (unit/integration) covering permission enforcement, command logging, and critical API flows
