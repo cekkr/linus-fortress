@@ -110,6 +110,75 @@ def set_container_password(container_name: str, username: str, password: str):
     credential = f"{username}:{password}"
     exec_in_container(container_name, ["bash", "-c", f"echo {shlex.quote(credential)} | chpasswd"])
 
+def container_has_binary(container_name: str, binary: str) -> bool:
+    test_cmd = ["lxc", "exec", container_name, "--", "sh", "-c", f"command -v {shlex.quote(binary)}"]
+    result = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return result.returncode == 0
+
+def detect_package_manager(container_name: Optional[str] = None) -> str:
+    candidates = [("apt", "apt-get"), ("dnf", "dnf")]
+    for name, binary in candidates:
+        if container_name:
+            if container_has_binary(container_name, binary):
+                return name
+        else:
+            if shutil.which(binary):
+                return name
+    raise HTTPException(status_code=500, detail="No supported package manager (apt or dnf) detected")
+
+def run_package_command(cmd: List[str], container_name: Optional[str]):
+    if container_name:
+        exec_in_container(container_name, cmd)
+    else:
+        run_command(cmd)
+
+def update_package_index(manager: str, container_name: Optional[str]):
+    if manager == "apt":
+        run_package_command(["apt-get", "update"], container_name)
+    elif manager == "dnf":
+        run_package_command(["dnf", "makecache"], container_name)
+
+def detect_firewall_backend() -> str:
+    if shutil.which("ufw"):
+        return "ufw"
+    if shutil.which("firewall-cmd"):
+        return "firewalld"
+    raise HTTPException(status_code=500, detail="No supported firewall backend detected (ufw or firewalld)")
+
+def build_firewalld_rich_rule(rule: "FirewallRule", allow: bool) -> str:
+    action = "accept" if allow else "drop"
+    return f'rule family="ipv4" source address="{rule.source}" port protocol="{rule.protocol}" port="{rule.port}" {action}'
+
+def apply_firewall_rule(rule: "FirewallRule", allow: bool):
+    backend = detect_firewall_backend()
+    if backend == "ufw":
+        action_word = "allow" if allow else "deny"
+        if rule.source:
+            base_cmd = ["ufw", action_word, "from", rule.source, "to", "any", "port", str(rule.port), "proto", rule.protocol]
+        else:
+            base_cmd = ["ufw", action_word, f"{rule.port}/{rule.protocol}"]
+        if not allow:
+            # When closing, use delete allow rather than deny to clean explicit rule if it exists
+            if rule.source:
+                base_cmd = ["ufw", "--force", "delete", "allow", "from", rule.source, "to", "any", "port", str(rule.port), "proto", rule.protocol]
+            else:
+                base_cmd = ["ufw", "--force", "delete", "allow", f"{rule.port}/{rule.protocol}"]
+        run_command(base_cmd)
+        run_command(["ufw", "reload"])
+    else:
+        if rule.source:
+            rich_rule = build_firewalld_rich_rule(rule, allow)
+            flag = "--add-rich-rule" if allow else "--remove-rich-rule"
+            run_command(["firewall-cmd", "--permanent", flag, rich_rule])
+        else:
+            flag = "--add-port" if allow else "--remove-port"
+            run_command(["firewall-cmd", "--permanent", flag, f"{rule.port}/{rule.protocol}"])
+        run_command(["firewall-cmd", "--reload"])
+
+def ensure_packages_list(packages: List[str]):
+    if not packages:
+        raise HTTPException(status_code=400, detail="Package list cannot be empty")
+
 def run_command(cmd_list):
     """Run a shell command securely and return output."""
     try:
@@ -205,6 +274,23 @@ class SharedMountRemoval(BaseModel):
     share_name: str
     containers: List[str]
 
+class FirewallRule(BaseModel):
+    port: int
+    protocol: Literal["tcp", "udp"] = "tcp"
+    source: Optional[str] = None
+
+class PackageInstallRequest(BaseModel):
+    packages: List[str]
+    container_name: Optional[str] = None
+    update_index: bool = True
+
+class PackageRemoveRequest(BaseModel):
+    packages: List[str]
+    container_name: Optional[str] = None
+
+class PackageUpdateRequest(BaseModel):
+    container_name: Optional[str] = None
+    full_upgrade: bool = False
 # --- CORE LOGIC ---
 
 @app.get("/status", dependencies=[])
@@ -463,6 +549,67 @@ def remove_shared_mount(payload: SharedMountRemoval, x_api_key: Optional[str] = 
         device_name = f"{payload.share_name}-{container}"
         run_command(["lxc", "config", "device", "remove", container, device_name])
     return {"message": f"Share {payload.share_name} detached from requested containers"}
+
+# --- FIREWALL MANAGEMENT ---
+
+@app.post("/firewall/open")
+def open_firewall(rule: FirewallRule, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    verify_token(x_api_key, x_user_token, required_permission="firewall_admin")
+    apply_firewall_rule(rule, allow=True)
+    return {"message": f"Firewall opened for port {rule.port}/{rule.protocol}"}
+
+@app.post("/firewall/close")
+def close_firewall(rule: FirewallRule, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    verify_token(x_api_key, x_user_token, required_permission="firewall_admin")
+    apply_firewall_rule(rule, allow=False)
+    return {"message": f"Firewall closing rule applied for port {rule.port}/{rule.protocol}"}
+
+# --- PACKAGE MANAGEMENT ---
+
+def _handle_package_scope(auth_context: Dict, container_name: Optional[str]):
+    if container_name:
+        enforce_container_scope(auth_context, container_name)
+
+@app.post("/packages/install")
+def install_packages(request: PackageInstallRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = verify_token(x_api_key, x_user_token, required_permission="package_manage")
+    _handle_package_scope(auth_context, request.container_name)
+    ensure_packages_list(request.packages)
+    manager = detect_package_manager(request.container_name)
+    if request.update_index:
+        update_package_index(manager, request.container_name)
+    if manager == "apt":
+        cmd = ["apt-get", "install", "-y"] + request.packages
+    else:
+        cmd = ["dnf", "install", "-y"] + request.packages
+    run_package_command(cmd, request.container_name)
+    return {"message": f"Installed packages: {', '.join(request.packages)}"}
+
+@app.post("/packages/remove")
+def remove_packages(request: PackageRemoveRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = verify_token(x_api_key, x_user_token, required_permission="package_manage")
+    _handle_package_scope(auth_context, request.container_name)
+    ensure_packages_list(request.packages)
+    manager = detect_package_manager(request.container_name)
+    if manager == "apt":
+        cmd = ["apt-get", "remove", "-y"] + request.packages
+    else:
+        cmd = ["dnf", "remove", "-y"] + request.packages
+    run_package_command(cmd, request.container_name)
+    return {"message": f"Removed packages: {', '.join(request.packages)}"}
+
+@app.post("/packages/update")
+def update_packages(request: PackageUpdateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = verify_token(x_api_key, x_user_token, required_permission="package_manage")
+    _handle_package_scope(auth_context, request.container_name)
+    manager = detect_package_manager(request.container_name)
+    update_package_index(manager, request.container_name)
+    if manager == "apt":
+        command = ["apt-get", "dist-upgrade" if request.full_upgrade else "upgrade", "-y"]
+    else:
+        command = ["dnf", "upgrade" if request.full_upgrade else "update", "-y"]
+    run_package_command(command, request.container_name)
+    return {"message": "Package update completed", "full_upgrade": request.full_upgrade}
 
 # --- ENCRYPTED BACKUP SYSTEM ---
 

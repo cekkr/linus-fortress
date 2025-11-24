@@ -1,8 +1,10 @@
 This file contains the directives for AIs, and has to be updated by AIs itself to containing all strictly needed informations about the entire project to avoid repeated studies and next steps to do. In the meanwhile, update project's README.md
 
 ## Project status
-- src/server.py contains the main central server with APIs
+- py/server.py contains the main central server with APIs
 - py/server.py now supports API user tokens, container access controls (SSH/FTP), user/group management, and container connectivity features such as TCP proxying and shared mounts
+- py/server.py also manages host/container package operations (apt + dnf) and firewall rules (ufw + firewalld) and README.md documents all APIs
 
 ## Next steps
-- Improve server.py implementation to accomplish to its tasks and divide the py/ source in multiple py libraries
+- Refactor py/server.py into focused libraries/modules to simplify maintenance and testing
+- Add automated tests (unit/integration) that exercise key API workflows and permission enforcement
