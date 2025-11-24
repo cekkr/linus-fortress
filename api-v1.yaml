@@ -1,0 +1,852 @@
+openapi: 3.0.3
+info:
+  title: Linus' Fortress API
+  version: "1.0"
+  description: |
+    FastAPI service that orchestrates LXD containers, routing, access control, backups,
+    firewall, and package management. Authentication can be done either via the master `X-API-Key`
+    or delegated `X-User-Token`. Both headers are documented as security schemes below.
+servers:
+  - url: https://fortress.local:8443
+    description: Fortress default listener (change host/port as needed)
+security:
+  - ApiKeyAuth: []
+  - UserTokenAuth: []
+paths:
+  /status:
+    get:
+      summary: Retrieve system RAM/Disk stats and LXD container info
+      tags: [Status]
+      security:
+        - ApiKeyAuth: []
+        - UserTokenAuth: []
+      responses:
+        "200":
+          description: System status payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  ram:
+                    type: string
+                  disk:
+                    type: string
+                  containers:
+                    type: string
+  /container/create:
+    post:
+      summary: Launch new LXD container with resource limits
+      tags: [Containers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerCreate"
+      responses:
+        "200":
+          description: Container creation acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /container/{name}:
+    delete:
+      summary: Stop and remove an existing container
+      tags: [Containers]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Container deletion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /routing/add:
+    post:
+      summary: Configure nginx reverse proxy for a container
+      tags: [Routing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DomainRoute"
+      responses:
+        "200":
+          description: Routing setup acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /api-users:
+    post:
+      summary: Create delegated API user/token
+      tags: [API Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/APIUserCreate"
+      responses:
+        "200":
+          description: Created token and user metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/APIUserRecord"
+    get:
+      summary: List delegated API users
+      tags: [API Users]
+      responses:
+        "200":
+          description: List of API users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/APIUserRecordWithToken"
+  /api-users/{token}:
+    put:
+      summary: Update delegated API user permissions or scope
+      tags: [API Users]
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/APIUserUpdate"
+      responses:
+        "200":
+          description: Updated API user record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/APIUserRecord"
+    delete:
+      summary: Delete delegated API user/token
+      tags: [API Users]
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deletion acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /access/external/open:
+    post:
+      summary: Expose SSH/FTP via LXD proxy on the host
+      tags: [Access Control]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExternalAccessRule"
+      responses:
+        "200":
+          description: Exposure result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  device_name:
+                    type: string
+  /access/external/close:
+    post:
+      summary: Remove proxy device for external access
+      tags: [Access Control]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExternalAccessCloseRequest"
+      responses:
+        "200":
+          description: Removal acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /container/users/create:
+    post:
+      summary: Create Linux user inside container
+      tags: [Container Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerUserCreate"
+      responses:
+        "200":
+          description: User creation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /container/users/password:
+    post:
+      summary: Update container user password
+      tags: [Container Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerUserPasswordUpdate"
+      responses:
+        "200":
+          description: Update acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /container/users/groups:
+    post:
+      summary: Replace container user group memberships
+      tags: [Container Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerUserGroupUpdate"
+      responses:
+        "200":
+          description: Update acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /container/users:
+    delete:
+      summary: Remove user from container
+      tags: [Container Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerUserDelete"
+      responses:
+        "200":
+          description: Removal acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /container/groups:
+    post:
+      summary: Ensure group exists inside container
+      tags: [Container Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerGroupCreate"
+      responses:
+        "200":
+          description: Group result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /containers/connect/tcp:
+    post:
+      summary: Create LXD proxy tunnel between containers
+      tags: [Connectivity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerLinkRequest"
+      responses:
+        "200":
+          description: Proxy creation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  device_name:
+                    type: string
+  /containers/connect/tcp/remove:
+    post:
+      summary: Remove proxy device between containers
+      tags: [Connectivity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerLinkRemoval"
+      responses:
+        "200":
+          description: Removal acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /containers/connect/share:
+    post:
+      summary: Attach shared storage to containers
+      tags: [Connectivity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SharedMountRequest"
+      responses:
+        "200":
+          description: Shared mount attachment details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  attachments:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        container:
+                          type: string
+                        device_name:
+                          type: string
+  /containers/connect/share/remove:
+    post:
+      summary: Detach shared storage mount
+      tags: [Connectivity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SharedMountRemoval"
+      responses:
+        "200":
+          description: Detach acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /firewall/open:
+    post:
+      summary: Open host firewall port
+      tags: [Firewall]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FirewallRule"
+      responses:
+        "200":
+          description: Firewall action result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /firewall/close:
+    post:
+      summary: Close host firewall port
+      tags: [Firewall]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FirewallRule"
+      responses:
+        "200":
+          description: Firewall action result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /packages/install:
+    post:
+      summary: Install packages on host or container
+      tags: [Packages]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageInstallRequest"
+      responses:
+        "200":
+          description: Install acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /packages/remove:
+    post:
+      summary: Remove packages from host or container
+      tags: [Packages]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageRemoveRequest"
+      responses:
+        "200":
+          description: Removal acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /packages/update:
+    post:
+      summary: Update package repositories and upgrade
+      tags: [Packages]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageUpdateRequest"
+      responses:
+        "200":
+          description: Update acknowledgement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  full_upgrade:
+                    type: boolean
+  /backup/{container_name}:
+    post:
+      summary: Trigger encrypted LXD backup
+      tags: [Backups]
+      parameters:
+        - in: path
+          name: container_name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Background task acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /backup/list:
+    get:
+      summary: List encrypted backup archives
+      tags: [Backups]
+      responses:
+        "200":
+          description: Backup filenames
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backups:
+                    type: array
+                    items:
+                      type: string
+  /backup/download/{filename}:
+    get:
+      summary: Download encrypted backup
+      tags: [Backups]
+      parameters:
+        - in: path
+          name: filename
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Binary encrypted archive
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+  /restore:
+    post:
+      summary: Restore encrypted backup into a container
+      tags: [Backups]
+      parameters:
+        - in: query
+          name: container_name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Restore result message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    UserTokenAuth:
+      type: apiKey
+      in: header
+      name: X-User-Token
+  schemas:
+    Message:
+      type: object
+      properties:
+        message:
+          type: string
+    ContainerCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        distro:
+          type: string
+          default: ubuntu:22.04
+        cpu_limit:
+          type: string
+          default: "1"
+        ram_limit:
+          type: string
+          default: 512MB
+        disk_limit:
+          type: string
+          default: 10GB
+    DomainRoute:
+      type: object
+      required: [domain, container_name]
+      properties:
+        domain:
+          type: string
+        container_name:
+          type: string
+        container_port:
+          type: integer
+          default: 80
+    APIUserCreate:
+      type: object
+      required: [username]
+      properties:
+        username:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        allowed_containers:
+          type: array
+          items:
+            type: string
+    APIUserUpdate:
+      type: object
+      properties:
+        permissions:
+          type: array
+          items:
+            type: string
+        allowed_containers:
+          type: array
+          items:
+            type: string
+    APIUserRecord:
+      type: object
+      properties:
+        username:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        allowed_containers:
+          type: array
+          items:
+            type: string
+    APIUserRecordWithToken:
+      allOf:
+        - $ref: "#/components/schemas/APIUserRecord"
+        - type: object
+          properties:
+            token:
+              type: string
+    ExternalAccessRule:
+      type: object
+      required:
+        - container_name
+        - service
+      properties:
+        container_name:
+          type: string
+        service:
+          type: string
+          enum: [ssh, ftp]
+        host_port:
+          type: integer
+          description: Defaults to protocol specific port
+        connect_port:
+          type: integer
+        bind_address:
+          type: string
+          default: 0.0.0.0
+        connect_address:
+          type: string
+          default: 127.0.0.1
+        device_name:
+          type: string
+    ExternalAccessCloseRequest:
+      type: object
+      required:
+        - container_name
+      properties:
+        container_name:
+          type: string
+        device_name:
+          type: string
+        service:
+          type: string
+          enum: [ssh, ftp]
+        host_port:
+          type: integer
+    ContainerUserCreate:
+      type: object
+      required:
+        - container_name
+        - username
+      properties:
+        container_name:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+        groups:
+          type: array
+          items:
+            type: string
+    ContainerUserPasswordUpdate:
+      type: object
+      required:
+        - container_name
+        - username
+        - password
+      properties:
+        container_name:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+    ContainerUserGroupUpdate:
+      type: object
+      required:
+        - container_name
+        - username
+        - groups
+      properties:
+        container_name:
+          type: string
+        username:
+          type: string
+        groups:
+          type: array
+          items:
+            type: string
+    ContainerUserDelete:
+      type: object
+      required:
+        - container_name
+        - username
+      properties:
+        container_name:
+          type: string
+        username:
+          type: string
+        remove_home:
+          type: boolean
+          default: false
+    ContainerGroupCreate:
+      type: object
+      required:
+        - container_name
+        - group_name
+      properties:
+        container_name:
+          type: string
+        group_name:
+          type: string
+    ContainerLinkRequest:
+      type: object
+      required:
+        - source_container
+        - target_container
+        - listen_port
+        - target_port
+      properties:
+        source_container:
+          type: string
+        target_container:
+          type: string
+        listen_port:
+          type: integer
+        target_port:
+          type: integer
+        bind_address:
+          type: string
+          default: 0.0.0.0
+        protocol:
+          type: string
+          enum: [tcp, udp]
+          default: tcp
+        device_name:
+          type: string
+    ContainerLinkRemoval:
+      type: object
+      required:
+        - container_name
+        - device_name
+      properties:
+        container_name:
+          type: string
+        device_name:
+          type: string
+    SharedMountRequest:
+      type: object
+      required:
+        - share_name
+        - containers
+      properties:
+        share_name:
+          type: string
+        containers:
+          type: array
+          items:
+            type: string
+        mount_path:
+          type: string
+          default: /mnt/share
+        source_path:
+          type: string
+    SharedMountRemoval:
+      type: object
+      required:
+        - share_name
+        - containers
+      properties:
+        share_name:
+          type: string
+        containers:
+          type: array
+          items:
+            type: string
+    FirewallRule:
+      type: object
+      required:
+        - port
+      properties:
+        port:
+          type: integer
+        protocol:
+          type: string
+          enum: [tcp, udp]
+          default: tcp
+        source:
+          type: string
+    PackageInstallRequest:
+      type: object
+      required:
+        - packages
+      properties:
+        packages:
+          type: array
+          items:
+            type: string
+        container_name:
+          type: string
+        update_index:
+          type: boolean
+          default: true
+    PackageRemoveRequest:
+      type: object
+      required:
+        - packages
+      properties:
+        packages:
+          type: array
+          items:
+            type: string
+        container_name:
+          type: string
+    PackageUpdateRequest:
+      type: object
+      properties:
+        container_name:
+          type: string
+        full_upgrade:
+          type: boolean
+          default: false

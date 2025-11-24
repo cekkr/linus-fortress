@@ -10,49 +10,181 @@ Linus' Fortress is a FastAPI service that centralizes automation for LXD-based V
 
 ## API Reference
 
-### Status and Routing
-- `GET /status` – returns RAM, disk, and container list (requires `read_status`).
-- `POST /routing/add` – builds an Nginx reverse proxy for a container IP (requires `manage_routing`).
+A full OpenAPI description is provided in [`api-v1.yaml`](api-v1.yaml) (import it into Swagger UI, Postman, Insomnia, etc.). The summaries below highlight each route, the permissions enforced by `py/server.py`, and the body/parameter semantics that `fortress-cli.py` uses under the hood.
+
+All endpoints require either `X-API-Key` or `X-User-Token`. Permissions listed below map to the capabilities stored in the delegated API user records.
+
+### Status & Routing
+
+#### `GET /status` (permission `read_status`)
+- No body or query params; returns `{status, ram, disk, containers}` strings straight from `free`, `df`, and `lxc list`.
+- Example: `fortress-cli status`
+
+#### `POST /routing/add` (permission `manage_routing`, container scoped)
+Body:
+```json
+{
+  "domain": "app.example.com",
+  "container_name": "web01",
+  "container_port": 80
+}
+```
+- `domain` (string, required)
+- `container_name` (string, required)
+- `container_port` (int, optional, default `80`)
+- Creates an nginx vhost that proxies to the container IP+port and reloads nginx.
 
 ### Container Lifecycle
-- `POST /container/create` – launch LXD container with CPU/RAM limits (requires `manage_containers` plus scope).
-- `DELETE /container/{name}` – stop and remove container (requires `manage_containers` plus scope).
+
+#### `POST /container/create` (permission `manage_containers`, scoped to `name`)
+Body fields (defaults shown):
+- `name` (**required** string) – LXD container name.
+- `distro` (string, default `ubuntu:22.04`) – image alias to launch.
+- `cpu_limit` (string, default `1`) – passed to `lxc config set limits.cpu`.
+- `ram_limit` (string, default `512MB`).
+- `disk_limit` (string, default `10GB`).
+
+#### `DELETE /container/{name}` (permission `manage_containers`, scoped)
+- Path parameter `name` is required; shuts down and deletes the container (`lxc delete --force`).
 
 ### API Users
-- `POST /api-users` – create delegated token, returns generated token string (requires `api_user_admin`).
-- `GET /api-users` – list all delegated tokens (requires `api_user_admin`).
-- `PUT /api-users/{token}` – adjust permissions or container scopes (requires `api_user_admin`).
-- `DELETE /api-users/{token}` – revoke a token (requires `api_user_admin`).
 
-### External Access + Users Inside Containers
-- `POST /access/external/open` – expose container SSH/FTP via LXD proxy devices (requires `access_control`).
-- `POST /access/external/close` – remove proxy device (requires `access_control`).
-- `POST /container/users/create` – add Unix user inside container with optional groups/password (requires `user_management`).
-- `POST /container/users/password` – change container user password (requires `user_management`).
-- `POST /container/users/groups` – update user group memberships (requires `user_management`).
-- `DELETE /container/users` – remove user, optional home removal (requires `user_management`).
-- `POST /container/groups` – ensure group exists (requires `user_management`).
+#### `POST /api-users` (permission `api_user_admin`)
+Body:
+```json
+{
+  "username": "automation-bot",
+  "permissions": ["manage_containers", "read_status"],
+  "allowed_containers": ["web01", "db01"]
+}
+```
+- Returns a generated token plus the stored record.
 
-### Container Connectivity
-- `POST /containers/connect/tcp` – create LXD proxy from one container to another (requires `connectivity`).
-- `POST /containers/connect/tcp/remove` – delete proxy device (requires `connectivity`).
-- `POST /containers/connect/share` – mount shared host storage into multiple containers (requires `connectivity`).
-- `POST /containers/connect/share/remove` – detach shared mount (requires `connectivity`).
+#### `GET /api-users` (permission `api_user_admin`)
+- Lists every token with `username`, `permissions`, and scope.
+
+#### `PUT /api-users/{token}` (permission `api_user_admin`)
+Body may include:
+- `permissions` (array of strings, optional)
+- `allowed_containers` (array of strings, optional)
+
+#### `DELETE /api-users/{token}` (permission `api_user_admin`)
+- Removes the delegated token.
+
+### External Access
+
+#### `POST /access/external/open` (permission `access_control`, scoped to container)
+Body:
+```json
+{
+  "container_name": "web01",
+  "service": "ssh",
+  "host_port": 2222,
+  "connect_port": 22,
+  "bind_address": "0.0.0.0",
+  "connect_address": "127.0.0.1",
+  "device_name": "optional-custom-name"
+}
+```
+- `service` is `ssh` or `ftp` and chooses default ports if `host_port`/`connect_port` unset.
+- Returns the actual device name created on the container.
+
+#### `POST /access/external/close` (permission `access_control`)
+Body requires `container_name` plus either:
+- `device_name` (string) **or**
+- `service` (`ssh`/`ftp`) with optional `host_port` (int) to resolve the auto-generated name.
+
+### Container Users & Groups (permission `user_management`, scoped)
+
+#### `POST /container/users/create`
+- Body: `{ "container_name": "...", "username": "...", "password": "optional", "groups": ["sudo","www-data"] }`
+- Password is optional; if omitted the user is created without credentials.
+
+#### `POST /container/users/password`
+- Body requires `container_name`, `username`, and new `password`.
+
+#### `POST /container/users/groups`
+- Body requires `container_name`, `username`, and `groups` array. Replaces the user’s supplementary groups.
+
+#### `DELETE /container/users`
+- Body requires `container_name`, `username`, and optional `remove_home` (bool, default `false`).
+
+#### `POST /container/groups`
+- Body requires `container_name` and `group_name`; runs `groupadd -f`.
+
+### Container Connectivity (permission `connectivity`)
+
+#### `POST /containers/connect/tcp`
+- Body:
+```json
+{
+  "source_container": "app",
+  "target_container": "db",
+  "listen_port": 5432,
+  "target_port": 5432,
+  "bind_address": "0.0.0.0",
+  "protocol": "tcp",
+  "device_name": "optional-custom"
+}
+```
+- Automatically resolves `target_container` IP and adds an LXD proxy device; returns `device_name`.
+
+#### `POST /containers/connect/tcp/remove`
+- Body requires `container_name` (proxy lives here) and `device_name`.
+
+#### `POST /containers/connect/share`
+- Body:
+```json
+{
+  "share_name": "code",
+  "containers": ["app", "worker"],
+  "mount_path": "/srv/code",
+  "source_path": "/srv/fortress/code"
+}
+```
+- `source_path` optional; defaults to `${SHARED_STORAGE_DIR}/{share_name}` when omitted.
+- Returns each attachment’s generated `device_name`.
+
+#### `POST /containers/connect/share/remove`
+- Body requires same `share_name` and the list of `containers` that should have the disk detached.
+
+### Firewall Management (permission `firewall_admin`)
+
+#### `POST /firewall/open` and `POST /firewall/close`
+Common body:
+```json
+{
+  "port": 443,
+  "protocol": "tcp",
+  "source": "203.0.113.0/24"
+}
+```
+- `port` (int, required); `protocol` optional default `tcp`; `source` optional CIDR (only for ufw rich rule / firewalld rich rule).
+
+### Package Management (permission `package_manage`, scoped if `container_name` set)
+
+#### `POST /packages/install`
+- Body contains `packages` (array of strings, **required**), optional `container_name`, and `update_index` (bool, default `true`).
+
+#### `POST /packages/remove`
+- Body: `{"packages": ["vim"], "container_name": "web01"}` (`container_name` optional).
+
+#### `POST /packages/update`
+- Body: `{"container_name": "web01", "full_upgrade": true}` – both fields optional (`full_upgrade` default `false`).
 
 ### Backup & Restore
-- `POST /backup/{container_name}` – start encrypted backup in background (requires `manage_backups` plus scope).
-- `GET /backup/list` – list encrypted archives (requires `manage_backups`).
-- `GET /backup/download/{filename}` – download encrypted archive (requires `manage_backups`).
-- `POST /restore` – decrypt uploaded archive and import into LXD (requires `restore_container` plus scope).
 
-### Firewall Management (Ubuntu + AlmaLinux)
-- `POST /firewall/open` – open a port via UFW or firewalld, optionally restricted to a source CIDR (requires `firewall_admin`).
-- `POST /firewall/close` – remove the rule/port so access is closed (requires `firewall_admin`).
+#### `POST /backup/{container_name}` (permission `manage_backups`, scoped)
+- Path parameter `container_name`; no body. Starts encrypted backup task.
 
-### Package Management (apt + dnf)
-- `POST /packages/install` – install packages on host or on a scoped container (`container_name` optional). Handles `apt-get` and `dnf` with optional `update_index` step (requires `package_manage`).
-- `POST /packages/remove` – remove packages on host or container (`package_manage`).
-- `POST /packages/update` – run upgrade/update (set `full_upgrade=true` for `apt dist-upgrade` / `dnf upgrade`) on host or container (`package_manage`).
+#### `GET /backup/list` (permission `manage_backups`)
+- Returns `{ "backups": ["container_20240101.tar.gz.enc", ...] }`.
+
+#### `GET /backup/download/{filename}` (permission `manage_backups`)
+- Streams the encrypted archive bytes; combine with `fortress-cli backup download`.
+
+#### `POST /restore` (permission `restore_container`, scoped)
+- Query parameter `container_name` and multipart form body containing `file` (encrypted `.enc` upload). The service decrypts with the server-side Fernet key and runs `lxc import`.
 
 ### Command Register & Auditing
 - Every API call records an immutable entry into `command_log.db` (see `COMMAND_LOG_DB`), capturing `actor`, endpoint, action, target, and sanitized payload details.

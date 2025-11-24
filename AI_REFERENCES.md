@@ -6,6 +6,7 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 - py/server.py also manages host/container package operations (apt + dnf) and firewall rules (ufw + firewalld) and README.md documents all APIs
 - A new fortress.audit module powers the SQLite-based command register that captures all API activity plus container exec behaviour for investigation
 - fortress-cli.py is a client utility that bootstraps a secure RSA keypair, stores encrypted API credentials/backup passwords, automates API calls (status, api-users, packages, backups), and locally decrypts encrypted backups
+- api-v1.yaml documents the HTTP contract (OpenAPI 3.0.3) and README.md now lists request bodies/permissions for each endpoint
 
 ## Next steps
 - Continue modularizing (auth utilities, container management) to shrink py/server.py and improve reuse
