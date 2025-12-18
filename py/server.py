@@ -23,8 +23,7 @@ from fortress.recipes import (
     load_recipes,
     save_recipes,
     resolve_recipe_plan,
-    merge_parameters,
-    render_template,
+    build_recipe_execution,
     validate_recipe_name,
     normalize_parameters,
 )
@@ -912,12 +911,17 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
     if payload.recipe_name not in recipes:
         audit_api("recipes_apply", target=payload.container_name or "host", details={"error": "recipe not found"}, status="error")
         raise HTTPException(status_code=404, detail="Recipe not found")
+    overrides = normalize_parameters(payload.parameters)
     try:
-        plan = resolve_recipe_plan(payload.recipe_name, recipes, include_dependencies=payload.include_dependencies)
+        plan, steps = build_recipe_execution(
+            payload.recipe_name,
+            recipes,
+            include_dependencies=payload.include_dependencies,
+            overrides=overrides,
+        )
     except ValueError as exc:
         audit_api("recipes_apply", target=payload.container_name or "host", details={"error": str(exc)}, status="error")
         raise HTTPException(status_code=400, detail=str(exc))
-    overrides = normalize_parameters(payload.parameters)
     audit_api(
         "recipes_apply",
         target=payload.container_name or "host",
@@ -931,22 +935,9 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
     index_updated = False
     installed_packages: set[str] = set()
     applied: List[str] = []
-    for recipe_name in plan:
-        recipe = recipes.get(recipe_name, {})
-        try:
-            params = merge_parameters(recipe.get("parameters", {}), overrides, recipe.get("required_parameters", []))
-        except ValueError as exc:
-            audit_api("recipes_apply", target=payload.container_name or "host", details={"recipe": recipe_name, "error": str(exc)}, status="error")
-            raise HTTPException(status_code=400, detail=str(exc))
-        packages = []
-        for package in recipe.get("packages", []):
-            try:
-                rendered = render_template(package, params, recipe_name)
-            except ValueError as exc:
-                audit_api("recipes_apply", target=payload.container_name or "host", details={"recipe": recipe_name, "error": str(exc)}, status="error")
-                raise HTTPException(status_code=400, detail=str(exc))
-            if rendered and rendered not in installed_packages:
-                packages.append(rendered)
+    for step in steps:
+        recipe_name = step["name"]
+        packages = [package for package in step["packages"] if package and package not in installed_packages]
         if packages:
             if manager is None:
                 manager = detect_package_manager(payload.container_name)
@@ -959,16 +950,11 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
                 cmd = ["dnf", "install", "-y"] + packages
             run_package_command(cmd, payload.container_name)
             installed_packages.update(packages)
-        for command in recipe.get("commands", []):
-            try:
-                rendered_command = render_template(command, params, recipe_name)
-            except ValueError as exc:
-                audit_api("recipes_apply", target=payload.container_name or "host", details={"recipe": recipe_name, "error": str(exc)}, status="error")
-                raise HTTPException(status_code=400, detail=str(exc))
+        for command in step["commands"]:
             if payload.container_name:
-                exec_in_container(payload.container_name, ["sh", "-c", rendered_command])
+                exec_in_container(payload.container_name, ["sh", "-c", command])
             else:
-                run_command(["sh", "-c", rendered_command])
+                run_command(["sh", "-c", command])
         applied.append(recipe_name)
     audit_api("recipes_apply_complete", target=payload.container_name or "host", details={"recipe": payload.recipe_name, "applied": applied})
     return {"message": "Recipe applied", "recipe": payload.recipe_name, "applied": applied, "container": payload.container_name}

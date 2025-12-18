@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -133,3 +133,31 @@ def render_template(value: str, params: Dict[str, str], recipe_name: str) -> str
         return params[key]
 
     return PLACEHOLDER_PATTERN.sub(replace, value)
+
+
+def build_recipe_execution(
+    recipe_name: str,
+    recipes: Dict[str, Dict[str, Any]],
+    include_dependencies: bool = True,
+    overrides: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    plan = resolve_recipe_plan(recipe_name, recipes, include_dependencies=include_dependencies)
+    override_params = normalize_parameters(overrides)
+    steps: List[Dict[str, Any]] = []
+    for name in plan:
+        recipe = recipes.get(name)
+        if not recipe:
+            raise ValueError(f"Missing recipe dependency '{name}'")
+        params = merge_parameters(recipe.get("parameters", {}), override_params, recipe.get("required_parameters", []))
+        packages: List[str] = []
+        for package in recipe.get("packages", []):
+            rendered = render_template(package, params, name)
+            if rendered:
+                packages.append(rendered)
+        commands: List[str] = []
+        for command in recipe.get("commands", []):
+            rendered = render_template(command, params, name)
+            if rendered:
+                commands.append(rendered)
+        steps.append({"name": name, "parameters": params, "packages": packages, "commands": commands})
+    return plan, steps

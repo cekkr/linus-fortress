@@ -8,10 +8,11 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 - New recipe automation endpoints (`/recipes`, `/recipes/{name}`, `/recipes/apply`) allow "nix-like" install blueprints with dependencies, packages, and commands (templated with `{{param}}`), stored in `/var/lib/fortress/recipes.json`
 - A new fortress.audit module powers the SQLite-based command register that captures all API activity plus container exec behaviour for investigation
 - `py/fortress/recipes.py` holds recipe models, storage helpers, dependency resolution, and template rendering
-- fortress-cli.py is a client utility that bootstraps a secure RSA keypair, stores encrypted API credentials/backup passwords, automates API calls (status, api-users, packages, backups), and locally decrypts encrypted backups
+- fortress-cli.py now includes `recipes list|create|apply` helpers in addition to status/api-users/package/backup calls
+- Unit tests in `tests/test_recipes.py` cover recipe dependency resolution and apply planning
 - api-v1.yaml documents the HTTP contract (OpenAPI 3.0.3) and README.md now lists request bodies/permissions for each endpoint
 
 ## Next steps
 - Continue modularizing (auth utilities, container management) to shrink py/server.py and improve reuse
-- Add automated tests (unit/integration) covering permission enforcement, command logging, and critical API flows
-- Add CLI helpers for recipe creation/apply and support exporting/importing recipe bundles
+- Expand automated tests (unit/integration) covering permission enforcement, command logging, and critical API flows
+- Add recipe export/import bundles and versioning support

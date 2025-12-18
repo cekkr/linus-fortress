@@ -262,12 +262,21 @@ Example dependency recipe:
    - `python fortress-cli.py call POST /packages/install --json '{"packages":["vim"]}'`
    - `python fortress-cli.py backup list|trigger|download|decrypt ...`
    - `python fortress-cli.py api-users create alice --permissions manage_containers read_status`
+   - `python fortress-cli.py recipes list|create|apply ...`
 3. Encrypted backups can be downloaded and decrypted locally via `python fortress-cli.py backup download foo.enc --dest ./foo.enc` followed by `python fortress-cli.py backup decrypt ./foo.enc --output ./foo.tar.gz`.
 
+Recipe CLI examples:
+- Create a recipe: `python fortress-cli.py recipes create --name base-python --package python3 --package python3-pip`
+- Apply to a container: `python fortress-cli.py recipes apply base-python --container web01`
+
 By default TLS certificates are verified; pass `--insecure` during `setup` only if you are pointing at a self-signed lab server. Use the CLI’s `info` command to inspect the stored metadata without revealing secrets.
+
+## Testing
+
+- `python -m unittest discover -s tests`
 
 ## Roadmap
 
 - Split `py/server.py` into modular packages (auth, containers, storage) for maintainability.
-- Extend recipe automation with versioning, export/import bundles, and CLI helpers.
+- Extend recipe automation with versioning and export/import bundles.
 - Add automated tests or contract tests for each API route.

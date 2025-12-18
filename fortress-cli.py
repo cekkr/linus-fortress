@@ -423,6 +423,57 @@ def backup_command(args: argparse.Namespace) -> None:
     raise FortressCLIError("Unsupported backup subcommand")
 
 
+def recipes_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    auth_override = getattr(args, "auth_mode", None)
+    if args.subcommand == "list":
+        result = client.request("GET", "/recipes", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "create":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if not args.name:
+                raise FortressCLIError("Recipe name required when not using --json or --json-file")
+            payload = {"name": args.name}
+            if args.description is not None:
+                payload["description"] = args.description
+            if args.dependencies:
+                payload["dependencies"] = args.dependencies
+            if args.packages:
+                payload["packages"] = args.packages
+            if args.commands:
+                payload["commands"] = args.commands
+            params = parse_kv_pairs(args.param)
+            if params:
+                payload["parameters"] = params
+            if args.required:
+                payload["required_parameters"] = args.required
+        result = client.request("POST", "/recipes", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "apply":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if not args.name:
+                raise FortressCLIError("Recipe name required when not using --json or --json-file")
+            payload = {
+                "recipe_name": args.name,
+                "include_dependencies": not args.no_deps,
+                "update_index": not args.no_update_index,
+            }
+            if args.container:
+                payload["container_name"] = args.container
+            params = parse_kv_pairs(args.param)
+            if params:
+                payload["parameters"] = params
+        result = client.request("POST", "/recipes/apply", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    raise FortressCLIError("Unsupported recipes subcommand")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Client utility for Linus' Fortress",
@@ -497,6 +548,32 @@ def build_parser() -> argparse.ArgumentParser:
     backup_decrypt.add_argument("--output", help="Decrypted output file path")
     backup_decrypt.add_argument("--password", help="Override backup password instead of stored secret")
     backup_decrypt.set_defaults(func=backup_command)
+
+    recipes_parser = subparsers.add_parser("recipes", help="Manage automation recipes")
+    recipes_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    recipes_sub = recipes_parser.add_subparsers(dest="subcommand")
+    recipes_list = recipes_sub.add_parser("list", help="List recipes")
+    recipes_list.set_defaults(func=recipes_command)
+    recipes_create = recipes_sub.add_parser("create", help="Create a new recipe")
+    recipes_create.add_argument("--name", help="Recipe name (required unless using --json/--json-file)")
+    recipes_create.add_argument("--description", help="Recipe description")
+    recipes_create.add_argument("--dependency", dest="dependencies", action="append", default=[], help="Dependency recipe name")
+    recipes_create.add_argument("--package", dest="packages", action="append", default=[], help="Package to install")
+    recipes_create.add_argument("--command", dest="commands", action="append", default=[], help="Command to run")
+    recipes_create.add_argument("--param", action="append", default=[], help="Parameter default in key=value form")
+    recipes_create.add_argument("--required", action="append", default=[], help="Required parameter name")
+    recipes_create.add_argument("--json", help="Inline JSON payload")
+    recipes_create.add_argument("--json-file", help="Path to JSON file used as payload")
+    recipes_create.set_defaults(func=recipes_command)
+    recipes_apply = recipes_sub.add_parser("apply", help="Apply a recipe to host or container")
+    recipes_apply.add_argument("name", nargs="?", help="Recipe name (required unless using --json/--json-file)")
+    recipes_apply.add_argument("--container", help="Target container name (omit for host)")
+    recipes_apply.add_argument("--param", action="append", default=[], help="Parameter override in key=value form")
+    recipes_apply.add_argument("--no-deps", action="store_true", help="Skip dependency recipes")
+    recipes_apply.add_argument("--no-update-index", action="store_true", help="Skip package index updates")
+    recipes_apply.add_argument("--json", help="Inline JSON payload")
+    recipes_apply.add_argument("--json-file", help="Path to JSON file used as payload")
+    recipes_apply.set_defaults(func=recipes_command)
 
     return parser
 
