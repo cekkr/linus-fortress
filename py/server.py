@@ -1,7 +1,6 @@
 import uvicorn
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
 from pydantic import BaseModel
-import subprocess
 import os
 import shutil
 import secrets
@@ -12,10 +11,19 @@ from cryptography.fernet import Fernet
 import base64
 import hashlib
 import json
-import shlex
 from contextvars import ContextVar
 
 from fortress.audit import CommandLogger
+from fortress.api.containers import build_container_router
+from fortress.containers import (
+    SENSITIVE_KEYWORDS,
+    configure_audit,
+    detect_package_manager,
+    exec_in_container,
+    get_container_ip,
+    run_package_command,
+    update_package_index,
+)
 from fortress.recipes import (
     RecipeDefinition,
     RecipeUpdate,
@@ -27,6 +35,7 @@ from fortress.recipes import (
     validate_recipe_name,
     normalize_parameters,
 )
+from fortress.system import run_command
 
 # --- CONFIGURATION ---
 # In production, load these from environment variables
@@ -41,8 +50,6 @@ API_USERS_DB = "/var/lib/fortress/api_users.json"
 RECIPES_DB = "/var/lib/fortress/recipes.json"
 SHARED_STORAGE_DIR = "/var/lib/fortress/shares"
 COMMAND_LOG_DB = "/var/lib/fortress/command_log.db"
-SERVICE_DEFAULT_PORTS = {"ssh": 22, "ftp": 21}
-SENSITIVE_KEYWORDS = {"password", "passwd", "secret", "token", "key", "chpasswd"}
 
 def resolve_master_key() -> Optional[str]:
     if not API_SECRET_KEY:
@@ -94,6 +101,8 @@ def audit_api(action: str, target: Optional[str] = None, details: Optional[Dict[
 def audit_internal(action: str, target: Optional[str] = None, details: Optional[Dict[str, Any]] = None, status: str = "success"):
     audit_event("internal", action, target, details, status)
 
+configure_audit(audit_event)
+
 def sanitize_payload(payload: Dict[str, Any], sensitive_keys: Optional[List[str]] = None) -> Dict[str, Any]:
     if not payload:
         return {}
@@ -121,21 +130,6 @@ def mask_token(token: str) -> str:
     if len(token) <= 8:
         return "***"
     return f\"{token[:4]}...{token[-4:]}\"
-
-def sanitize_command_details(command: List[str]) -> Dict[str, Any]:
-    if not command:
-        return {\"command\": \"\", \"arg_preview\": [], \"arg_length\": 0}
-    preview = []
-    for arg in command[1:6]:
-        if any(keyword in arg.lower() for keyword in SENSITIVE_KEYWORDS):
-            preview.append(\"***\")
-        else:
-            preview.append(arg[:64])
-    return {
-        \"command\": command[0],
-        \"arg_preview\": preview,
-        \"arg_length\": max(len(command) - 1, 0)
-    }
 
 def authorize(endpoint: str, required_permission: Optional[str], x_api_key: Optional[str], x_user_token: Optional[str], containers: Optional[Union[str, List[str]]] = None):
     auth_context = verify_token(x_api_key, x_user_token, required_permission=required_permission)
@@ -198,59 +192,6 @@ def enforce_container_scopes(auth_context: Dict, containers: List[str]):
     for container in containers:
         enforce_container_scope(auth_context, container)
 
-def get_container_ip(container_name: str, interface: str = "eth0") -> str:
-    info_json = run_command(["lxc", "list", container_name, "--format", "json"])
-    info = json.loads(info_json)
-    try:
-        return info[0]['state']['network'][interface]['addresses'][0]['address']
-    except (IndexError, KeyError):
-        raise HTTPException(status_code=404, detail="Container IP not found. Is it running?")
-
-def exec_in_container(container_name: str, command: List[str]) -> str:
-    cmd = ["lxc", "exec", container_name, "--"] + command
-    details = sanitize_command_details(command)
-    try:
-        result = run_command(cmd)
-        audit_event("container_exec", f"exec:{details['command']}", target=container_name, details=details)
-        return result
-    except HTTPException as exc:
-        error_details = dict(details)
-        error_details["error"] = exc.detail
-        audit_event("container_exec", f"exec:{details['command']}", target=container_name, details=error_details, status="error")
-        raise
-
-def set_container_password(container_name: str, username: str, password: str):
-    credential = f"{username}:{password}"
-    exec_in_container(container_name, ["bash", "-c", f"echo {shlex.quote(credential)} | chpasswd"])
-
-def container_has_binary(container_name: str, binary: str) -> bool:
-    test_cmd = ["lxc", "exec", container_name, "--", "sh", "-c", f"command -v {shlex.quote(binary)}"]
-    result = subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    return result.returncode == 0
-
-def detect_package_manager(container_name: Optional[str] = None) -> str:
-    candidates = [("apt", "apt-get"), ("dnf", "dnf")]
-    for name, binary in candidates:
-        if container_name:
-            if container_has_binary(container_name, binary):
-                return name
-        else:
-            if shutil.which(binary):
-                return name
-    raise HTTPException(status_code=500, detail="No supported package manager (apt or dnf) detected")
-
-def run_package_command(cmd: List[str], container_name: Optional[str]):
-    if container_name:
-        exec_in_container(container_name, cmd)
-    else:
-        run_command(cmd)
-
-def update_package_index(manager: str, container_name: Optional[str]):
-    if manager == "apt":
-        run_package_command(["apt-get", "update"], container_name)
-    elif manager == "dnf":
-        run_package_command(["dnf", "makecache"], container_name)
-
 def detect_firewall_backend() -> str:
     if shutil.which("ufw"):
         return "ufw"
@@ -292,23 +233,7 @@ def ensure_packages_list(packages: List[str]):
     if not packages:
         raise HTTPException(status_code=400, detail="Package list cannot be empty")
 
-def run_command(cmd_list):
-    """Run a shell command securely and return output."""
-    try:
-        result = subprocess.run(cmd_list, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Command failed: {e.cmd}. Error: {e.stderr}")
-        raise HTTPException(status_code=500, detail=f"System Error: {e.stderr}")
-
 # --- DATA MODELS ---
-
-class ContainerCreate(BaseModel):
-    name: str
-    distro: str = "ubuntu:22.04"
-    cpu_limit: str = "1"
-    ram_limit: str = "512MB"
-    disk_limit: str = "10GB"
 
 class DomainRoute(BaseModel):
     domain: str
@@ -323,69 +248,6 @@ class APIUserCreate(BaseModel):
 class APIUserUpdate(BaseModel):
     permissions: Optional[List[str]] = None
     allowed_containers: Optional[List[str]] = None
-
-class ExternalAccessRule(BaseModel):
-    container_name: str
-    service: Literal["ssh", "ftp"]
-    host_port: Optional[int] = None
-    connect_port: Optional[int] = None
-    bind_address: str = "0.0.0.0"
-    connect_address: str = "127.0.0.1"
-    device_name: Optional[str] = None
-
-class ExternalAccessCloseRequest(BaseModel):
-    container_name: str
-    device_name: Optional[str] = None
-    service: Optional[Literal["ssh", "ftp"]] = None
-    host_port: Optional[int] = None
-
-class ContainerUserCreate(BaseModel):
-    container_name: str
-    username: str
-    password: Optional[str] = None
-    groups: Optional[List[str]] = None
-
-class ContainerUserPasswordUpdate(BaseModel):
-    container_name: str
-    username: str
-    password: str
-
-class ContainerUserGroupUpdate(BaseModel):
-    container_name: str
-    username: str
-    groups: List[str]
-
-class ContainerUserDelete(BaseModel):
-    container_name: str
-    username: str
-    remove_home: bool = False
-
-class ContainerGroupCreate(BaseModel):
-    container_name: str
-    group_name: str
-
-class ContainerLinkRequest(BaseModel):
-    source_container: str
-    target_container: str
-    listen_port: int
-    target_port: int
-    bind_address: str = "0.0.0.0"
-    protocol: Literal["tcp", "udp"] = "tcp"
-    device_name: Optional[str] = None
-
-class ContainerLinkRemoval(BaseModel):
-    container_name: str
-    device_name: str
-
-class SharedMountRequest(BaseModel):
-    share_name: str
-    containers: List[str]
-    mount_path: str = "/mnt/share"
-    source_path: Optional[str] = None
-
-class SharedMountRemoval(BaseModel):
-    share_name: str
-    containers: List[str]
 
 class FirewallRule(BaseModel):
     port: int
@@ -406,6 +268,8 @@ class PackageUpdateRequest(BaseModel):
     full_upgrade: bool = False
 # --- CORE LOGIC ---
 
+app.include_router(build_container_router(authorize, audit_api, sanitize_payload, SHARED_STORAGE_DIR))
+
 @app.get("/status", dependencies=[])
 def system_status(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("status", "read_status", x_api_key, x_user_token)
@@ -418,40 +282,6 @@ def system_status(x_api_key: Optional[str] = Header(default=None), x_user_token:
         "disk_head": disk.splitlines()[0] if disk else ""
     })
     return {"status": "operational", "ram": ram, "disk": disk, "containers": containers}
-
-@app.post("/container/create")
-def create_container(config: ContainerCreate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("container_create", "manage_containers", x_api_key, x_user_token, containers=config.name)
-    # 1. Launch Container
-    logging.info(f"Creating container {config.name}")
-    try:
-        run_command(["lxc", "launch", config.distro, config.name])
-        
-        # 2. Apply Limits (Crucial for low spec VPS)
-        run_command(["lxc", "config", "set", config.name, "limits.cpu", config.cpu_limit])
-        run_command(["lxc", "config", "set", config.name, "limits.memory", config.ram_limit])
-        
-        # 3. Enable nesting (needed for some services) and security limits
-        run_command(["lxc", "config", "set", config.name, "security.nesting", "true"])
-        
-        audit_api("container_create", target=config.name, details=sanitize_payload(config.dict()))
-        return {"message": f"Container {config.name} created successfully"}
-    except Exception as e:
-        audit_api("container_create", target=config.name, details={"error": str(e)}, status="error")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/container/{name}")
-def delete_container(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("container_delete", "manage_containers", x_api_key, x_user_token, containers=name)
-    logging.info(f"Deleting container {name}")
-    try:
-        # Force delete (stop and delete)
-        run_command(["lxc", "delete", name, "--force"])
-        audit_api("container_delete", target=name)
-        return {"message": f"Container {name} deleted"}
-    except Exception as e:
-        audit_api("container_delete", target=name, details={"error": str(e)}, status="error")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/routing/add")
 def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
@@ -547,178 +377,6 @@ def delete_api_user(token: str, x_api_key: Optional[str] = Header(default=None),
     save_api_users(users)
     audit_api("api_user_delete", target=removed.get("username"), details={"token": mask_token(token)})
     return {"message": f"API user {removed.get('username')} removed"}
-
-# --- EXTERNAL ACCESS CONTROL ---
-
-def _resolve_device_name(service: str, host_port: Optional[int], device_name: Optional[str]) -> str:
-    port = host_port or SERVICE_DEFAULT_PORTS[service]
-    return device_name or f"{service}-{port}"
-
-@app.post("/access/external/open")
-def open_external_access(rule: ExternalAccessRule, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("external_access_open", "access_control", x_api_key, x_user_token, containers=rule.container_name)
-    service_port = SERVICE_DEFAULT_PORTS[rule.service]
-    host_port = rule.host_port or service_port
-    connect_port = rule.connect_port or service_port
-    device_name = _resolve_device_name(rule.service, host_port, rule.device_name)
-    listen_arg = f"listen=tcp:{rule.bind_address}:{host_port}"
-    connect_arg = f"connect=tcp:{rule.connect_address}:{connect_port}"
-    try:
-        run_command([
-            "lxc", "config", "device", "add", rule.container_name,
-            device_name, "proxy", listen_arg, connect_arg
-        ])
-        audit_api("external_access_open", target=rule.container_name, details={"service": rule.service, "device": device_name, "host_port": host_port})
-    except Exception as exc:
-        audit_api("external_access_open", target=rule.container_name, details={"error": str(exc)}, status="error")
-        raise
-    return {"message": f"{rule.service.upper()} access exposed on port {host_port}", "device_name": device_name}
-
-@app.post("/access/external/close")
-def close_external_access(rule: ExternalAccessCloseRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("external_access_close", "access_control", x_api_key, x_user_token, containers=rule.container_name)
-    device_name = rule.device_name
-    if not device_name:
-        if not rule.service:
-            raise HTTPException(status_code=400, detail="Either device_name or service must be provided")
-        device_name = _resolve_device_name(rule.service, rule.host_port, None)
-    try:
-        run_command(["lxc", "config", "device", "remove", rule.container_name, device_name])
-        audit_api("external_access_close", target=rule.container_name, details={"device": device_name})
-    except Exception as exc:
-        audit_api("external_access_close", target=rule.container_name, details={"device": device_name, "error": str(exc)}, status="error")
-        raise
-    return {"message": f"Device {device_name} removed from {rule.container_name}"}
-
-# --- CONTAINER USER MANAGEMENT ---
-
-@app.post("/container/users/create")
-def create_container_user(payload: ContainerUserCreate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("container_user_create", "user_management", x_api_key, x_user_token, containers=payload.container_name)
-    cmd = ["useradd", "-m", payload.username]
-    if payload.groups:
-        cmd.extend(["-G", ",".join(payload.groups)])
-    try:
-        exec_in_container(payload.container_name, cmd)
-        if payload.password:
-            set_container_password(payload.container_name, payload.username, payload.password)
-        audit_api("container_user_create", target=payload.container_name, details=sanitize_payload(payload.dict(), sensitive_keys=["password"]))
-        return {"message": f"User {payload.username} created in {payload.container_name}"}
-    except Exception as exc:
-        audit_api("container_user_create", target=payload.container_name, details={"username": payload.username, "error": str(exc)}, status="error")
-        raise
-
-@app.post("/container/users/password")
-def update_container_password(payload: ContainerUserPasswordUpdate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("container_user_password", "user_management", x_api_key, x_user_token, containers=payload.container_name)
-    try:
-        set_container_password(payload.container_name, payload.username, payload.password)
-        audit_api("container_user_password", target=payload.container_name, details=sanitize_payload(payload.dict(), sensitive_keys=["password"]))
-        return {"message": f"Password updated for {payload.username} in {payload.container_name}"}
-    except Exception as exc:
-        audit_api("container_user_password", target=payload.container_name, details={"username": payload.username, "error": str(exc)}, status="error")
-        raise
-
-@app.post("/container/users/groups")
-def update_container_groups(payload: ContainerUserGroupUpdate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("container_user_groups", "user_management", x_api_key, x_user_token, containers=payload.container_name)
-    try:
-        exec_in_container(payload.container_name, ["usermod", "-G", ",".join(payload.groups), payload.username])
-        audit_api("container_user_groups", target=payload.container_name, details={"username": payload.username, "groups": payload.groups})
-        return {"message": f"Groups updated for {payload.username} in {payload.container_name}"}
-    except Exception as exc:
-        audit_api("container_user_groups", target=payload.container_name, details={"username": payload.username, "error": str(exc)}, status="error")
-        raise
-
-@app.delete("/container/users")
-def delete_container_user(payload: ContainerUserDelete, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("container_user_delete", "user_management", x_api_key, x_user_token, containers=payload.container_name)
-    args = ["userdel"]
-    if payload.remove_home:
-        args.append("-r")
-    args.append(payload.username)
-    try:
-        exec_in_container(payload.container_name, args)
-        audit_api("container_user_delete", target=payload.container_name, details={"username": payload.username, "remove_home": payload.remove_home})
-        return {"message": f"User {payload.username} removed from {payload.container_name}"}
-    except Exception as exc:
-        audit_api("container_user_delete", target=payload.container_name, details={"username": payload.username, "error": str(exc)}, status="error")
-        raise
-
-@app.post("/container/groups")
-def create_container_group(payload: ContainerGroupCreate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("container_group_create", "user_management", x_api_key, x_user_token, containers=payload.container_name)
-    try:
-        exec_in_container(payload.container_name, ["groupadd", "-f", payload.group_name])
-        audit_api("container_group_create", target=payload.container_name, details={"group": payload.group_name})
-        return {"message": f"Group {payload.group_name} ensured in {payload.container_name}"}
-    except Exception as exc:
-        audit_api("container_group_create", target=payload.container_name, details={"group": payload.group_name, "error": str(exc)}, status="error")
-        raise
-
-# --- INTER-CONTAINER CONNECTIVITY ---
-
-@app.post("/containers/connect/tcp")
-def connect_containers_network(payload: ContainerLinkRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("containers_connect_tcp", "connectivity", x_api_key, x_user_token, containers=[payload.source_container, payload.target_container])
-    target_ip = get_container_ip(payload.target_container)
-    device_name = payload.device_name or f"link-{payload.target_container}-{payload.listen_port}"
-    listen = f"listen={payload.protocol}:{payload.bind_address}:{payload.listen_port}"
-    connect = f"connect={payload.protocol}:{target_ip}:{payload.target_port}"
-    try:
-        run_command([
-            "lxc", "config", "device", "add", payload.source_container,
-            device_name, "proxy", listen, connect
-        ])
-        audit_api("containers_connect_tcp", target=payload.source_container, details={"device": device_name, "target": payload.target_container, "listen_port": payload.listen_port})
-    except Exception as exc:
-        audit_api("containers_connect_tcp", target=payload.source_container, details={"device": device_name, "error": str(exc)}, status="error")
-        raise
-    return {"message": f"{payload.source_container} now proxies to {payload.target_container}:{payload.target_port}", "device_name": device_name}
-
-@app.post("/containers/connect/tcp/remove")
-def disconnect_container_network(payload: ContainerLinkRemoval, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("containers_disconnect_tcp", "connectivity", x_api_key, x_user_token, containers=payload.container_name)
-    try:
-        run_command(["lxc", "config", "device", "remove", payload.container_name, payload.device_name])
-        audit_api("containers_disconnect_tcp", target=payload.container_name, details={"device": payload.device_name})
-    except Exception as exc:
-        audit_api("containers_disconnect_tcp", target=payload.container_name, details={"device": payload.device_name, "error": str(exc)}, status="error")
-        raise
-    return {"message": f"Device {payload.device_name} removed from {payload.container_name}"}
-
-@app.post("/containers/connect/share")
-def create_shared_mount(payload: SharedMountRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("containers_connect_share", "connectivity", x_api_key, x_user_token, containers=payload.containers)
-    host_path = payload.source_path or os.path.join(SHARED_STORAGE_DIR, payload.share_name)
-    os.makedirs(host_path, exist_ok=True)
-    attached = []
-    try:
-        for container in payload.containers:
-            device_name = f"{payload.share_name}-{container}"
-            run_command([
-                "lxc", "config", "device", "add", container, device_name,
-                "disk", f"source={host_path}", f"path={payload.mount_path}"
-            ])
-            attached.append({"container": container, "device_name": device_name})
-    except Exception as err:
-        audit_api("containers_connect_share", target=payload.share_name, details={"error": str(err)}, status="error")
-        raise HTTPException(status_code=500, detail=f"Failed to create shared mount: {err}")
-    audit_api("containers_connect_share", target=payload.share_name, details={"containers": payload.containers})
-    return {"message": f"Share {payload.share_name} attached", "attachments": attached}
-
-@app.post("/containers/connect/share/remove")
-def remove_shared_mount(payload: SharedMountRemoval, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("containers_disconnect_share", "connectivity", x_api_key, x_user_token, containers=payload.containers)
-    try:
-        for container in payload.containers:
-            device_name = f"{payload.share_name}-{container}"
-            run_command(["lxc", "config", "device", "remove", container, device_name])
-        audit_api("containers_disconnect_share", target=payload.share_name, details={"containers": payload.containers})
-    except Exception as exc:
-        audit_api("containers_disconnect_share", target=payload.share_name, details={"error": str(exc)}, status="error")
-        raise
-    return {"message": f"Share {payload.share_name} detached from requested containers"}
 
 # --- FIREWALL MANAGEMENT ---
 

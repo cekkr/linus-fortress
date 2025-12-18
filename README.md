@@ -277,6 +277,6 @@ By default TLS certificates are verified; pass `--insecure` during `setup` only 
 
 ## Roadmap
 
-- Split `py/server.py` into modular packages (auth, containers, storage) for maintainability.
+- Continue modularizing `py/server.py` (auth/storage) now that container APIs live in `py/fortress/api/containers.py`.
 - Extend recipe automation with versioning and export/import bundles.
 - Add automated tests or contract tests for each API route.
