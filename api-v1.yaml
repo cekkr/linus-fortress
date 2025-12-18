@@ -36,6 +36,69 @@ paths:
                     type: string
                   containers:
                     type: string
+  /monitoring/resources:
+    get:
+      summary: Capture host and container resource usage with alert flags
+      tags: [Status]
+      security:
+        - ApiKeyAuth: []
+        - UserTokenAuth: []
+      parameters:
+        - in: query
+          name: host_memory_threshold
+          schema:
+            type: number
+            default: 90
+          description: Trigger host memory alerts when percent used meets/exceeds this value.
+        - in: query
+          name: host_disk_threshold
+          schema:
+            type: number
+            default: 90
+          description: Trigger host disk alerts when percent used meets/exceeds this value.
+        - in: query
+          name: host_load_threshold
+          schema:
+            type: number
+            default: 1.5
+          description: Trigger host CPU alerts when 1m load divided by CPU count meets/exceeds this value.
+        - in: query
+          name: container_memory_threshold
+          schema:
+            type: number
+            default: 85
+          description: Percent threshold for container memory when a limit is present.
+        - in: query
+          name: container_disk_threshold
+          schema:
+            type: number
+            default: 85
+          description: Percent threshold for container disk usage when a quota is present.
+        - in: query
+          name: container_process_threshold
+          schema:
+            type: integer
+            default: 300
+          description: Maximum container process count before raising an alert.
+        - in: query
+          name: container_memory_absolute_mb
+          schema:
+            type: integer
+            default: 1024
+          description: Absolute memory threshold (MB) used when no container limit is configured.
+        - in: query
+          name: container_disk_absolute_gb
+          schema:
+            type: integer
+            default: 5
+          description: Absolute disk threshold (GB) used when no container quota is configured.
+      responses:
+        "200":
+          description: Resource snapshot including alerts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoringSnapshot"
   /container/create:
     post:
       summary: Launch new LXD container with resource limits
@@ -689,6 +752,181 @@ components:
       properties:
         message:
           type: string
+    MonitoringAlert:
+      type: object
+      properties:
+        type:
+          type: string
+        value:
+          type: number
+        threshold:
+          type: number
+        message:
+          type: string
+    MemoryUsage:
+      type: object
+      properties:
+        total_bytes:
+          type: integer
+        available_bytes:
+          type: integer
+        used_bytes:
+          type: integer
+        used_percent:
+          type: number
+    DiskUsage:
+      type: object
+      properties:
+        total_bytes:
+          type: integer
+        used_bytes:
+          type: integer
+        free_bytes:
+          type: integer
+        used_percent:
+          type: number
+    HostCpuLoad:
+      type: object
+      properties:
+        load_1m:
+          type: number
+        load_5m:
+          type: number
+        load_15m:
+          type: number
+        per_cpu_load_1m:
+          type: number
+        cpu_count:
+          type: integer
+    HostMetrics:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        memory:
+          $ref: "#/components/schemas/MemoryUsage"
+        disk:
+          $ref: "#/components/schemas/DiskUsage"
+        cpu:
+          $ref: "#/components/schemas/HostCpuLoad"
+        alerts:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonitoringAlert"
+    ContainerCpu:
+      type: object
+      properties:
+        usage_seconds:
+          type: number
+        usage_nanoseconds:
+          type: integer
+        limit:
+          type: string
+    ContainerMemory:
+      type: object
+      properties:
+        usage_bytes:
+          type: integer
+        usage_peak_bytes:
+          type: integer
+        limit_bytes:
+          type: integer
+        used_percent:
+          type: number
+    ContainerDisk:
+      type: object
+      properties:
+        usage_bytes:
+          type: integer
+        usage_peak_bytes:
+          type: integer
+        limit_bytes:
+          type: integer
+        used_percent:
+          type: number
+    ContainerNetwork:
+      type: object
+      properties:
+        bytes_received:
+          type: integer
+        bytes_sent:
+          type: integer
+    ContainerMetrics:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        pid:
+          type: integer
+        processes:
+          type: integer
+        cpu:
+          $ref: "#/components/schemas/ContainerCpu"
+        memory:
+          $ref: "#/components/schemas/ContainerMemory"
+        disk:
+          $ref: "#/components/schemas/ContainerDisk"
+        network:
+          $ref: "#/components/schemas/ContainerNetwork"
+        alerts:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonitoringAlert"
+    MonitoringThresholds:
+      type: object
+      properties:
+        memory_percent:
+          type: number
+        disk_percent:
+          type: number
+        load_per_cpu:
+          type: number
+    ContainerMonitoringThresholds:
+      type: object
+      properties:
+        memory_percent:
+          type: number
+        memory_absolute_bytes:
+          type: integer
+        disk_percent:
+          type: number
+        disk_absolute_bytes:
+          type: integer
+        process_count:
+          type: integer
+    MonitoringSnapshot:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        host:
+          $ref: "#/components/schemas/HostMetrics"
+        containers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContainerMetrics"
+        alerts:
+          type: object
+          properties:
+            host:
+              type: array
+              items:
+                $ref: "#/components/schemas/MonitoringAlert"
+            containers:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MonitoringAlert"
+        thresholds:
+          type: object
+          properties:
+            host:
+              $ref: "#/components/schemas/MonitoringThresholds"
+            containers:
+              $ref: "#/components/schemas/ContainerMonitoringThresholds"
     ContainerCreate:
       type: object
       required: [name]

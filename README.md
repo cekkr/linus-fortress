@@ -23,6 +23,21 @@ All endpoints require either `X-API-Key` or `X-User-Token`. Permissions listed b
 - No body or query params; returns `{status, ram, disk, containers}` strings straight from `free`, `df`, and `lxc list`.
 - Example: `fortress-cli status`
 
+#### `GET /monitoring/resources` (permission `read_status`)
+- Optional query params to tune alerting thresholds: `host_memory_threshold` (default `90`), `host_disk_threshold` (`90`), `host_load_threshold` (`1.5` 1m load per CPU), `container_memory_threshold` (`85`), `container_disk_threshold` (`85`), `container_process_threshold` (`300`), `container_memory_absolute_mb` (`1024`), `container_disk_absolute_gb` (`5`).
+- Returns structured host+container metrics with `alerts` and the thresholds applied, e.g.:
+```json
+{
+  "timestamp": "2024-02-11T10:22:33Z",
+  "host": {"memory": {"used_percent": 73.2}, "cpu": {"per_cpu_load_1m": 0.34}, "disk": {"used_percent": 61.8}, "alerts": []},
+  "containers": [
+    {"name": "web01", "memory": {"used_percent": 81.5}, "disk": {"used_percent": 62.1}, "processes": 44, "alerts": []}
+  ],
+  "alerts": {"host": [], "containers": {}}
+}
+```
+- Designed for automation: anomalous usage (memory/disk saturation, runaway processes, high host load) surfaces in `alerts` so malware-like spikes can be intercepted by downstream tooling.
+
 #### `POST /routing/add` (permission `manage_routing`, container scoped)
 Body:
 ```json

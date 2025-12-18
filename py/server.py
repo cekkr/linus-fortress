@@ -36,6 +36,11 @@ from fortress.recipes import (
     normalize_parameters,
 )
 from fortress.system import run_command
+from fortress.monitoring import (
+    DEFAULT_CONTAINER_THRESHOLDS,
+    DEFAULT_HOST_THRESHOLDS,
+    gather_resource_snapshot,
+)
 
 # --- CONFIGURATION ---
 # In production, load these from environment variables
@@ -282,6 +287,40 @@ def system_status(x_api_key: Optional[str] = Header(default=None), x_user_token:
         "disk_head": disk.splitlines()[0] if disk else ""
     })
     return {"status": "operational", "ram": ram, "disk": disk, "containers": containers}
+
+@app.get("/monitoring/resources")
+def monitoring_resources(
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+    host_memory_threshold: float = DEFAULT_HOST_THRESHOLDS["memory_percent"],
+    host_disk_threshold: float = DEFAULT_HOST_THRESHOLDS["disk_percent"],
+    host_load_threshold: float = DEFAULT_HOST_THRESHOLDS["load_per_cpu"],
+    container_memory_threshold: float = DEFAULT_CONTAINER_THRESHOLDS["memory_percent"],
+    container_disk_threshold: float = DEFAULT_CONTAINER_THRESHOLDS["disk_percent"],
+    container_process_threshold: int = DEFAULT_CONTAINER_THRESHOLDS["process_count"],
+    container_memory_absolute_mb: int = int(DEFAULT_CONTAINER_THRESHOLDS["memory_absolute_bytes"] / (1024 * 1024)),
+    container_disk_absolute_gb: int = int(DEFAULT_CONTAINER_THRESHOLDS["disk_absolute_bytes"] / (1024 * 1024 * 1024)),
+):
+    authorize("monitoring_resources", "read_status", x_api_key, x_user_token)
+    host_thresholds = {
+        "memory_percent": host_memory_threshold,
+        "disk_percent": host_disk_threshold,
+        "load_per_cpu": host_load_threshold,
+    }
+    container_thresholds = {
+        "memory_percent": container_memory_threshold,
+        "disk_percent": container_disk_threshold,
+        "process_count": container_process_threshold,
+        "memory_absolute_bytes": max(container_memory_absolute_mb, 0) * 1024 * 1024,
+        "disk_absolute_bytes": max(container_disk_absolute_gb, 0) * 1024 * 1024 * 1024,
+    }
+    snapshot = gather_resource_snapshot(host_thresholds, container_thresholds)
+    alert_summary = {
+        "host_alerts": len(snapshot.get("alerts", {}).get("host", [])),
+        "containers": {name: len(alerts) for name, alerts in snapshot.get("alerts", {}).get("containers", {}).items()},
+    }
+    audit_api("monitoring_resources", details=alert_summary)
+    return snapshot
 
 @app.post("/routing/add")
 def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):

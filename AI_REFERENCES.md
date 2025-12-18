@@ -2,9 +2,11 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 
 ## Project status
 - py/server.py contains the main central server with APIs and now includes the containers router
+- py/fortress/monitoring.py centralizes host/container resource snapshots with alert thresholds
 - Container lifecycle/access/connectivity APIs are implemented in `py/fortress/api/containers.py` with LXC helpers in `py/fortress/containers.py`
 - `py/fortress/system.py` owns the shared `run_command` helper used by server and container management
 - py/server.py also manages host/container package operations (apt + dnf) and firewall rules (ufw + firewalld)
+- `/monitoring/resources` exposes structured host+container metrics plus alert flags for automation against anomalous usage/malware-like spikes
 - Master API key is optional (set via `FORTRESS_API_KEY`/`API_SECRET_KEY`) and should be disabled after bootstrap; delegated tokens are preferred long-term
 - New recipe automation endpoints (`/recipes`, `/recipes/{name}`, `/recipes/apply`) allow "nix-like" install blueprints with dependencies, packages, and commands (templated with `{{param}}`), stored in `/var/lib/fortress/recipes.json`
 - A new fortress.audit module powers the SQLite-based command register that captures all API activity plus container exec behaviour for investigation
@@ -26,6 +28,7 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 |       |-- __init__.py
 |       |-- audit.py
 |       |-- containers.py
+|       |-- monitoring.py
 |       |-- recipes.py
 |       |-- system.py
 |       `-- api
@@ -37,11 +40,12 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 
 ## HTTP API map (code ownership)
 - `py/fortress/api/containers.py`: `/container/create`, `/container/{name}`, `/access/external/*`, `/container/users/*`, `/container/groups`, `/containers/connect/*`
-- `py/server.py`: `/status`, `/routing/add`, `/api-users*`, `/firewall/*`, `/packages/*`, `/recipes*`, `/backup/*`, `/restore`
+- `py/server.py`: `/status`, `/monitoring/resources`, `/routing/add`, `/api-users*`, `/firewall/*`, `/packages/*`, `/recipes*`, `/backup/*`, `/restore`
 - `api-v1.yaml`: canonical OpenAPI reference; README.md mirrors route summaries and permissions
 
 ## Roadmap for AI
 - Short term: extract auth/token utilities + storage helpers into `py/fortress/auth.py` and `py/fortress/storage.py` to keep py/server.py lean
 - Short term: add unit tests for container scope enforcement and audit logging (mock LXC subprocess calls)
+- Short term: add persistence/baseline tracking for monitoring to surface rate-based anomalies (CPU deltas, network spikes)
 - Mid term: add integration tests for core API flows and permission matrix
 - Mid term: recipe export/import bundles with semantic versioning and change history
