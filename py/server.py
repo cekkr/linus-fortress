@@ -134,11 +134,11 @@ def mask_token(token: str) -> str:
         return ""
     if len(token) <= 8:
         return "***"
-    return f\"{token[:4]}...{token[-4:]}\"
+    return f"{token[:4]}...{token[-4:]}"
 
 def authorize(endpoint: str, required_permission: Optional[str], x_api_key: Optional[str], x_user_token: Optional[str], containers: Optional[Union[str, List[str]]] = None):
     auth_context = verify_token(x_api_key, x_user_token, required_permission=required_permission)
-    set_request_context(auth_context.get(\"actor\", \"system\"), endpoint)
+    set_request_context(auth_context.get("actor", "system"), endpoint)
     if containers:
         if isinstance(containers, str):
             enforce_container_scope(auth_context, containers)
