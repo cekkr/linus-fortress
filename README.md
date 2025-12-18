@@ -4,9 +4,12 @@ Linus' Fortress is a FastAPI service that centralizes automation for LXD-based V
 
 ## Authentication
 
-- `X-API-Key`: master key with unrestricted access (set `API_SECRET_KEY` in `py/server.py` or better via env vars).
-- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `read_status`) and optional `allowed_containers` scope.
+- `X-API-Key`: optional centralized master key with unrestricted access, best used only during bootstrap (set `FORTRESS_API_KEY` or `API_SECRET_KEY`). Disable it long-term to reduce blast radius.
+- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`) and optional `allowed_containers` scope.
 - Either header grants access; if both are provided the master key takes precedence. Tokens scoped to containers must match the container(s) referenced by the request payload.
+
+Once bootstrap tokens are created, unset `FORTRESS_API_KEY` (or keep the default placeholder) to disable the centralized key and reduce long-term risk.
+If `FORTRESS_API_KEY` is unset or left as the default placeholder, `X-API-Key` authentication is disabled.
 
 ## API Reference
 
@@ -172,6 +175,57 @@ Common body:
 #### `POST /packages/update`
 - Body: `{"container_name": "web01", "full_upgrade": true}` – both fields optional (`full_upgrade` default `false`).
 
+### Recipes & Automation (permissions `recipes_manage` and `recipes_apply`)
+
+Recipes are "nix-like" automation blueprints stored in `/var/lib/fortress/recipes.json`. Each recipe can install packages, run commands, and depend on other recipes. Command strings and package names support `{{param}}` placeholders resolved from the supplied parameters.
+
+#### `GET /recipes` (permission `recipes_manage`)
+- Lists available recipes with dependency counts and parameter keys.
+
+#### `POST /recipes` (permission `recipes_manage`)
+Body:
+```json
+{
+  "name": "base-python",
+  "description": "Install python runtime",
+  "packages": ["python3", "python3-pip"],
+  "commands": ["python3 --version"],
+  "parameters": {},
+  "required_parameters": []
+}
+```
+
+#### `PUT /recipes/{name}` (permission `recipes_manage`)
+- Updates the recipe fields you provide; send empty arrays to clear lists.
+
+#### `DELETE /recipes/{name}` (permission `recipes_manage`)
+- Removes a recipe unless other recipes still depend on it.
+
+#### `POST /recipes/apply` (permission `recipes_apply`, scoped if `container_name` set)
+Body:
+```json
+{
+  "recipe_name": "app-bootstrap",
+  "container_name": "web01",
+  "parameters": {"app_user": "deploy"},
+  "include_dependencies": true,
+  "update_index": true
+}
+```
+- Applies dependencies first, then installs packages and runs commands for each recipe in order.
+- Use `{{app_user}}` inside commands/packages to parameterize installs.
+
+Example dependency recipe:
+```json
+{
+  "name": "app-bootstrap",
+  "dependencies": ["base-python"],
+  "commands": ["useradd -m {{app_user}}", "mkdir -p /srv/{{app_user}}"],
+  "parameters": {"app_user": "deploy"},
+  "required_parameters": ["app_user"]
+}
+```
+
 ### Backup & Restore
 
 #### `POST /backup/{container_name}` (permission `manage_backups`, scoped)
@@ -194,7 +248,8 @@ Common body:
 ## Deployment Notes
 
 - Server listens via uvicorn (`HOST_INTERFACE`, `HOST_PORT`). For production, terminate TLS via web server or provide `ssl_keyfile`/`ssl_certfile`.
-- Set filesystem paths (`BACKUP_DIR`, `NGINX_CONFIG_DIR`, `API_USERS_DB`, `SHARED_STORAGE_DIR`) to match your host.
+- Set filesystem paths (`BACKUP_DIR`, `NGINX_CONFIG_DIR`, `API_USERS_DB`, `RECIPES_DB`, `SHARED_STORAGE_DIR`) to match your host.
+- Configure secrets via env vars (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`) instead of hardcoding defaults.
 - Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), and package commands (`apt-get` or `dnf`).
 
 ## Client CLI (`fortress-cli.py`)
@@ -214,4 +269,5 @@ By default TLS certificates are verified; pass `--insecure` during `setup` only 
 ## Roadmap
 
 - Split `py/server.py` into modular packages (auth, containers, storage) for maintainability.
+- Extend recipe automation with versioning, export/import bundles, and CLI helpers.
 - Add automated tests or contract tests for each API route.

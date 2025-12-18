@@ -467,6 +467,134 @@ paths:
                     type: string
                   full_upgrade:
                     type: boolean
+  /recipes:
+    get:
+      summary: List available automation recipes
+      tags: [Recipes]
+      responses:
+        "200":
+          description: Recipe summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recipes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RecipeSummary"
+    post:
+      summary: Create a new automation recipe
+      tags: [Recipes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecipeDefinition"
+      responses:
+        "200":
+          description: Creation acknowledgement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  recipe:
+                    $ref: "#/components/schemas/RecipeDefinition"
+  /recipes/{name}:
+    get:
+      summary: Retrieve a recipe by name
+      tags: [Recipes]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Recipe details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recipe:
+                    $ref: "#/components/schemas/RecipeDefinition"
+    put:
+      summary: Update an existing recipe
+      tags: [Recipes]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecipeUpdate"
+      responses:
+        "200":
+          description: Update acknowledgement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  recipe:
+                    $ref: "#/components/schemas/RecipeDefinition"
+    delete:
+      summary: Delete a recipe
+      tags: [Recipes]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deletion acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /recipes/apply:
+    post:
+      summary: Apply a recipe (and optional dependencies) to host or container
+      tags: [Recipes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecipeApplyRequest"
+      responses:
+        "200":
+          description: Apply result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  recipe:
+                    type: string
+                  applied:
+                    type: array
+                    items:
+                      type: string
+                  container:
+                    type: string
   /backup/{container_name}:
     post:
       summary: Trigger encrypted LXD backup
@@ -850,3 +978,95 @@ components:
         full_upgrade:
           type: boolean
           default: false
+    RecipeDefinition:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        dependencies:
+          type: array
+          items:
+            type: string
+        packages:
+          type: array
+          items:
+            type: string
+        commands:
+          type: array
+          items:
+            type: string
+        parameters:
+          type: object
+          additionalProperties:
+            type: string
+        required_parameters:
+          type: array
+          items:
+            type: string
+    RecipeUpdate:
+      type: object
+      properties:
+        description:
+          type: string
+        dependencies:
+          type: array
+          items:
+            type: string
+        packages:
+          type: array
+          items:
+            type: string
+        commands:
+          type: array
+          items:
+            type: string
+        parameters:
+          type: object
+          additionalProperties:
+            type: string
+        required_parameters:
+          type: array
+          items:
+            type: string
+    RecipeApplyRequest:
+      type: object
+      required:
+        - recipe_name
+      properties:
+        recipe_name:
+          type: string
+        container_name:
+          type: string
+        parameters:
+          type: object
+          additionalProperties:
+            type: string
+        include_dependencies:
+          type: boolean
+          default: true
+        update_index:
+          type: boolean
+          default: true
+    RecipeSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        dependencies:
+          type: array
+          items:
+            type: string
+        packages_count:
+          type: integer
+        commands_count:
+          type: integer
+        parameter_keys:
+          type: array
+          items:
+            type: string

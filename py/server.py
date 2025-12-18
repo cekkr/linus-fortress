@@ -16,24 +16,50 @@ import shlex
 from contextvars import ContextVar
 
 from fortress.audit import CommandLogger
+from fortress.recipes import (
+    RecipeDefinition,
+    RecipeUpdate,
+    RecipeApplyRequest,
+    load_recipes,
+    save_recipes,
+    resolve_recipe_plan,
+    merge_parameters,
+    render_template,
+    validate_recipe_name,
+    normalize_parameters,
+)
 
 # --- CONFIGURATION ---
 # In production, load these from environment variables
-API_SECRET_KEY = "CHANGE_THIS_TO_A_VERY_LONG_RANDOM_STRING" 
-BACKUP_ENCRYPTION_PASSWORD = "CHANGE_THIS_TO_YOUR_STRONG_BACKUP_PASSWORD"
+DEFAULT_API_SECRET = "CHANGE_THIS_TO_A_VERY_LONG_RANDOM_STRING"
+API_SECRET_KEY = os.environ.get("FORTRESS_API_KEY", os.environ.get("API_SECRET_KEY", DEFAULT_API_SECRET))
+BACKUP_ENCRYPTION_PASSWORD = os.environ.get("FORTRESS_BACKUP_PASSWORD", "CHANGE_THIS_TO_YOUR_STRONG_BACKUP_PASSWORD")
 HOST_INTERFACE = "0.0.0.0"
 HOST_PORT = 8443
 BACKUP_DIR = "/var/lib/fortress/backups"
 NGINX_CONFIG_DIR = "/etc/nginx/sites-available"
 API_USERS_DB = "/var/lib/fortress/api_users.json"
+RECIPES_DB = "/var/lib/fortress/recipes.json"
 SHARED_STORAGE_DIR = "/var/lib/fortress/shares"
 COMMAND_LOG_DB = "/var/lib/fortress/command_log.db"
 SERVICE_DEFAULT_PORTS = {"ssh": 22, "ftp": 21}
 SENSITIVE_KEYWORDS = {"password", "passwd", "secret", "token", "key", "chpasswd"}
 
+def resolve_master_key() -> Optional[str]:
+    if not API_SECRET_KEY:
+        return None
+    key = API_SECRET_KEY.strip()
+    if not key or key == DEFAULT_API_SECRET:
+        return None
+    return key
+
 # Logging setup
 logging.basicConfig(filename='/var/log/fortress.log', level=logging.INFO, 
                     format='%(asctime)s %(levelname)s: %(message)s')
+
+MASTER_API_KEY = resolve_master_key()
+if MASTER_API_KEY is None:
+    logging.warning("Master API key disabled or defaulted; only delegated tokens accepted.")
 
 app = FastAPI(title="VPS Fortress Manager")
 REQUEST_CONTEXT = ContextVar("REQUEST_CONTEXT", default={"actor": "system", "endpoint": "internal"})
@@ -76,6 +102,18 @@ def sanitize_payload(payload: Dict[str, Any], sensitive_keys: Optional[List[str]
     redacted = {}
     for key, value in payload.items():
         redacted[key] = "***" if key in sensitive else value
+    return redacted
+
+def sanitize_payload_fuzzy(payload: Dict[str, Any], sensitive_keywords: Optional[set[str]] = None) -> Dict[str, Any]:
+    if not payload:
+        return {}
+    keywords = set(sensitive_keywords or [])
+    redacted = {}
+    for key, value in payload.items():
+        if any(keyword in key.lower() for keyword in keywords):
+            redacted[key] = "***"
+        else:
+            redacted[key] = value
     return redacted
 
 def mask_token(token: str) -> str:
@@ -127,7 +165,7 @@ def save_api_users(users: Dict[str, Dict]):
 
 def verify_token(x_api_key: Optional[str], x_user_token: Optional[str] = None, required_permission: Optional[str] = None):
     """Validate access either via master API key or delegated user token."""
-    if x_api_key and x_api_key == API_SECRET_KEY:
+    if MASTER_API_KEY and x_api_key and x_api_key == MASTER_API_KEY:
         return {"actor": "admin", "permissions": ["*"], "allowed_containers": None}
 
     if x_user_token:
@@ -761,6 +799,179 @@ def update_packages(request: PackageUpdateRequest, x_api_key: Optional[str] = He
         audit_api("packages_update", target=request.container_name or "host", details={"error": str(exc)}, status="error")
         raise
     return {"message": "Package update completed", "full_upgrade": request.full_upgrade}
+
+# --- RECIPE AUTOMATION ---
+
+def _load_recipe_store() -> Dict[str, Dict[str, Any]]:
+    return load_recipes(RECIPES_DB)
+
+def _ensure_recipe_dependencies(recipes: Dict[str, Dict[str, Any]], dependencies: List[str], recipe_name: str):
+    for dep in dependencies:
+        if dep == recipe_name:
+            raise HTTPException(status_code=400, detail="Recipe cannot depend on itself")
+        if dep not in recipes:
+            raise HTTPException(status_code=400, detail=f"Missing recipe dependency: {dep}")
+
+@app.get("/recipes")
+def list_recipes(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_list", "recipes_manage", x_api_key, x_user_token)
+    recipes = _load_recipe_store()
+    response = []
+    for name, recipe in sorted(recipes.items()):
+        response.append({
+            "name": name,
+            "description": recipe.get("description"),
+            "dependencies": recipe.get("dependencies", []),
+            "packages_count": len(recipe.get("packages", [])),
+            "commands_count": len(recipe.get("commands", [])),
+            "parameter_keys": sorted(recipe.get("parameters", {}).keys()),
+        })
+    audit_api("recipes_list", details={"count": len(response)})
+    return {"recipes": response}
+
+@app.get("/recipes/{name}")
+def get_recipe(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_get", "recipes_manage", x_api_key, x_user_token)
+    recipes = _load_recipe_store()
+    recipe = recipes.get(name)
+    if not recipe:
+        audit_api("recipes_get", target=name, details={"error": "not found"}, status="error")
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    audit_api("recipes_get", target=name)
+    return {"recipe": recipe}
+
+@app.post("/recipes")
+def create_recipe(recipe: RecipeDefinition, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_create", "recipes_manage", x_api_key, x_user_token)
+    try:
+        validate_recipe_name(recipe.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    recipes = _load_recipe_store()
+    if recipe.name in recipes:
+        raise HTTPException(status_code=409, detail="Recipe already exists")
+    _ensure_recipe_dependencies(recipes, recipe.dependencies, recipe.name)
+    recipes[recipe.name] = recipe.dict()
+    save_recipes(RECIPES_DB, recipes)
+    audit_api(
+        "recipes_create",
+        target=recipe.name,
+        details={
+            "dependencies": recipe.dependencies,
+            "packages": len(recipe.packages),
+            "commands": len(recipe.commands),
+            "parameter_keys": sorted(recipe.parameters.keys()),
+            "required_parameters": recipe.required_parameters,
+        },
+    )
+    return {"message": f"Recipe {recipe.name} created", "recipe": recipes[recipe.name]}
+
+@app.put("/recipes/{name}")
+def update_recipe(name: str, payload: RecipeUpdate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_update", "recipes_manage", x_api_key, x_user_token)
+    recipes = _load_recipe_store()
+    if name not in recipes:
+        audit_api("recipes_update", target=name, details={"error": "not found"}, status="error")
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    update_data = payload.dict(exclude_unset=True, exclude_none=True)
+    if "dependencies" in update_data:
+        _ensure_recipe_dependencies(recipes, update_data["dependencies"], name)
+    updated = dict(recipes[name])
+    updated.update(update_data)
+    updated["name"] = name
+    staged = dict(recipes)
+    staged[name] = updated
+    try:
+        resolve_recipe_plan(name, staged, include_dependencies=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    recipes[name] = updated
+    save_recipes(RECIPES_DB, recipes)
+    audit_api("recipes_update", target=name, details={"fields": sorted(update_data.keys())})
+    return {"message": f"Recipe {name} updated", "recipe": recipes[name]}
+
+@app.delete("/recipes/{name}")
+def delete_recipe(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_delete", "recipes_manage", x_api_key, x_user_token)
+    recipes = _load_recipe_store()
+    if name not in recipes:
+        audit_api("recipes_delete", target=name, details={"error": "not found"}, status="error")
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    dependents = [recipe_name for recipe_name, record in recipes.items() if name in record.get("dependencies", [])]
+    if dependents:
+        raise HTTPException(status_code=409, detail=f"Recipe is required by: {', '.join(sorted(dependents))}")
+    recipes.pop(name)
+    save_recipes(RECIPES_DB, recipes)
+    audit_api("recipes_delete", target=name)
+    return {"message": f"Recipe {name} removed"}
+
+@app.post("/recipes/apply")
+def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_apply", "recipes_apply", x_api_key, x_user_token, containers=payload.container_name)
+    recipes = _load_recipe_store()
+    if payload.recipe_name not in recipes:
+        audit_api("recipes_apply", target=payload.container_name or "host", details={"error": "recipe not found"}, status="error")
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    try:
+        plan = resolve_recipe_plan(payload.recipe_name, recipes, include_dependencies=payload.include_dependencies)
+    except ValueError as exc:
+        audit_api("recipes_apply", target=payload.container_name or "host", details={"error": str(exc)}, status="error")
+        raise HTTPException(status_code=400, detail=str(exc))
+    overrides = normalize_parameters(payload.parameters)
+    audit_api(
+        "recipes_apply",
+        target=payload.container_name or "host",
+        details={
+            "recipe": payload.recipe_name,
+            "plan": plan,
+            "parameters": sanitize_payload_fuzzy(overrides, SENSITIVE_KEYWORDS),
+        },
+    )
+    manager = None
+    index_updated = False
+    installed_packages: set[str] = set()
+    applied: List[str] = []
+    for recipe_name in plan:
+        recipe = recipes.get(recipe_name, {})
+        try:
+            params = merge_parameters(recipe.get("parameters", {}), overrides, recipe.get("required_parameters", []))
+        except ValueError as exc:
+            audit_api("recipes_apply", target=payload.container_name or "host", details={"recipe": recipe_name, "error": str(exc)}, status="error")
+            raise HTTPException(status_code=400, detail=str(exc))
+        packages = []
+        for package in recipe.get("packages", []):
+            try:
+                rendered = render_template(package, params, recipe_name)
+            except ValueError as exc:
+                audit_api("recipes_apply", target=payload.container_name or "host", details={"recipe": recipe_name, "error": str(exc)}, status="error")
+                raise HTTPException(status_code=400, detail=str(exc))
+            if rendered and rendered not in installed_packages:
+                packages.append(rendered)
+        if packages:
+            if manager is None:
+                manager = detect_package_manager(payload.container_name)
+            if payload.update_index and not index_updated:
+                update_package_index(manager, payload.container_name)
+                index_updated = True
+            if manager == "apt":
+                cmd = ["apt-get", "install", "-y"] + packages
+            else:
+                cmd = ["dnf", "install", "-y"] + packages
+            run_package_command(cmd, payload.container_name)
+            installed_packages.update(packages)
+        for command in recipe.get("commands", []):
+            try:
+                rendered_command = render_template(command, params, recipe_name)
+            except ValueError as exc:
+                audit_api("recipes_apply", target=payload.container_name or "host", details={"recipe": recipe_name, "error": str(exc)}, status="error")
+                raise HTTPException(status_code=400, detail=str(exc))
+            if payload.container_name:
+                exec_in_container(payload.container_name, ["sh", "-c", rendered_command])
+            else:
+                run_command(["sh", "-c", rendered_command])
+        applied.append(recipe_name)
+    audit_api("recipes_apply_complete", target=payload.container_name or "host", details={"recipe": payload.recipe_name, "applied": applied})
+    return {"message": "Recipe applied", "recipe": payload.recipe_name, "applied": applied, "container": payload.container_name}
 
 # --- ENCRYPTED BACKUP SYSTEM ---
 
