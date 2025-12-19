@@ -23,6 +23,7 @@ from fortress.containers import (
     get_container_ip,
     run_package_command,
     update_package_index,
+    validate_port,
 )
 from fortress.recipes import (
     RecipeDefinition,
@@ -244,6 +245,9 @@ class DomainRoute(BaseModel):
     domain: str
     container_name: str
     container_port: int = 80
+    container_interface: str = "eth0"
+    listen_address: str = "0.0.0.0"
+    listen_port: int = 80
 
 class APIUserCreate(BaseModel):
     username: str
@@ -325,14 +329,18 @@ def monitoring_resources(
 @app.post("/routing/add")
 def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("routing_add", "manage_routing", x_api_key, x_user_token, containers=route.container_name)
-    
-    # 1. Get Container IP
-    ip = get_container_ip(route.container_name)
 
-    # 2. Generate Nginx Config
+    validate_port(route.container_port, "container_port")
+    validate_port(route.listen_port, "listen_port")
+
+    # 1. Get Container IP on the requested interface
+    ip = get_container_ip(route.container_name, route.container_interface)
+
+    # 2. Generate Nginx Config restricted to the listen address/port
+    listen_directive = f"{route.listen_address}:{route.listen_port}"
     config_content = f"""
 server {{
-    listen 80;
+    listen {listen_directive};
     server_name {route.domain};
 
     location / {{
@@ -340,11 +348,13 @@ server {{
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }}
 }}
     """
     
     config_path = f"{NGINX_CONFIG_DIR}/{route.domain}"
+    os.makedirs(NGINX_CONFIG_DIR, exist_ok=True)
     with open(config_path, "w") as f:
         f.write(config_content)
     
@@ -356,10 +366,28 @@ server {{
         
         # Optional: Auto-certbot could be triggered here
         
-        audit_api("routing_add", target=route.domain, details={"container": route.container_name, "port": route.container_port})
+        audit_api(
+            "routing_add",
+            target=route.domain,
+            details={
+                "container": route.container_name,
+                "port": route.container_port,
+                "listen": f"{route.listen_address}:{route.listen_port}",
+                "interface": route.container_interface,
+            },
+        )
         return {"message": f"Routing set for {route.domain} -> {ip}"}
     except Exception as e:
-        audit_api("routing_add", target=route.domain, details={"error": str(e)}, status="error")
+        audit_api(
+            "routing_add",
+            target=route.domain,
+            details={
+                "container": route.container_name,
+                "listen": f"{route.listen_address}:{route.listen_port}",
+                "error": str(e),
+            },
+            status="error",
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- API USER MANAGEMENT ---

@@ -25,7 +25,8 @@ class ExternalAccessRule(BaseModel):
     host_port: Optional[int] = None
     connect_port: Optional[int] = None
     bind_address: str = "0.0.0.0"
-    connect_address: str = "127.0.0.1"
+    connect_address: Optional[str] = None
+    connect_interface: Optional[str] = None
     device_name: Optional[str] = None
 
 
@@ -73,6 +74,8 @@ class ContainerLinkRequest(BaseModel):
     target_port: int
     bind_address: str = "0.0.0.0"
     protocol: Literal["tcp", "udp"] = "tcp"
+    target_interface: Optional[str] = None
+    target_address: Optional[str] = None
     device_name: Optional[str] = None
 
 
@@ -155,12 +158,19 @@ def build_container_router(
                 connect_port=rule.connect_port,
                 bind_address=rule.bind_address,
                 connect_address=rule.connect_address,
+                connect_interface=rule.connect_interface,
                 device_name=rule.device_name,
             )
             audit_api(
                 "external_access_open",
                 target=rule.container_name,
-                details={"service": rule.service, "device": result["device_name"], "host_port": result["host_port"]},
+                details={
+                    "service": rule.service,
+                    "device": result["device_name"],
+                    "host_port": result["host_port"],
+                    "bind_address": rule.bind_address,
+                    "connect_interface": rule.connect_interface,
+                },
             )
         except Exception as exc:
             audit_api("external_access_open", target=rule.container_name, details={"error": str(exc)}, status="error")
@@ -345,6 +355,8 @@ def build_container_router(
                 payload.target_port,
                 payload.bind_address,
                 payload.protocol,
+                payload.target_interface,
+                payload.target_address,
                 payload.device_name,
             )
             audit_api(
@@ -354,6 +366,9 @@ def build_container_router(
                     "device": device_name,
                     "target": payload.target_container,
                     "listen_port": payload.listen_port,
+                    "target_port": payload.target_port,
+                    "target_interface": payload.target_interface,
+                    "target_address": payload.target_address,
                 },
             )
         except Exception as exc:

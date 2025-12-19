@@ -44,13 +44,18 @@ Body:
 {
   "domain": "app.example.com",
   "container_name": "web01",
-  "container_port": 80
+  "container_port": 8080,
+  "container_interface": "eth0",
+  "listen_address": "192.0.2.10",
+  "listen_port": 8080
 }
 ```
 - `domain` (string, required)
 - `container_name` (string, required)
-- `container_port` (int, optional, default `80`)
-- Creates an nginx vhost that proxies to the container IP+port and reloads nginx.
+- `container_port` (int, optional, default `80`) – target port inside the container.
+- `container_interface` (string, optional, default `eth0`) – which container NIC to resolve for upstream traffic.
+- `listen_address` / `listen_port` (optional, default `0.0.0.0:80`) – bind nginx to a specific host interface/port.
+- Creates an nginx vhost that proxies to the container IP+port and reloads nginx. Useful for dual-homed hosts or segmented container networks.
 
 ### Container Lifecycle
 
@@ -101,10 +106,12 @@ Body:
   "connect_port": 22,
   "bind_address": "0.0.0.0",
   "connect_address": "127.0.0.1",
+  "connect_interface": "eth1",
   "device_name": "optional-custom-name"
 }
 ```
 - `service` is `ssh` or `ftp` and chooses default ports if `host_port`/`connect_port` unset.
+- `connect_interface` (optional) resolves the container IP on that NIC instead of providing `connect_address` manually.
 - Returns the actual device name created on the container.
 
 #### `POST /access/external/close` (permission `access_control`)
@@ -142,9 +149,12 @@ Body requires `container_name` plus either:
   "target_port": 5432,
   "bind_address": "0.0.0.0",
   "protocol": "tcp",
+  "target_interface": "eth1",
+  "target_address": "10.10.0.25",
   "device_name": "optional-custom"
 }
 ```
+- Either `target_address` (explicit IP) or `target_interface` (default `eth0`) is used to pick the upstream IP when connecting to the target container.
 - Automatically resolves `target_container` IP and adds an LXD proxy device; returns `device_name`.
 
 #### `POST /containers/connect/tcp/remove`

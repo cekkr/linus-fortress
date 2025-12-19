@@ -14,6 +14,7 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 - fortress-cli.py now includes `recipes list|create|apply` helpers in addition to status/api-users/package/backup calls
 - Unit tests in `tests/test_recipes.py` cover recipe dependency resolution and apply planning
 - api-v1.yaml documents the HTTP contract (OpenAPI 3.0.3) and README.md lists request bodies/permissions for each endpoint
+- Domain routing and LXD proxy helpers now support choosing container interfaces, explicit upstream addresses, and host listen ports/addresses for finer TCP/IP exposure control between containers and the host
 
 ## Project structure (tree)
 ```

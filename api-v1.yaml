@@ -956,6 +956,15 @@ components:
         container_port:
           type: integer
           default: 80
+        container_interface:
+          type: string
+          default: eth0
+        listen_address:
+          type: string
+          default: 0.0.0.0
+        listen_port:
+          type: integer
+          default: 80
     APIUserCreate:
       type: object
       required: [username]
@@ -1022,7 +1031,8 @@ components:
           default: 0.0.0.0
         connect_address:
           type: string
-          default: 127.0.0.1
+        connect_interface:
+          type: string
         device_name:
           type: string
     ExternalAccessCloseRequest:
@@ -1129,6 +1139,10 @@ components:
           type: string
           enum: [tcp, udp]
           default: tcp
+        target_interface:
+          type: string
+        target_address:
+          type: string
         device_name:
           type: string
     ContainerLinkRemoval:

@@ -12,6 +12,8 @@ from fortress.system import run_command
 
 SERVICE_DEFAULT_PORTS = {"ssh": 22, "ftp": 21}
 SENSITIVE_KEYWORDS = {"password", "passwd", "secret", "token", "key", "chpasswd"}
+MAX_PORT = 65535
+MIN_PORT = 1
 
 AuditCallback = Callable[[str, str, Optional[str], Optional[Dict[str, Any]], str], None]
 _AUDIT_CALLBACK: Optional[AuditCallback] = None
@@ -60,6 +62,12 @@ def get_container_ip(container_name: str, interface: str = "eth0") -> str:
         return info[0]["state"]["network"][interface]["addresses"][0]["address"]
     except (IndexError, KeyError):
         raise HTTPException(status_code=404, detail="Container IP not found. Is it running?")
+
+
+def validate_port(port: int, field: str) -> None:
+    """Ensure port numbers are sane before configuring LXD proxy devices."""
+    if port < MIN_PORT or port > MAX_PORT:
+        raise HTTPException(status_code=400, detail=f"{field} must be between {MIN_PORT}-{MAX_PORT}")
 
 
 def exec_in_container(container_name: str, command: List[str]) -> str:
@@ -157,15 +165,21 @@ def open_external_access(
     host_port: Optional[int],
     connect_port: Optional[int],
     bind_address: str,
-    connect_address: str,
+    connect_address: Optional[str],
+    connect_interface: Optional[str],
     device_name: Optional[str],
 ) -> Dict[str, Any]:
     service_port = SERVICE_DEFAULT_PORTS[service]
     actual_host_port = host_port or service_port
     actual_connect_port = connect_port or service_port
+    validate_port(actual_host_port, "host_port")
+    validate_port(actual_connect_port, "connect_port")
+    if connect_interface:
+        connect_address = get_container_ip(container_name, connect_interface)
+    connect_addr = connect_address or "127.0.0.1"
     resolved_device = resolve_device_name(service, actual_host_port, device_name)
     listen_arg = f"listen=tcp:{bind_address}:{actual_host_port}"
-    connect_arg = f"connect=tcp:{connect_address}:{actual_connect_port}"
+    connect_arg = f"connect=tcp:{connect_addr}:{actual_connect_port}"
     add_proxy_device(container_name, resolved_device, listen_arg, connect_arg)
     return {
         "device_name": resolved_device,
@@ -181,9 +195,13 @@ def connect_containers_network(
     target_port: int,
     bind_address: str,
     protocol: str,
+    target_interface: Optional[str],
+    target_address: Optional[str],
     device_name: Optional[str],
 ) -> str:
-    target_ip = get_container_ip(target_container)
+    validate_port(listen_port, "listen_port")
+    validate_port(target_port, "target_port")
+    target_ip = target_address or get_container_ip(target_container, target_interface or "eth0")
     resolved_device = device_name or f"link-{target_container}-{listen_port}"
     listen = f"listen={protocol}:{bind_address}:{listen_port}"
     connect = f"connect={protocol}:{target_ip}:{target_port}"
