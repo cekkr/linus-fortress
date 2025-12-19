@@ -377,6 +377,54 @@ paths:
                     type: string
                   device_name:
                     type: string
+  /containers/expose:
+    post:
+      summary: Expose host ports/interfaces to a container (with optional firewall allowlist)
+      tags: [Connectivity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MultiInterfaceExposeRequest"
+      responses:
+        "200":
+          description: Exposure result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  devices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        device_name:
+                          type: string
+                        host_port:
+                          type: integer
+                        connect_port:
+                          type: integer
+                        target_ip:
+                          type: string
+                        protocol:
+                          type: string
+                        bind_address:
+                          type: string
+                  firewall_rules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        port:
+                          type: integer
+                        protocol:
+                          type: string
+                        source:
+                          type: string
   /containers/connect/tcp/remove:
     post:
       summary: Remove proxy device between containers
@@ -1155,6 +1203,57 @@ components:
           type: string
         device_name:
           type: string
+    PortRange:
+      type: object
+      required: [start, end]
+      properties:
+        start:
+          type: integer
+        end:
+          type: integer
+    InterfaceExposure:
+      type: object
+      properties:
+        protocol:
+          type: string
+          enum: [tcp, udp]
+          default: tcp
+        bind_address:
+          type: string
+          default: 0.0.0.0
+        host_ports:
+          type: array
+          items:
+            type: integer
+        port_range:
+          $ref: "#/components/schemas/PortRange"
+        container_port:
+          type: integer
+        target_interface:
+          type: string
+        target_address:
+          type: string
+        device_name_prefix:
+          type: string
+        open_firewall:
+          type: boolean
+          default: false
+        allow_sources:
+          type: array
+          items:
+            type: string
+    MultiInterfaceExposeRequest:
+      type: object
+      required:
+        - container_name
+        - exposures
+      properties:
+        container_name:
+          type: string
+        exposures:
+          type: array
+          items:
+            $ref: "#/components/schemas/InterfaceExposure"
     SharedMountRequest:
       type: object
       required:

@@ -14,6 +14,7 @@ SERVICE_DEFAULT_PORTS = {"ssh": 22, "ftp": 21}
 SENSITIVE_KEYWORDS = {"password", "passwd", "secret", "token", "key", "chpasswd"}
 MAX_PORT = 65535
 MIN_PORT = 1
+MAX_PROXY_DEVICES_PER_REQUEST = 50
 
 AuditCallback = Callable[[str, str, Optional[str], Optional[Dict[str, Any]], str], None]
 _AUDIT_CALLBACK: Optional[AuditCallback] = None
@@ -159,6 +160,31 @@ def remove_device(container_name: str, device_name: str) -> None:
     run_command(["lxc", "config", "device", "remove", container_name, device_name])
 
 
+def _expand_port_inputs(host_ports: Optional[List[int]], port_range: Optional[Dict[str, int]], fallback_port: Optional[int]) -> List[int]:
+    """Normalize host port inputs into a unique, sorted list with sane limits."""
+    ports: List[int] = []
+    if host_ports:
+        ports.extend(host_ports)
+    if port_range:
+        start = port_range.get("start")
+        end = port_range.get("end")
+        if start is None or end is None:
+            raise HTTPException(status_code=400, detail="port_range requires start and end")
+        if start > end:
+            raise HTTPException(status_code=400, detail="port_range start must be <= end")
+        ports.extend(list(range(start, end + 1)))
+    if not ports and fallback_port:
+        ports.append(fallback_port)
+    unique_ports = sorted(set(ports))
+    if not unique_ports:
+        raise HTTPException(status_code=400, detail="No host ports provided")
+    if len(unique_ports) > MAX_PROXY_DEVICES_PER_REQUEST:
+        raise HTTPException(status_code=400, detail=f"Requested ports exceed limit of {MAX_PROXY_DEVICES_PER_REQUEST}")
+    for port in unique_ports:
+        validate_port(port, "host_port")
+    return unique_ports
+
+
 def open_external_access(
     container_name: str,
     service: str,
@@ -207,6 +233,50 @@ def connect_containers_network(
     connect = f"connect={protocol}:{target_ip}:{target_port}"
     add_proxy_device(source_container, resolved_device, listen, connect)
     return resolved_device
+
+
+def expose_ports(
+    container_name: str,
+    protocol: str,
+    bind_address: str,
+    host_ports: Optional[List[int]],
+    port_range: Optional[Dict[str, int]],
+    container_port: Optional[int],
+    target_interface: Optional[str],
+    target_address: Optional[str],
+    device_name_prefix: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Expose one or more host ports to a container interface via LXD proxy devices."""
+    ports = _expand_port_inputs(host_ports, port_range, container_port)
+    target_ip = target_address or get_container_ip(container_name, target_interface or "eth0")
+    prefix = device_name_prefix or f"expose-{protocol}"
+    created: List[Dict[str, Any]] = []
+    try:
+        for host_port in ports:
+            connect_port = container_port or host_port
+            validate_port(connect_port, "container_port")
+            device_name = f"{prefix}-{host_port}"
+            listen = f"listen={protocol}:{bind_address}:{host_port}"
+            connect = f"connect={protocol}:{target_ip}:{connect_port}"
+            add_proxy_device(container_name, device_name, listen, connect)
+            created.append(
+                {
+                    "device_name": device_name,
+                    "host_port": host_port,
+                    "connect_port": connect_port,
+                    "target_ip": target_ip,
+                    "protocol": protocol,
+                    "bind_address": bind_address,
+                }
+            )
+        return created
+    except Exception as exc:
+        for item in created:
+            try:
+                remove_device(container_name, item["device_name"])
+            except Exception:
+                logging.exception("Failed to rollback device %s on %s", item["device_name"], container_name)
+        raise exc
 
 
 def add_disk_device(container_name: str, device_name: str, source: str, path: str) -> None:

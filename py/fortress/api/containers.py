@@ -5,6 +5,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from fortress import containers as container_ops
+from fortress.firewall import apply_firewall_rule
 
 AuthorizeFn = Callable[..., Dict[str, Any]]
 AuditFn = Callable[..., None]
@@ -94,6 +95,29 @@ class SharedMountRequest(BaseModel):
 class SharedMountRemoval(BaseModel):
     share_name: str
     containers: List[str]
+
+
+class PortRange(BaseModel):
+    start: int
+    end: int
+
+
+class InterfaceExposure(BaseModel):
+    protocol: Literal["tcp", "udp"] = "tcp"
+    bind_address: str = "0.0.0.0"
+    host_ports: Optional[List[int]] = None
+    port_range: Optional[PortRange] = None
+    container_port: Optional[int] = None
+    target_interface: Optional[str] = None
+    target_address: Optional[str] = None
+    device_name_prefix: Optional[str] = None
+    open_firewall: bool = False
+    allow_sources: Optional[List[str]] = None
+
+
+class MultiInterfaceExposeRequest(BaseModel):
+    container_name: str
+    exposures: List[InterfaceExposure]
 
 
 def build_container_router(
@@ -403,6 +427,75 @@ def build_container_router(
             )
             raise
         return {"message": f"Device {payload.device_name} removed from {payload.container_name}"}
+
+    @router.post("/containers/expose")
+    def expose_container_interfaces(
+        payload: MultiInterfaceExposeRequest,
+        x_api_key: Optional[str] = Header(default=None),
+        x_user_token: Optional[str] = Header(default=None),
+    ):
+        authorize("containers_expose", "connectivity", x_api_key, x_user_token, containers=payload.container_name)
+        if not payload.exposures:
+            raise HTTPException(status_code=400, detail="exposures cannot be empty")
+
+        created_devices: List[Dict[str, Any]] = []
+        applied_firewall_rules: List[Dict[str, Any]] = []
+        try:
+            for exposure in payload.exposures:
+                devices = container_ops.expose_ports(
+                    container_name=payload.container_name,
+                    protocol=exposure.protocol,
+                    bind_address=exposure.bind_address,
+                    host_ports=exposure.host_ports,
+                    port_range=exposure.port_range.dict() if exposure.port_range else None,
+                    container_port=exposure.container_port,
+                    target_interface=exposure.target_interface,
+                    target_address=exposure.target_address,
+                    device_name_prefix=exposure.device_name_prefix,
+                )
+                created_devices.extend(devices)
+
+                if exposure.open_firewall:
+                    unique_ports = {device["host_port"] for device in devices}
+                    sources = exposure.allow_sources or [None]
+                    for port in unique_ports:
+                        for source in sources:
+                            apply_firewall_rule(port, exposure.protocol, source, allow=True)
+                            applied_firewall_rules.append({"port": port, "protocol": exposure.protocol, "source": source})
+
+            audit_api(
+                "containers_expose",
+                target=payload.container_name,
+                details={
+                    "devices": len(created_devices),
+                    "firewall_rules": len(applied_firewall_rules),
+                },
+            )
+            return {
+                "message": f"Exposed {len(created_devices)} port(s) on {payload.container_name}",
+                "devices": created_devices,
+                "firewall_rules": applied_firewall_rules,
+            }
+        except Exception as exc:
+            for item in created_devices:
+                try:
+                    container_ops.remove_device(payload.container_name, item["device_name"])
+                except Exception:
+                    logger.exception("Failed to rollback device %s on %s", item.get("device_name"), payload.container_name)
+            for rule in applied_firewall_rules:
+                try:
+                    apply_firewall_rule(rule["port"], rule["protocol"], rule["source"], allow=False)
+                except Exception:
+                    logger.exception(
+                        "Failed to rollback firewall rule %s/%s %s", rule["protocol"], rule["port"], rule["source"]
+                    )
+            audit_api(
+                "containers_expose",
+                target=payload.container_name,
+                details={"error": str(exc), "devices_created": len(created_devices)},
+                status="error",
+            )
+            raise HTTPException(status_code=500, detail=f"Failed to expose ports: {exc}")
 
     @router.post("/containers/connect/share")
     def create_shared_mount(

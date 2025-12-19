@@ -160,6 +160,38 @@ Body requires `container_name` plus either:
 #### `POST /containers/connect/tcp/remove`
 - Body requires `container_name` (proxy lives here) and `device_name`.
 
+#### `POST /containers/expose`
+- Body:
+```json
+{
+  "container_name": "web01",
+  "exposures": [
+    {
+      "protocol": "tcp",
+      "bind_address": "0.0.0.0",
+      "host_ports": [8080, 8443],
+      "container_port": 8080,
+      "target_interface": "eth0",
+      "device_name_prefix": "public",
+      "open_firewall": true,
+      "allow_sources": ["203.0.113.0/24"]
+    },
+    {
+      "protocol": "udp",
+      "port_range": {"start": 5000, "end": 5003},
+      "target_interface": "eth1",
+      "target_address": "10.10.0.25",
+      "open_firewall": false
+    }
+  ]
+}
+```
+- `host_ports` (array) or `port_range` (object `{start,end}`) defines which host ports to bind (max 50 per request). If neither is set, `container_port` is used for both sides.
+- `container_port` defaults to the same as each host port; set explicitly to map many host ports to one container port.
+- `target_interface` or `target_address` chooses the container NIC/IP to route toward (default `eth0`).
+- `open_firewall` applies host firewall rules (`ufw`/`firewalld`) for each bound port, optionally restricted to `allow_sources`. Rolls back devices and firewall rules on failure.
+- Returns created device names, bound ports, and firewall rules applied.
+
 #### `POST /containers/connect/share`
 - Body:
 ```json

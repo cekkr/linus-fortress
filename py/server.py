@@ -25,6 +25,7 @@ from fortress.containers import (
     update_package_index,
     validate_port,
 )
+from fortress.firewall import apply_firewall_rule
 from fortress.recipes import (
     RecipeDefinition,
     RecipeUpdate,
@@ -197,43 +198,6 @@ def enforce_container_scope(auth_context: Dict, container_name: str):
 def enforce_container_scopes(auth_context: Dict, containers: List[str]):
     for container in containers:
         enforce_container_scope(auth_context, container)
-
-def detect_firewall_backend() -> str:
-    if shutil.which("ufw"):
-        return "ufw"
-    if shutil.which("firewall-cmd"):
-        return "firewalld"
-    raise HTTPException(status_code=500, detail="No supported firewall backend detected (ufw or firewalld)")
-
-def build_firewalld_rich_rule(rule: "FirewallRule", allow: bool) -> str:
-    action = "accept" if allow else "drop"
-    return f'rule family="ipv4" source address="{rule.source}" port protocol="{rule.protocol}" port="{rule.port}" {action}'
-
-def apply_firewall_rule(rule: "FirewallRule", allow: bool):
-    backend = detect_firewall_backend()
-    if backend == "ufw":
-        action_word = "allow" if allow else "deny"
-        if rule.source:
-            base_cmd = ["ufw", action_word, "from", rule.source, "to", "any", "port", str(rule.port), "proto", rule.protocol]
-        else:
-            base_cmd = ["ufw", action_word, f"{rule.port}/{rule.protocol}"]
-        if not allow:
-            # When closing, use delete allow rather than deny to clean explicit rule if it exists
-            if rule.source:
-                base_cmd = ["ufw", "--force", "delete", "allow", "from", rule.source, "to", "any", "port", str(rule.port), "proto", rule.protocol]
-            else:
-                base_cmd = ["ufw", "--force", "delete", "allow", f"{rule.port}/{rule.protocol}"]
-        run_command(base_cmd)
-        run_command(["ufw", "reload"])
-    else:
-        if rule.source:
-            rich_rule = build_firewalld_rich_rule(rule, allow)
-            flag = "--add-rich-rule" if allow else "--remove-rich-rule"
-            run_command(["firewall-cmd", "--permanent", flag, rich_rule])
-        else:
-            flag = "--add-port" if allow else "--remove-port"
-            run_command(["firewall-cmd", "--permanent", flag, f"{rule.port}/{rule.protocol}"])
-        run_command(["firewall-cmd", "--reload"])
 
 def ensure_packages_list(packages: List[str]):
     if not packages:
@@ -451,7 +415,7 @@ def delete_api_user(token: str, x_api_key: Optional[str] = Header(default=None),
 def open_firewall(rule: FirewallRule, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("firewall_open", "firewall_admin", x_api_key, x_user_token)
     try:
-        apply_firewall_rule(rule, allow=True)
+        apply_firewall_rule(rule.port, rule.protocol, rule.source, allow=True)
         audit_api("firewall_open", target=f"{rule.port}/{rule.protocol}", details={"source": rule.source})
     except Exception as exc:
         audit_api("firewall_open", target=f"{rule.port}/{rule.protocol}", details={"error": str(exc)}, status="error")
@@ -462,7 +426,7 @@ def open_firewall(rule: FirewallRule, x_api_key: Optional[str] = Header(default=
 def close_firewall(rule: FirewallRule, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("firewall_close", "firewall_admin", x_api_key, x_user_token)
     try:
-        apply_firewall_rule(rule, allow=False)
+        apply_firewall_rule(rule.port, rule.protocol, rule.source, allow=False)
         audit_api("firewall_close", target=f"{rule.port}/{rule.protocol}", details={"source": rule.source})
     except Exception as exc:
         audit_api("firewall_close", target=f"{rule.port}/{rule.protocol}", details={"error": str(exc)}, status="error")
