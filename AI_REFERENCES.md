@@ -13,6 +13,7 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 - `py/fortress/recipes.py` holds recipe models, storage helpers, dependency resolution, and template rendering
 - fortress-cli.py now includes `recipes list|create|apply` helpers in addition to status/api-users/package/backup calls
 - Unit tests in `tests/test_recipes.py` cover recipe dependency resolution and apply planning
+- `py/fortress/vms.py` centralizes VM registry + QEMU/VirtualBox lifecycle, snapshots, and SSH probe/provision helpers; provisioning scripts live in `scripts/vm`
 - api-v1.yaml documents the HTTP contract (OpenAPI 3.0.3) and README.md lists request bodies/permissions for each endpoint
 - Domain routing and LXD proxy helpers now support choosing container interfaces, explicit upstream addresses, and host listen ports/addresses for finer TCP/IP exposure control between containers and the host
 - `POST /containers/expose` supports bulk interface/port exposure to a container with port ranges, protocol selection, per-interface upstream selection, and optional firewall allowlists (rolls back devices and firewall rules on failure)
@@ -31,11 +32,16 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 |       |-- audit.py
 |       |-- containers.py
 |       |-- monitoring.py
+|       |-- vms.py
 |       |-- recipes.py
 |       |-- system.py
 |       `-- api
 |           |-- __init__.py
 |           `-- containers.py
+|-- scripts
+|   `-- vm
+|       |-- provision_fedora.sh
+|       `-- provision_ubuntu.sh
 `-- tests
     `-- test_recipes.py
 ```
@@ -43,6 +49,7 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 ## HTTP API map (code ownership)
 - `py/fortress/api/containers.py`: `/container/create`, `/container/{name}`, `/access/external/*`, `/container/users/*`, `/container/groups`, `/containers/connect/*`
 - `py/server.py`: `/status`, `/monitoring/resources`, `/routing/add`, `/api-users*`, `/firewall/*`, `/packages/*`, `/recipes*`, `/backup/*`, `/restore`
+- `py/server.py`: `/vms*` (VM registry, start/stop/status, snapshots, SSH provisioning/probing)
 - `api-v1.yaml`: canonical OpenAPI reference; README.md mirrors route summaries and permissions
 
 ## Roadmap for AI

@@ -133,6 +133,332 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+  /vms:
+    get:
+      summary: List registered VM test environments
+      tags: [VMs]
+      responses:
+        "200":
+          description: VM list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vms:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VMSummary"
+    post:
+      summary: Create a VM record and provider resources
+      tags: [VMs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMCreate"
+      responses:
+        "200":
+          description: VM creation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /vms/{name}:
+    get:
+      summary: Fetch a VM record
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: VM record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vm:
+                    $ref: "#/components/schemas/VMRecord"
+    put:
+      summary: Update a VM record
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMUpdate"
+      responses:
+        "200":
+          description: Updated VM record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vm:
+                    $ref: "#/components/schemas/VMRecord"
+    delete:
+      summary: Remove a VM record
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: purge
+          schema:
+            type: boolean
+            default: false
+        - in: query
+          name: force
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: VM deletion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /vms/{name}/start:
+    post:
+      summary: Start a VM
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMStart"
+      responses:
+        "200":
+          description: VM start result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /vms/{name}/stop:
+    post:
+      summary: Stop a VM
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMStop"
+      responses:
+        "200":
+          description: VM stop result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /vms/{name}/status:
+    get:
+      summary: Fetch VM status
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: VM status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMStatus"
+  /vms/{name}/snapshots:
+    get:
+      summary: List VM snapshots
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Snapshot list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  snapshots:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VMSnapshotRecord"
+    post:
+      summary: Create a VM snapshot
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMSnapshot"
+      responses:
+        "200":
+          description: Snapshot creation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /vms/{name}/snapshots/{snapshot_name}/restore:
+    post:
+      summary: Restore a VM snapshot
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: snapshot_name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Snapshot restore
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /vms/{name}/snapshots/{snapshot_name}:
+    delete:
+      summary: Delete a VM snapshot
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: snapshot_name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Snapshot deletion
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /vms/{name}/provision:
+    post:
+      summary: Provision a VM via SSH
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMProvision"
+      responses:
+        "200":
+          description: Provisioning result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /vms/{name}/probe:
+    post:
+      summary: Probe VM status via SSH
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VMProbe"
+      responses:
+        "200":
+          description: VM probe result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  probe:
+                    $ref: "#/components/schemas/VMProbeResult"
+  /vms/{name}/states:
+    get:
+      summary: List saved VM probe states
+      tags: [VMs]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Saved VM states
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  states:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
   /routing/add:
     post:
       summary: Configure nginx reverse proxy for a container
@@ -1421,3 +1747,254 @@ components:
           type: array
           items:
             type: string
+    VMSSHConfig:
+      type: object
+      properties:
+        host:
+          type: string
+        username:
+          type: string
+        port:
+          type: integer
+          default: 22
+        key_path:
+          type: string
+        password:
+          type: string
+    VMCreate:
+      type: object
+      required:
+        - name
+        - provider
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+          enum: [qemu, utm, virtualbox]
+        cpu_cores:
+          type: integer
+          default: 2
+        memory_mb:
+          type: integer
+          default: 2048
+        disk_gb:
+          type: integer
+          default: 20
+        disk_path:
+          type: string
+        iso_path:
+          type: string
+        os_type:
+          type: string
+        vm_dir:
+          type: string
+        qemu_binary:
+          type: string
+        network_mode:
+          type: string
+          enum: [user, bridge]
+          default: user
+        bridge_name:
+          type: string
+        ssh_forward_port:
+          type: integer
+        extra_args:
+          type: array
+          items:
+            type: string
+        ssh:
+          $ref: "#/components/schemas/VMSSHConfig"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        notes:
+          type: string
+        installed:
+          type: boolean
+          default: false
+    VMUpdate:
+      type: object
+      properties:
+        cpu_cores:
+          type: integer
+        memory_mb:
+          type: integer
+        disk_gb:
+          type: integer
+        disk_path:
+          type: string
+        iso_path:
+          type: string
+        os_type:
+          type: string
+        vm_dir:
+          type: string
+        qemu_binary:
+          type: string
+        network_mode:
+          type: string
+          enum: [user, bridge]
+        bridge_name:
+          type: string
+        ssh_forward_port:
+          type: integer
+        extra_args:
+          type: array
+          items:
+            type: string
+        ssh:
+          $ref: "#/components/schemas/VMSSHConfig"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        notes:
+          type: string
+        installed:
+          type: boolean
+    VMStart:
+      type: object
+      properties:
+        headless:
+          type: boolean
+          default: true
+        use_iso:
+          type: boolean
+          default: false
+        iso_path:
+          type: string
+    VMStop:
+      type: object
+      properties:
+        force:
+          type: boolean
+          default: false
+    VMSnapshot:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+    VMProvision:
+      type: object
+      properties:
+        profile:
+          type: string
+          enum: [ubuntu, fedora]
+        repo_url:
+          type: string
+        branch:
+          type: string
+        install_dir:
+          type: string
+        service_name:
+          type: string
+        fortress_port:
+          type: integer
+        api_key:
+          type: string
+        backup_password:
+          type: string
+        skip_service:
+          type: boolean
+        ssh:
+          $ref: "#/components/schemas/VMSSHConfig"
+    VMProbe:
+      type: object
+      properties:
+        save_as:
+          type: string
+        ssh:
+          $ref: "#/components/schemas/VMSSHConfig"
+    VMRecord:
+      type: object
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        state:
+          type: string
+        cpu_cores:
+          type: integer
+        memory_mb:
+          type: integer
+        disk_gb:
+          type: integer
+        disk_path:
+          type: string
+        iso_path:
+          type: string
+        os_type:
+          type: string
+        vm_dir:
+          type: string
+        network_mode:
+          type: string
+        bridge_name:
+          type: string
+        ssh_forward_port:
+          type: integer
+        ssh:
+          $ref: "#/components/schemas/VMSSHConfig"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        notes:
+          type: string
+        installed:
+          type: boolean
+        service_name:
+          type: string
+        updated_at:
+          type: string
+    VMSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        state:
+          type: string
+        os_type:
+          type: string
+        installed:
+          type: boolean
+        ssh_host:
+          type: string
+        ssh_port:
+          type: integer
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        updated_at:
+          type: string
+    VMSnapshotRecord:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        created_at:
+          type: string
+    VMStatus:
+      type: object
+      properties:
+        name:
+          type: string
+        state:
+          type: string
+        provider:
+          type: string
+    VMProbeResult:
+      type: object
+      additionalProperties: true

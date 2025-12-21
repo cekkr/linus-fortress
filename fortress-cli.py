@@ -474,6 +474,202 @@ def recipes_command(args: argparse.Namespace) -> None:
     raise FortressCLIError("Unsupported recipes subcommand")
 
 
+def vms_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    auth_override = getattr(args, "auth_mode", None)
+    if args.subcommand == "list":
+        result = client.request("GET", "/vms", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "get":
+        result = client.request("GET", f"/vms/{args.name}", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "create":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if not args.name or not args.provider:
+                raise FortressCLIError("name and provider are required when not using --json or --json-file")
+            payload = {
+                "name": args.name,
+                "provider": args.provider,
+                "cpu_cores": args.cpu,
+                "memory_mb": args.memory,
+                "disk_gb": args.disk,
+            }
+            if args.disk_path:
+                payload["disk_path"] = args.disk_path
+            if args.iso:
+                payload["iso_path"] = args.iso
+            if args.os_type:
+                payload["os_type"] = args.os_type
+            if args.vm_dir:
+                payload["vm_dir"] = args.vm_dir
+            if args.qemu_bin:
+                payload["qemu_binary"] = args.qemu_bin
+            if args.network_mode:
+                payload["network_mode"] = args.network_mode
+            if args.bridge:
+                payload["bridge_name"] = args.bridge
+            if args.ssh_forward_port:
+                payload["ssh_forward_port"] = args.ssh_forward_port
+            if args.extra_arg:
+                payload["extra_args"] = args.extra_arg
+            if args.notes:
+                payload["notes"] = args.notes
+            labels = parse_kv_pairs(args.label)
+            if labels:
+                payload["labels"] = labels
+            if args.ssh_host or args.ssh_user:
+                if not args.ssh_host or not args.ssh_user:
+                    raise FortressCLIError("ssh-host and ssh-user must be provided together")
+                payload["ssh"] = {
+                    "host": args.ssh_host,
+                    "username": args.ssh_user,
+                    "port": args.ssh_port or 22,
+                    "key_path": args.ssh_key,
+                    "password": args.ssh_password,
+                }
+        result = client.request("POST", "/vms", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "update":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            payload = {}
+            if args.cpu is not None:
+                payload["cpu_cores"] = args.cpu
+            if args.memory is not None:
+                payload["memory_mb"] = args.memory
+            if args.disk is not None:
+                payload["disk_gb"] = args.disk
+            if args.disk_path:
+                payload["disk_path"] = args.disk_path
+            if args.iso:
+                payload["iso_path"] = args.iso
+            if args.os_type:
+                payload["os_type"] = args.os_type
+            if args.vm_dir:
+                payload["vm_dir"] = args.vm_dir
+            if args.qemu_bin:
+                payload["qemu_binary"] = args.qemu_bin
+            if args.network_mode:
+                payload["network_mode"] = args.network_mode
+            if args.bridge:
+                payload["bridge_name"] = args.bridge
+            if args.ssh_forward_port:
+                payload["ssh_forward_port"] = args.ssh_forward_port
+            if args.extra_arg:
+                payload["extra_args"] = args.extra_arg
+            if args.notes is not None:
+                payload["notes"] = args.notes
+            if args.installed is not None:
+                payload["installed"] = args.installed
+            labels = parse_kv_pairs(args.label)
+            if labels:
+                payload["labels"] = labels
+            if args.ssh_host or args.ssh_user:
+                if not args.ssh_host or not args.ssh_user:
+                    raise FortressCLIError("ssh-host and ssh-user must be provided together")
+                payload["ssh"] = {
+                    "host": args.ssh_host,
+                    "username": args.ssh_user,
+                    "port": args.ssh_port or 22,
+                    "key_path": args.ssh_key,
+                    "password": args.ssh_password,
+                }
+        result = client.request("PUT", f"/vms/{args.name}", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "delete":
+        endpoint = f"/vms/{args.name}"
+        params = {}
+        if args.purge:
+            params["purge"] = "true"
+        if args.force:
+            params["force"] = "true"
+        result = client.request("DELETE", endpoint, params=params, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "start":
+        payload = {"headless": not args.gui, "use_iso": args.use_iso}
+        if args.iso:
+            payload["iso_path"] = args.iso
+            payload["use_iso"] = True
+        result = client.request("POST", f"/vms/{args.name}/start", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "stop":
+        payload = {"force": args.force}
+        result = client.request("POST", f"/vms/{args.name}/stop", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "status":
+        result = client.request("GET", f"/vms/{args.name}/status", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "snapshot":
+        if args.action in {"create", "restore", "delete"} and not args.snapshot:
+            raise FortressCLIError("snapshot name required for this action")
+        if args.action == "list":
+            result = client.request("GET", f"/vms/{args.name}/snapshots", auth_override=auth_override)
+            print(json.dumps(result, indent=2))
+            return
+        if args.action == "create":
+            payload = {"name": args.snapshot, "description": args.description}
+            result = client.request("POST", f"/vms/{args.name}/snapshots", json_body=payload, auth_override=auth_override)
+            print(json.dumps(result, indent=2))
+            return
+        if args.action == "restore":
+            result = client.request("POST", f"/vms/{args.name}/snapshots/{args.snapshot}/restore", auth_override=auth_override)
+            print(json.dumps(result, indent=2))
+            return
+        if args.action == "delete":
+            result = client.request("DELETE", f"/vms/{args.name}/snapshots/{args.snapshot}", auth_override=auth_override)
+            print(json.dumps(result, indent=2))
+            return
+        raise FortressCLIError("Unsupported snapshot action")
+    if args.subcommand == "probe":
+        payload = {"save_as": args.save_as} if args.save_as else {}
+        result = client.request("POST", f"/vms/{args.name}/probe", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "states":
+        result = client.request("GET", f"/vms/{args.name}/states", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "provision":
+        payload = {
+            "profile": args.profile,
+            "branch": args.branch,
+            "install_dir": args.install_dir,
+            "service_name": args.service_name,
+            "fortress_port": args.port,
+            "skip_service": args.skip_service,
+        }
+        if args.repo_url:
+            payload["repo_url"] = args.repo_url
+        if args.api_key:
+            payload["api_key"] = args.api_key
+        if args.backup_password:
+            payload["backup_password"] = args.backup_password
+        if args.ssh_host or args.ssh_user:
+            if not args.ssh_host or not args.ssh_user:
+                raise FortressCLIError("ssh-host and ssh-user must be provided together")
+            payload["ssh"] = {
+                "host": args.ssh_host,
+                "username": args.ssh_user,
+                "port": args.ssh_port or 22,
+                "key_path": args.ssh_key,
+                "password": args.ssh_password,
+            }
+        result = client.request("POST", f"/vms/{args.name}/provision", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    raise FortressCLIError("Unsupported vms subcommand")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Client utility for Linus' Fortress",
@@ -574,6 +770,115 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_apply.add_argument("--json", help="Inline JSON payload")
     recipes_apply.add_argument("--json-file", help="Path to JSON file used as payload")
     recipes_apply.set_defaults(func=recipes_command)
+
+    vms_parser = subparsers.add_parser("vms", help="Manage VM testing environments")
+    vms_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    vms_sub = vms_parser.add_subparsers(dest="subcommand")
+    vms_list = vms_sub.add_parser("list", help="List VM records")
+    vms_list.set_defaults(func=vms_command)
+    vms_get = vms_sub.add_parser("get", help="Get a VM record")
+    vms_get.add_argument("name")
+    vms_get.set_defaults(func=vms_command)
+    vms_create = vms_sub.add_parser("create", help="Create a VM record")
+    vms_create.add_argument("--name", help="VM name (required unless using --json/--json-file)")
+    vms_create.add_argument("--provider", choices=["qemu", "utm", "virtualbox"], help="VM provider")
+    vms_create.add_argument("--cpu", type=int, default=2)
+    vms_create.add_argument("--memory", type=int, default=2048)
+    vms_create.add_argument("--disk", type=int, default=20)
+    vms_create.add_argument("--disk-path")
+    vms_create.add_argument("--iso")
+    vms_create.add_argument("--os-type")
+    vms_create.add_argument("--vm-dir")
+    vms_create.add_argument("--qemu-bin")
+    vms_create.add_argument("--network-mode", choices=["user", "bridge"])
+    vms_create.add_argument("--bridge")
+    vms_create.add_argument("--ssh-forward-port", type=int)
+    vms_create.add_argument("--extra-arg", action="append", default=[])
+    vms_create.add_argument("--label", action="append", default=[], help="Label in key=value form")
+    vms_create.add_argument("--notes")
+    vms_create.add_argument("--ssh-host")
+    vms_create.add_argument("--ssh-user")
+    vms_create.add_argument("--ssh-port", type=int)
+    vms_create.add_argument("--ssh-key")
+    vms_create.add_argument("--ssh-password")
+    vms_create.add_argument("--json")
+    vms_create.add_argument("--json-file")
+    vms_create.set_defaults(func=vms_command)
+    vms_update = vms_sub.add_parser("update", help="Update a VM record")
+    vms_update.add_argument("name")
+    vms_update.add_argument("--cpu", type=int)
+    vms_update.add_argument("--memory", type=int)
+    vms_update.add_argument("--disk", type=int)
+    vms_update.add_argument("--disk-path")
+    vms_update.add_argument("--iso")
+    vms_update.add_argument("--os-type")
+    vms_update.add_argument("--vm-dir")
+    vms_update.add_argument("--qemu-bin")
+    vms_update.add_argument("--network-mode", choices=["user", "bridge"])
+    vms_update.add_argument("--bridge")
+    vms_update.add_argument("--ssh-forward-port", type=int)
+    vms_update.add_argument("--extra-arg", action="append", default=[])
+    vms_update.add_argument("--label", action="append", default=[], help="Label in key=value form")
+    vms_update.add_argument("--notes")
+    vms_update.add_argument("--installed", action="store_true")
+    vms_update.add_argument("--not-installed", dest="installed", action="store_false")
+    vms_update.set_defaults(installed=None)
+    vms_update.add_argument("--ssh-host")
+    vms_update.add_argument("--ssh-user")
+    vms_update.add_argument("--ssh-port", type=int)
+    vms_update.add_argument("--ssh-key")
+    vms_update.add_argument("--ssh-password")
+    vms_update.add_argument("--json")
+    vms_update.add_argument("--json-file")
+    vms_update.set_defaults(func=vms_command)
+    vms_delete = vms_sub.add_parser("delete", help="Delete a VM record")
+    vms_delete.add_argument("name")
+    vms_delete.add_argument("--purge", action="store_true")
+    vms_delete.add_argument("--force", action="store_true")
+    vms_delete.set_defaults(func=vms_command)
+    vms_start = vms_sub.add_parser("start", help="Start a VM")
+    vms_start.add_argument("name")
+    vms_start.add_argument("--iso")
+    vms_start.add_argument("--use-iso", action="store_true")
+    vms_start.add_argument("--gui", action="store_true")
+    vms_start.set_defaults(func=vms_command)
+    vms_stop = vms_sub.add_parser("stop", help="Stop a VM")
+    vms_stop.add_argument("name")
+    vms_stop.add_argument("--force", action="store_true")
+    vms_stop.set_defaults(func=vms_command)
+    vms_status = vms_sub.add_parser("status", help="Get VM status")
+    vms_status.add_argument("name")
+    vms_status.set_defaults(func=vms_command)
+    vms_snapshot = vms_sub.add_parser("snapshot", help="Manage VM snapshots")
+    vms_snapshot.add_argument("action", choices=["list", "create", "restore", "delete"])
+    vms_snapshot.add_argument("name")
+    vms_snapshot.add_argument("--snapshot")
+    vms_snapshot.add_argument("--description")
+    vms_snapshot.set_defaults(func=vms_command)
+    vms_probe = vms_sub.add_parser("probe", help="Probe VM over SSH")
+    vms_probe.add_argument("name")
+    vms_probe.add_argument("--save-as")
+    vms_probe.set_defaults(func=vms_command)
+    vms_states = vms_sub.add_parser("states", help="List saved VM probe states")
+    vms_states.add_argument("name")
+    vms_states.set_defaults(func=vms_command)
+    vms_provision = vms_sub.add_parser("provision", help="Provision a VM over SSH")
+    vms_provision.add_argument("name")
+    vms_provision.add_argument("--profile", choices=["ubuntu", "fedora"], default="ubuntu")
+    vms_provision.add_argument("--repo-url")
+    vms_provision.add_argument("--branch", default="main")
+    vms_provision.add_argument("--install-dir", default="/opt/linus-fortress")
+    vms_provision.add_argument("--service-name", default="fortress")
+    vms_provision.add_argument("--port", type=int, default=8443)
+    vms_provision.add_argument("--api-key")
+    vms_provision.add_argument("--backup-password")
+    vms_provision.add_argument("--skip-service", action="store_true")
+    vms_provision.add_argument("--ssh-host")
+    vms_provision.add_argument("--ssh-user")
+    vms_provision.add_argument("--ssh-port", type=int)
+    vms_provision.add_argument("--ssh-key")
+    vms_provision.add_argument("--ssh-password")
+    vms_provision.set_defaults(func=vms_command)
 
     return parser
 

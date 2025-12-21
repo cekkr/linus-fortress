@@ -43,20 +43,46 @@ from fortress.monitoring import (
     DEFAULT_HOST_THRESHOLDS,
     gather_resource_snapshot,
 )
+from fortress.vms import (
+    VMCreateRequest,
+    VMUpdateRequest,
+    VMStartRequest,
+    VMStopRequest,
+    VMSnapshotRequest,
+    VMProvisionRequest,
+    VMProbeRequest,
+    load_vms,
+    save_vms,
+    build_vm_summary,
+    sanitize_vm_record,
+    create_vm,
+    update_vm,
+    delete_vm,
+    start_vm as start_vm_record,
+    stop_vm as stop_vm_record,
+    vm_status,
+    create_snapshot,
+    restore_snapshot,
+    delete_snapshot,
+    list_snapshots,
+    provision_vm,
+    probe_vm,
+)
 
 # --- CONFIGURATION ---
 # In production, load these from environment variables
 DEFAULT_API_SECRET = "CHANGE_THIS_TO_A_VERY_LONG_RANDOM_STRING"
 API_SECRET_KEY = os.environ.get("FORTRESS_API_KEY", os.environ.get("API_SECRET_KEY", DEFAULT_API_SECRET))
 BACKUP_ENCRYPTION_PASSWORD = os.environ.get("FORTRESS_BACKUP_PASSWORD", "CHANGE_THIS_TO_YOUR_STRONG_BACKUP_PASSWORD")
-HOST_INTERFACE = "0.0.0.0"
-HOST_PORT = 8443
+HOST_INTERFACE = os.environ.get("FORTRESS_HOST_INTERFACE", "0.0.0.0")
+HOST_PORT = int(os.environ.get("FORTRESS_HOST_PORT", "8443"))
 BACKUP_DIR = "/var/lib/fortress/backups"
 NGINX_CONFIG_DIR = "/etc/nginx/sites-available"
 API_USERS_DB = "/var/lib/fortress/api_users.json"
 RECIPES_DB = "/var/lib/fortress/recipes.json"
 SHARED_STORAGE_DIR = "/var/lib/fortress/shares"
 COMMAND_LOG_DB = "/var/lib/fortress/command_log.db"
+VMS_DB = "/var/lib/fortress/vms.json"
 
 def resolve_master_key() -> Optional[str]:
     if not API_SECRET_KEY:
@@ -487,6 +513,149 @@ def update_packages(request: PackageUpdateRequest, x_api_key: Optional[str] = He
         audit_api("packages_update", target=request.container_name or "host", details={"error": str(exc)}, status="error")
         raise
     return {"message": "Package update completed", "full_upgrade": request.full_upgrade}
+
+# --- VM MANAGEMENT ---
+
+def _load_vm_store() -> Dict[str, Dict[str, Any]]:
+    return load_vms(VMS_DB)
+
+@app.get("/vms")
+def list_vms(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_list", "vm_read", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    response = [build_vm_summary(record) for _, record in sorted(vms.items())]
+    audit_api("vms_list", details={"count": len(response)})
+    return {"vms": response}
+
+@app.get("/vms/{name}")
+def get_vm(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_get", "vm_read", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    record = vms.get(name)
+    if not record:
+        audit_api("vms_get", target=name, details={"error": "not found"}, status="error")
+        raise HTTPException(status_code=404, detail="VM not found")
+    audit_api("vms_get", target=name)
+    return {"vm": sanitize_vm_record(record)}
+
+@app.post("/vms")
+def create_vm_record(payload: VMCreateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_create", "vm_manage", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    record = create_vm(payload, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_create", target=payload.name, details={"provider": payload.provider})
+    return {"message": f"VM {payload.name} created", "vm": sanitize_vm_record(record)}
+
+@app.put("/vms/{name}")
+def update_vm_record(name: str, payload: VMUpdateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_update", "vm_manage", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    record = update_vm(name, payload, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_update", target=name, details={"fields": sorted(payload.dict(exclude_unset=True).keys())})
+    return {"message": f"VM {name} updated", "vm": sanitize_vm_record(record)}
+
+@app.delete("/vms/{name}")
+def delete_vm_record(name: str, purge: bool = False, force: bool = False, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_delete", "vm_manage", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    record = delete_vm(name, vms, purge=purge, force=force)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_delete", target=name, details={"purge": purge, "force": force})
+    return {"message": f"VM {name} removed", "vm": sanitize_vm_record(record)}
+
+@app.post("/vms/{name}/start")
+def start_vm_instance(name: str, payload: VMStartRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_start", "vm_manage", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    record = start_vm_record(name, payload, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_start", target=name, details={"headless": payload.headless, "use_iso": payload.use_iso})
+    return {"message": f"VM {name} started", "vm": sanitize_vm_record(record)}
+
+@app.post("/vms/{name}/stop")
+def stop_vm_instance(name: str, payload: VMStopRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_stop", "vm_manage", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    record = stop_vm_record(name, payload, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_stop", target=name, details={"force": payload.force})
+    return {"message": f"VM {name} stopped", "vm": sanitize_vm_record(record)}
+
+@app.get("/vms/{name}/status")
+def get_vm_status(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_status", "vm_read", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    status = vm_status(name, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_status", target=name, details={"state": status.get("state")})
+    return status
+
+@app.get("/vms/{name}/snapshots")
+def get_vm_snapshots(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_snapshots_list", "vm_read", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    snapshots = list_snapshots(name, vms)
+    audit_api("vms_snapshots_list", target=name, details={"count": len(snapshots)})
+    return {"snapshots": snapshots}
+
+@app.post("/vms/{name}/snapshots")
+def create_vm_snapshot(name: str, payload: VMSnapshotRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_snapshots_create", "vm_manage", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    snapshot = create_snapshot(name, payload, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_snapshots_create", target=name, details={"snapshot": payload.name})
+    return {"message": f"Snapshot {payload.name} created", "snapshot": snapshot}
+
+@app.post("/vms/{name}/snapshots/{snapshot_name}/restore")
+def restore_vm_snapshot(name: str, snapshot_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_snapshots_restore", "vm_manage", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    restored = restore_snapshot(name, snapshot_name, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_snapshots_restore", target=name, details={"snapshot": snapshot_name})
+    return {"message": f"Snapshot {snapshot_name} restored", "restore": restored}
+
+@app.delete("/vms/{name}/snapshots/{snapshot_name}")
+def delete_vm_snapshot(name: str, snapshot_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_snapshots_delete", "vm_manage", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    result = delete_snapshot(name, snapshot_name, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_snapshots_delete", target=name, details={"snapshot": snapshot_name})
+    return {"message": f"Snapshot {snapshot_name} deleted", "result": result}
+
+@app.post("/vms/{name}/provision")
+def provision_vm_instance(name: str, payload: VMProvisionRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_provision", "vm_manage", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    result = provision_vm(name, payload, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_provision", target=name, details={"profile": payload.profile})
+    return {"message": "Provisioning complete", "result": result}
+
+@app.post("/vms/{name}/probe")
+def probe_vm_instance(name: str, payload: VMProbeRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_probe", "vm_read", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    result = probe_vm(name, payload, vms)
+    save_vms(VMS_DB, vms)
+    audit_api("vms_probe", target=name, details={"saved_as": payload.save_as})
+    return {"probe": result}
+
+@app.get("/vms/{name}/states")
+def list_vm_states(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("vms_states", "vm_read", x_api_key, x_user_token)
+    vms = _load_vm_store()
+    record = vms.get(name)
+    if not record:
+        audit_api("vms_states", target=name, details={"error": "not found"}, status="error")
+        raise HTTPException(status_code=404, detail="VM not found")
+    states = record.get("saved_states", [])
+    audit_api("vms_states", target=name, details={"count": len(states)})
+    return {"states": states}
 
 # --- RECIPE AUTOMATION ---
 
