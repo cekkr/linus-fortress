@@ -647,6 +647,7 @@ def vms_command(args: argparse.Namespace) -> None:
             "service_name": args.service_name,
             "fortress_port": args.port,
             "skip_service": args.skip_service,
+            "force_reset": args.force_reset,
         }
         if args.repo_url:
             payload["repo_url"] = args.repo_url
@@ -668,6 +669,131 @@ def vms_command(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2))
         return
     raise FortressCLIError("Unsupported vms subcommand")
+
+
+def hosts_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    auth_override = getattr(args, "auth_mode", None)
+    if args.subcommand == "list":
+        result = client.request("GET", "/hosts", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "get":
+        result = client.request("GET", f"/hosts/{args.name}", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "create":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if not args.name:
+                raise FortressCLIError("name is required when not using --json or --json-file")
+            payload = {"name": args.name}
+            if args.os_type:
+                payload["os_type"] = args.os_type
+            if args.notes:
+                payload["notes"] = args.notes
+            if args.service_name:
+                payload["service_name"] = args.service_name
+            if args.installed is not None:
+                payload["installed"] = args.installed
+            labels = parse_kv_pairs(args.label)
+            if labels:
+                payload["labels"] = labels
+            if args.ssh_host or args.ssh_user:
+                if not args.ssh_host or not args.ssh_user:
+                    raise FortressCLIError("ssh-host and ssh-user must be provided together")
+                payload["ssh"] = {
+                    "host": args.ssh_host,
+                    "username": args.ssh_user,
+                    "port": args.ssh_port or 22,
+                    "key_path": args.ssh_key,
+                    "password": args.ssh_password,
+                }
+        result = client.request("POST", "/hosts", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "update":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            payload = {}
+            if args.os_type:
+                payload["os_type"] = args.os_type
+            if args.notes is not None:
+                payload["notes"] = args.notes
+            if args.service_name:
+                payload["service_name"] = args.service_name
+            if args.installed is not None:
+                payload["installed"] = args.installed
+            labels = parse_kv_pairs(args.label)
+            if labels:
+                payload["labels"] = labels
+            if args.ssh_host or args.ssh_user:
+                if not args.ssh_host or not args.ssh_user:
+                    raise FortressCLIError("ssh-host and ssh-user must be provided together")
+                payload["ssh"] = {
+                    "host": args.ssh_host,
+                    "username": args.ssh_user,
+                    "port": args.ssh_port or 22,
+                    "key_path": args.ssh_key,
+                    "password": args.ssh_password,
+                }
+        result = client.request("PUT", f"/hosts/{args.name}", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "delete":
+        result = client.request("DELETE", f"/hosts/{args.name}", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "provision":
+        payload = {
+            "profile": args.profile,
+            "branch": args.branch,
+            "install_dir": args.install_dir,
+            "service_name": args.service_name,
+            "fortress_port": args.port,
+            "skip_service": args.skip_service,
+            "force_reset": args.force_reset,
+        }
+        if args.repo_url:
+            payload["repo_url"] = args.repo_url
+        if args.api_key:
+            payload["api_key"] = args.api_key
+        if args.backup_password:
+            payload["backup_password"] = args.backup_password
+        if args.ssh_host or args.ssh_user:
+            if not args.ssh_host or not args.ssh_user:
+                raise FortressCLIError("ssh-host and ssh-user must be provided together")
+            payload["ssh"] = {
+                "host": args.ssh_host,
+                "username": args.ssh_user,
+                "port": args.ssh_port or 22,
+                "key_path": args.ssh_key,
+                "password": args.ssh_password,
+            }
+        result = client.request("POST", f"/hosts/{args.name}/provision", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "probe":
+        payload = {"save_as": args.save_as} if args.save_as else {}
+        if args.ssh_host or args.ssh_user:
+            if not args.ssh_host or not args.ssh_user:
+                raise FortressCLIError("ssh-host and ssh-user must be provided together")
+            payload["ssh"] = {
+                "host": args.ssh_host,
+                "username": args.ssh_user,
+                "port": args.ssh_port or 22,
+                "key_path": args.ssh_key,
+                "password": args.ssh_password,
+            }
+        result = client.request("POST", f"/hosts/{args.name}/probe", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "states":
+        result = client.request("GET", f"/hosts/{args.name}/states", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    raise FortressCLIError("Unsupported hosts subcommand")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -873,12 +999,89 @@ def build_parser() -> argparse.ArgumentParser:
     vms_provision.add_argument("--api-key")
     vms_provision.add_argument("--backup-password")
     vms_provision.add_argument("--skip-service", action="store_true")
+    vms_provision.add_argument("--force-reset", action="store_true")
     vms_provision.add_argument("--ssh-host")
     vms_provision.add_argument("--ssh-user")
     vms_provision.add_argument("--ssh-port", type=int)
     vms_provision.add_argument("--ssh-key")
     vms_provision.add_argument("--ssh-password")
     vms_provision.set_defaults(func=vms_command)
+
+    hosts_parser = subparsers.add_parser("hosts", help="Manage remote hosts")
+    hosts_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    hosts_sub = hosts_parser.add_subparsers(dest="subcommand")
+    hosts_list = hosts_sub.add_parser("list", help="List host records")
+    hosts_list.set_defaults(func=hosts_command)
+    hosts_get = hosts_sub.add_parser("get", help="Get a host record")
+    hosts_get.add_argument("name")
+    hosts_get.set_defaults(func=hosts_command)
+    hosts_create = hosts_sub.add_parser("create", help="Create a host record")
+    hosts_create.add_argument("--name", help="Host name (required unless using --json/--json-file)")
+    hosts_create.add_argument("--os-type")
+    hosts_create.add_argument("--notes")
+    hosts_create.add_argument("--service-name", default="fortress")
+    hosts_create.add_argument("--installed", action="store_true")
+    hosts_create.add_argument("--not-installed", dest="installed", action="store_false")
+    hosts_create.set_defaults(installed=None)
+    hosts_create.add_argument("--label", action="append", default=[], help="Label in key=value form")
+    hosts_create.add_argument("--ssh-host")
+    hosts_create.add_argument("--ssh-user")
+    hosts_create.add_argument("--ssh-port", type=int)
+    hosts_create.add_argument("--ssh-key")
+    hosts_create.add_argument("--ssh-password")
+    hosts_create.add_argument("--json")
+    hosts_create.add_argument("--json-file")
+    hosts_create.set_defaults(func=hosts_command)
+    hosts_update = hosts_sub.add_parser("update", help="Update a host record")
+    hosts_update.add_argument("name")
+    hosts_update.add_argument("--os-type")
+    hosts_update.add_argument("--notes")
+    hosts_update.add_argument("--service-name")
+    hosts_update.add_argument("--installed", action="store_true")
+    hosts_update.add_argument("--not-installed", dest="installed", action="store_false")
+    hosts_update.set_defaults(installed=None)
+    hosts_update.add_argument("--label", action="append", default=[], help="Label in key=value form")
+    hosts_update.add_argument("--ssh-host")
+    hosts_update.add_argument("--ssh-user")
+    hosts_update.add_argument("--ssh-port", type=int)
+    hosts_update.add_argument("--ssh-key")
+    hosts_update.add_argument("--ssh-password")
+    hosts_update.add_argument("--json")
+    hosts_update.add_argument("--json-file")
+    hosts_update.set_defaults(func=hosts_command)
+    hosts_delete = hosts_sub.add_parser("delete", help="Delete a host record")
+    hosts_delete.add_argument("name")
+    hosts_delete.set_defaults(func=hosts_command)
+    hosts_provision = hosts_sub.add_parser("provision", help="Provision a host over SSH")
+    hosts_provision.add_argument("name")
+    hosts_provision.add_argument("--profile", choices=["ubuntu", "fedora"], default="ubuntu")
+    hosts_provision.add_argument("--repo-url")
+    hosts_provision.add_argument("--branch", default="main")
+    hosts_provision.add_argument("--install-dir", default="/opt/linus-fortress")
+    hosts_provision.add_argument("--service-name", default="fortress")
+    hosts_provision.add_argument("--port", type=int, default=8443)
+    hosts_provision.add_argument("--api-key")
+    hosts_provision.add_argument("--backup-password")
+    hosts_provision.add_argument("--skip-service", action="store_true")
+    hosts_provision.add_argument("--force-reset", action="store_true")
+    hosts_provision.add_argument("--ssh-host")
+    hosts_provision.add_argument("--ssh-user")
+    hosts_provision.add_argument("--ssh-port", type=int)
+    hosts_provision.add_argument("--ssh-key")
+    hosts_provision.add_argument("--ssh-password")
+    hosts_provision.set_defaults(func=hosts_command)
+    hosts_probe = hosts_sub.add_parser("probe", help="Probe a host over SSH")
+    hosts_probe.add_argument("name")
+    hosts_probe.add_argument("--save-as")
+    hosts_probe.add_argument("--ssh-host")
+    hosts_probe.add_argument("--ssh-user")
+    hosts_probe.add_argument("--ssh-port", type=int)
+    hosts_probe.add_argument("--ssh-key")
+    hosts_probe.add_argument("--ssh-password")
+    hosts_probe.set_defaults(func=hosts_command)
+    hosts_states = hosts_sub.add_parser("states", help="List saved host probe states")
+    hosts_states.add_argument("name")
+    hosts_states.set_defaults(func=hosts_command)
 
     return parser
 

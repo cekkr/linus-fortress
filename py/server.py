@@ -68,6 +68,21 @@ from fortress.vms import (
     provision_vm,
     probe_vm,
 )
+from fortress.hosts import (
+    HostCreateRequest,
+    HostUpdateRequest,
+    HostProvisionRequest,
+    HostProbeRequest,
+    load_hosts,
+    save_hosts,
+    build_host_summary,
+    sanitize_host_record,
+    create_host,
+    update_host,
+    delete_host,
+    provision_host,
+    probe_host,
+)
 
 # --- CONFIGURATION ---
 # In production, load these from environment variables
@@ -83,6 +98,7 @@ RECIPES_DB = "/var/lib/fortress/recipes.json"
 SHARED_STORAGE_DIR = "/var/lib/fortress/shares"
 COMMAND_LOG_DB = "/var/lib/fortress/command_log.db"
 VMS_DB = "/var/lib/fortress/vms.json"
+HOSTS_DB = "/var/lib/fortress/hosts.json"
 
 def resolve_master_key() -> Optional[str]:
     if not API_SECRET_KEY:
@@ -656,6 +672,97 @@ def list_vm_states(name: str, x_api_key: Optional[str] = Header(default=None), x
     states = record.get("saved_states", [])
     audit_api("vms_states", target=name, details={"count": len(states)})
     return {"states": states}
+
+# --- HOST MANAGEMENT ---
+
+
+def _load_host_store() -> Dict[str, Dict[str, Any]]:
+    return load_hosts(HOSTS_DB)
+
+
+@app.get("/hosts")
+def list_hosts(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("hosts_list", "host_read", x_api_key, x_user_token)
+    hosts = _load_host_store()
+    response = [build_host_summary(record) for _, record in sorted(hosts.items())]
+    audit_api("hosts_list", details={"count": len(response)})
+    return {"hosts": response}
+
+
+@app.get("/hosts/{name}")
+def get_host(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("hosts_get", "host_read", x_api_key, x_user_token)
+    hosts = _load_host_store()
+    record = hosts.get(name)
+    if not record:
+        audit_api("hosts_get", target=name, details={"error": "not found"}, status="error")
+        raise HTTPException(status_code=404, detail="Host not found")
+    audit_api("hosts_get", target=name)
+    return {"host": sanitize_host_record(record)}
+
+
+@app.post("/hosts")
+def create_host_record(payload: HostCreateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("hosts_create", "host_manage", x_api_key, x_user_token)
+    hosts = _load_host_store()
+    record = create_host(payload, hosts)
+    save_hosts(HOSTS_DB, hosts)
+    audit_api("hosts_create", target=payload.name)
+    return {"message": f"Host {payload.name} created", "host": sanitize_host_record(record)}
+
+
+@app.put("/hosts/{name}")
+def update_host_record(name: str, payload: HostUpdateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("hosts_update", "host_manage", x_api_key, x_user_token)
+    hosts = _load_host_store()
+    record = update_host(name, payload, hosts)
+    save_hosts(HOSTS_DB, hosts)
+    audit_api("hosts_update", target=name, details={"fields": sorted(payload.dict(exclude_unset=True).keys())})
+    return {"message": f"Host {name} updated", "host": sanitize_host_record(record)}
+
+
+@app.delete("/hosts/{name}")
+def delete_host_record(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("hosts_delete", "host_manage", x_api_key, x_user_token)
+    hosts = _load_host_store()
+    record = delete_host(name, hosts)
+    save_hosts(HOSTS_DB, hosts)
+    audit_api("hosts_delete", target=name)
+    return {"message": f"Host {name} removed", "host": sanitize_host_record(record)}
+
+
+@app.post("/hosts/{name}/provision")
+def provision_host_instance(name: str, payload: HostProvisionRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("hosts_provision", "host_manage", x_api_key, x_user_token)
+    hosts = _load_host_store()
+    result = provision_host(name, payload, hosts)
+    save_hosts(HOSTS_DB, hosts)
+    audit_api("hosts_provision", target=name, details={"profile": payload.profile})
+    return {"message": "Provisioning complete", "result": result}
+
+
+@app.post("/hosts/{name}/probe")
+def probe_host_instance(name: str, payload: HostProbeRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("hosts_probe", "host_read", x_api_key, x_user_token)
+    hosts = _load_host_store()
+    result = probe_host(name, payload, hosts)
+    save_hosts(HOSTS_DB, hosts)
+    audit_api("hosts_probe", target=name, details={"saved_as": payload.save_as})
+    return {"probe": result}
+
+
+@app.get("/hosts/{name}/states")
+def list_host_states(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("hosts_states", "host_read", x_api_key, x_user_token)
+    hosts = _load_host_store()
+    record = hosts.get(name)
+    if not record:
+        audit_api("hosts_states", target=name, details={"error": "not found"}, status="error")
+        raise HTTPException(status_code=404, detail="Host not found")
+    states = record.get("saved_states", [])
+    audit_api("hosts_states", target=name, details={"count": len(states)})
+    return {"states": states}
+
 
 # --- RECIPE AUTOMATION ---
 

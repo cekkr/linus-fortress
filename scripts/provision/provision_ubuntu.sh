@@ -14,8 +14,10 @@ FORTRESS_HOST_PORT=${FORTRESS_HOST_PORT:-8443}
 FORTRESS_API_KEY=${FORTRESS_API_KEY:-}
 FORTRESS_BACKUP_PASSWORD=${FORTRESS_BACKUP_PASSWORD:-}
 SKIP_SERVICE=${SKIP_SERVICE:-}
+FORCE_RESET=${FORCE_RESET:-}
 
-dnf -y install python3 python3-pip python3-virtualenv git openssl
+apt-get update -y
+apt-get install -y python3 python3-venv python3-pip git openssl
 
 mkdir -p /var/lib/fortress /etc/fortress/ssl
 
@@ -28,7 +30,16 @@ if [ ! -d "${INSTALL_DIR}/.git" ]; then
 else
   git -C "${INSTALL_DIR}" fetch --depth 1 origin "${BRANCH}"
   git -C "${INSTALL_DIR}" checkout "${BRANCH}"
-  git -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH}"
+  if git -C "${INSTALL_DIR}" diff --quiet; then
+    git -C "${INSTALL_DIR}" pull --ff-only origin "${BRANCH}"
+  else
+    if [ -n "${FORCE_RESET}" ]; then
+      git -C "${INSTALL_DIR}" reset --hard "origin/${BRANCH}"
+    else
+      echo "Local changes detected in ${INSTALL_DIR}. Set FORCE_RESET=1 to overwrite." >&2
+      exit 3
+    fi
+  fi
 fi
 
 python3 -m venv "${INSTALL_DIR}/.venv"

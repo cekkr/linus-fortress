@@ -1110,6 +1110,172 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+  /hosts:
+    get:
+      summary: List registered SSH hosts
+      tags: [Hosts]
+      responses:
+        "200":
+          description: Host list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hosts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HostSummary"
+    post:
+      summary: Create a host record
+      tags: [Hosts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostCreate"
+      responses:
+        "200":
+          description: Host creation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /hosts/{name}:
+    get:
+      summary: Fetch a host record
+      tags: [Hosts]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Host record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  host:
+                    $ref: "#/components/schemas/HostRecord"
+    put:
+      summary: Update a host record
+      tags: [Hosts]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostUpdate"
+      responses:
+        "200":
+          description: Updated host record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  host:
+                    $ref: "#/components/schemas/HostRecord"
+    delete:
+      summary: Remove a host record
+      tags: [Hosts]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Host deletion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /hosts/{name}/provision:
+    post:
+      summary: Provision a host via SSH
+      tags: [Hosts]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostProvision"
+      responses:
+        "200":
+          description: Provisioning result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /hosts/{name}/probe:
+    post:
+      summary: Probe host status via SSH
+      tags: [Hosts]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostProbe"
+      responses:
+        "200":
+          description: Host probe result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  probe:
+                    $ref: "#/components/schemas/HostProbeResult"
+  /hosts/{name}/states:
+    get:
+      summary: List saved host probe states
+      tags: [Hosts]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Saved host states
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  states:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -1747,6 +1913,134 @@ components:
           type: array
           items:
             type: string
+    HostSSHConfig:
+      type: object
+      properties:
+        host:
+          type: string
+        username:
+          type: string
+        port:
+          type: integer
+          default: 22
+        key_path:
+          type: string
+        password:
+          type: string
+    HostCreate:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        os_type:
+          type: string
+        ssh:
+          $ref: "#/components/schemas/HostSSHConfig"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        notes:
+          type: string
+        installed:
+          type: boolean
+        service_name:
+          type: string
+    HostUpdate:
+      type: object
+      properties:
+        os_type:
+          type: string
+        ssh:
+          $ref: "#/components/schemas/HostSSHConfig"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        notes:
+          type: string
+        installed:
+          type: boolean
+        service_name:
+          type: string
+    HostProvision:
+      type: object
+      properties:
+        profile:
+          type: string
+          enum: [ubuntu, fedora]
+        repo_url:
+          type: string
+        branch:
+          type: string
+        install_dir:
+          type: string
+        service_name:
+          type: string
+        fortress_port:
+          type: integer
+        api_key:
+          type: string
+        backup_password:
+          type: string
+        skip_service:
+          type: boolean
+        force_reset:
+          type: boolean
+        ssh:
+          $ref: "#/components/schemas/HostSSHConfig"
+    HostProbe:
+      type: object
+      properties:
+        save_as:
+          type: string
+        ssh:
+          $ref: "#/components/schemas/HostSSHConfig"
+    HostRecord:
+      type: object
+      properties:
+        name:
+          type: string
+        os_type:
+          type: string
+        ssh:
+          $ref: "#/components/schemas/HostSSHConfig"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        notes:
+          type: string
+        installed:
+          type: boolean
+        service_name:
+          type: string
+        updated_at:
+          type: string
+    HostSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        os_type:
+          type: string
+        installed:
+          type: boolean
+        ssh_host:
+          type: string
+        ssh_port:
+          type: integer
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        updated_at:
+          type: string
+    HostProbeResult:
+      type: object
+      additionalProperties: true
     VMSSHConfig:
       type: object
       properties:
@@ -1901,6 +2195,8 @@ components:
         backup_password:
           type: string
         skip_service:
+          type: boolean
+        force_reset:
           type: boolean
         ssh:
           $ref: "#/components/schemas/VMSSHConfig"

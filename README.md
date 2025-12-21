@@ -5,7 +5,7 @@ Linus' Fortress is a FastAPI service that centralizes automation for LXD-based V
 ## Authentication
 
 - `X-API-Key`: optional centralized master key with unrestricted access, best used only during bootstrap (set `FORTRESS_API_KEY` or `API_SECRET_KEY`). Disable it long-term to reduce blast radius.
-- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`) and optional `allowed_containers` scope.
+- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`) and optional `allowed_containers` scope.
 - Either header grants access; if both are provided the master key takes precedence. Tokens scoped to containers must match the container(s) referenced by the request payload.
 
 Once bootstrap tokens are created, unset `FORTRESS_API_KEY` (or keep the default placeholder) to disable the centralized key and reduce long-term risk.
@@ -73,7 +73,7 @@ Body fields (defaults shown):
 ### VM Testing (QEMU/VirtualBox)
 
 VM records let you spin up real OS test environments (QEMU/UTM or VirtualBox) and keep SSH access + snapshots for deeper integration tests.
-Provisioning uses SSH to run the install-from-scratch scripts in `scripts/vm/provision_ubuntu.sh` and `scripts/vm/provision_fedora.sh`.
+Provisioning uses SSH to run the install-from-scratch scripts in `scripts/provision/provision_ubuntu.sh` and `scripts/provision/provision_fedora.sh`.
 
 #### `GET /vms` (permission `vm_read`)
 - Returns VM summaries (`name`, `provider`, `state`, `installed`, `ssh_host`, labels).
@@ -130,6 +130,38 @@ CLI examples:
 - `fortress-cli vms start lab-ubuntu --use-iso`
 - `fortress-cli vms provision lab-ubuntu --profile ubuntu --repo-url https://github.com/your-org/linus-fortress.git`
 - `fortress-cli vms probe lab-ubuntu --save-as baseline`
+
+### Host Provisioning (SSH)
+
+Host records reuse the same provisioning/probing scripts for production or staging machines over SSH. Scripts live in `scripts/provision` and are shared with VM workflows.
+Provisioning pulls fast-forward updates when the repo is clean; set `force_reset` (API/CLI) or `FORCE_RESET=1` (script) to overwrite local changes.
+
+#### `GET /hosts` (permission `host_read`)
+- Returns host summaries (`name`, `installed`, `ssh_host`, labels).
+
+#### `POST /hosts` (permission `host_manage`)
+Body (excerpt):
+```json
+{
+  "name": "prod-eu-1",
+  "os_type": "ubuntu",
+  "service_name": "fortress",
+  "ssh": {"host": "198.51.100.10", "username": "root", "key_path": "/root/.ssh/id_rsa"}
+}
+```
+
+#### `POST /hosts/{name}/provision` (permission `host_manage`)
+- Pushes the provisioning script over SSH and installs Linus' Fortress on the remote host.
+
+#### `POST /hosts/{name}/probe` (permission `host_read`)
+- SSH probe for hostname, OS, kernel, IP, CPU, memory, disk, and fortress service status.
+- Use `save_as` to keep a named state in `/hosts/{name}/states`.
+
+CLI examples:
+- `fortress-cli hosts create --name prod-eu-1 --ssh-host 198.51.100.10 --ssh-user root --ssh-key ~/.ssh/id_rsa`
+- `fortress-cli hosts provision prod-eu-1 --profile ubuntu --repo-url https://github.com/your-org/linus-fortress.git`
+- `fortress-cli hosts probe prod-eu-1 --save-as baseline`
+
 
 ### API Users
 

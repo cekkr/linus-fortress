@@ -2,10 +2,8 @@ import json
 import logging
 import os
 import re
-import shlex
 import shutil
 import signal
-import subprocess
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Literal
@@ -13,19 +11,15 @@ from typing import Any, Dict, List, Optional, Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from fortress.remote import SSHConfig, build_probe_script, load_provision_script, run_ssh_script
 from fortress.system import run_command
 
 VM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 DEFAULT_VM_DIR = "/var/lib/fortress/vms"
-PROVISION_SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "vm"))
 
 
-class VMSSHConfig(BaseModel):
-    host: str
-    username: str
-    port: int = 22
-    key_path: Optional[str] = None
-    password: Optional[str] = None
+class VMSSHConfig(SSHConfig):
+    pass
 
 
 class VMCreateRequest(BaseModel):
@@ -94,6 +88,7 @@ class VMProvisionRequest(BaseModel):
     user_token: Optional[str] = None
     backup_password: Optional[str] = None
     skip_service: bool = False
+    force_reset: bool = False
     ssh: Optional[VMSSHConfig] = None
 
 
@@ -170,22 +165,6 @@ def build_vm_summary(record: Dict[str, Any]) -> Dict[str, Any]:
         "labels": record.get("labels", {}),
         "updated_at": record.get("updated_at"),
     }
-
-
-def _run_subprocess(command: List[str], input_text: Optional[str] = None) -> str:
-    try:
-        result = subprocess.run(
-            command,
-            input=input_text,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as exc:
-        logging.error("Command failed: %s. Error: %s", exc.cmd, exc.stderr)
-        raise HTTPException(status_code=500, detail=f"System Error: {exc.stderr.strip()}")
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -608,33 +587,6 @@ def list_snapshots(name: str, vms: Dict[str, Dict[str, Any]]) -> List[Dict[str, 
     return record.get("snapshots", [])
 
 
-def _build_ssh_command(ssh_config: Dict[str, Any]) -> List[str]:
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-p", str(ssh_config.get("port", 22))]
-    key_path = ssh_config.get("key_path")
-    if key_path:
-        cmd.extend(["-i", key_path])
-    target = f"{ssh_config['username']}@{ssh_config['host']}"
-    cmd.append(target)
-    return cmd
-
-
-def _run_ssh_script(ssh_config: Dict[str, Any], script: str, env: Optional[Dict[str, str]] = None) -> str:
-    env_pairs = []
-    for key, value in (env or {}).items():
-        if value is None:
-            continue
-        env_pairs.append(f"{key}={shlex.quote(str(value))}")
-    env_prefix = " ".join(env_pairs)
-    remote_cmd = f"{env_prefix} bash -s" if env_prefix else "bash -s"
-    base_cmd = _build_ssh_command(ssh_config)
-    password = ssh_config.get("password")
-    if password:
-        if shutil.which("sshpass") is None:
-            raise HTTPException(status_code=500, detail="sshpass is required for password-based SSH")
-        base_cmd = ["sshpass", "-p", password] + base_cmd
-    return _run_subprocess(base_cmd + [remote_cmd], input_text=script)
-
-
 def _resolve_ssh_config(record: Dict[str, Any], override: Optional[VMSSHConfig]) -> Dict[str, Any]:
     if override is not None:
         return override.dict()
@@ -646,12 +598,7 @@ def _resolve_ssh_config(record: Dict[str, Any], override: Optional[VMSSHConfig])
 
 def provision_vm(name: str, request: VMProvisionRequest, vms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     record = _resolve_vm(vms, name)
-    script_name = f"provision_{request.profile}.sh"
-    script_path = os.path.join(PROVISION_SCRIPTS_DIR, script_name)
-    if not os.path.exists(script_path):
-        raise HTTPException(status_code=500, detail=f"Provisioning script not found: {script_name}")
-    with open(script_path, "r") as fh:
-        script = fh.read()
+    script = load_provision_script(request.profile)
     ssh_config = _resolve_ssh_config(record, request.ssh)
     env = {
         "REPO_URL": request.repo_url,
@@ -663,8 +610,9 @@ def provision_vm(name: str, request: VMProvisionRequest, vms: Dict[str, Dict[str
         "FORTRESS_USER_TOKEN": request.user_token,
         "FORTRESS_BACKUP_PASSWORD": request.backup_password,
         "SKIP_SERVICE": "1" if request.skip_service else None,
+        "FORCE_RESET": "1" if request.force_reset else None,
     }
-    output = _run_ssh_script(ssh_config, script, env=env)
+    output = run_ssh_script(ssh_config, script, env=env)
     record["last_provisioned_at"] = utc_now()
     record["last_provision_profile"] = request.profile
     record["service_name"] = request.service_name
@@ -675,62 +623,8 @@ def provision_vm(name: str, request: VMProvisionRequest, vms: Dict[str, Dict[str
 def probe_vm(name: str, request: VMProbeRequest, vms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     record = _resolve_vm(vms, name)
     ssh_config = _resolve_ssh_config(record, request.ssh)
-    service_name = shlex.quote(record.get("service_name", "fortress"))
-    script = f"""#!/usr/bin/env bash
-set -euo pipefail
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 missing" >&2
-  exit 2
-fi
-python3 - <<'PY'
-import json
-import os
-import platform
-import socket
-import subprocess
-
-def run(cmd):
-    return subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.DEVNULL).strip()
-
-data = {
-    "hostname": socket.gethostname(),
-    "kernel": platform.release(),
-    "uptime": run("uptime -p || uptime"),
-    "ip_address": run("hostname -I | awk '{print $1}'"),
-    "cpu_count": os.cpu_count(),
-}
-
-os_release = {}
-if os.path.exists("/etc/os-release"):
-    with open("/etc/os-release", "r", encoding="utf-8") as fh:
-        for line in fh:
-            if "=" not in line:
-                continue
-            key, value = line.rstrip().split("=", 1)
-            os_release[key] = value.strip('"')
-
-data["os"] = {
-    "name": os_release.get("NAME"),
-    "version_id": os_release.get("VERSION_ID"),
-    "pretty_name": os_release.get("PRETTY_NAME"),
-}
-try:
-    data["memory_mb"] = int(run("free -m | awk '/Mem:/ {print $2}'"))
-except Exception:
-    data["memory_mb"] = None
-try:
-    data["disk_root"] = run("df -h / | awk 'NR==2 {print $2, $3, $5}'")
-except Exception:
-    data["disk_root"] = None
-try:
-    data["fortress_service"] = run("systemctl is-active {service_name}")
-except Exception:
-    data["fortress_service"] = "unknown"
-
-print(json.dumps(data))
-PY
-"""
-    output = _run_ssh_script(ssh_config, script)
+    script = build_probe_script(record.get("service_name", "fortress"))
+    output = run_ssh_script(ssh_config, script)
     try:
         payload = json.loads(output)
     except json.JSONDecodeError as exc:
