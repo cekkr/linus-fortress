@@ -1,11 +1,9 @@
-import json
-import logging
-import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from fortress.storage import load_json_dict, save_json
 
 RECIPE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
@@ -43,30 +41,12 @@ def validate_recipe_name(name: str) -> None:
         raise ValueError("Recipe name must be 1-64 chars using letters, digits, ., _, or -")
 
 
-def ensure_parent_dir(path: str) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-
-
 def load_recipes(path: str) -> Dict[str, Dict[str, Any]]:
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            return data
-        logging.error("Recipe store at %s is not a dict; resetting.", path)
-    except (json.JSONDecodeError, OSError) as exc:
-        logging.error("Failed to load recipe store %s: %s", path, exc)
-    return {}
+    return load_json_dict(path, label="Recipe")
 
 
 def save_recipes(path: str, recipes: Dict[str, Dict[str, Any]]) -> None:
-    ensure_parent_dir(path)
-    with open(path, "w") as fh:
-        json.dump(recipes, fh, indent=2)
+    save_json(path, recipes)
 
 
 def resolve_recipe_plan(

@@ -1,6 +1,4 @@
 import json
-import logging
-import os
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Literal
@@ -9,6 +7,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from fortress.remote import SSHConfig, build_probe_script, load_provision_script, run_ssh_script
+from fortress.storage import load_json_dict, save_json
 
 HOST_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
@@ -59,35 +58,17 @@ def utc_now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
-def ensure_parent_dir(path: str) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-
-
 def validate_host_name(name: str) -> None:
     if not name or not HOST_NAME_PATTERN.match(name):
         raise HTTPException(status_code=400, detail="Host name must be 1-64 chars using letters, digits, ., _, or -")
 
 
 def load_hosts(path: str) -> Dict[str, Dict[str, Any]]:
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            return data
-        logging.error("Host store at %s is not a dict; resetting.", path)
-    except (json.JSONDecodeError, OSError) as exc:
-        logging.error("Failed to load host store %s: %s", path, exc)
-    return {}
+    return load_json_dict(path, label="Host")
 
 
 def save_hosts(path: str, hosts: Dict[str, Dict[str, Any]]) -> None:
-    ensure_parent_dir(path)
-    with open(path, "w") as fh:
-        json.dump(hosts, fh, indent=2)
+    save_json(path, hosts)
 
 
 def sanitize_host_record(record: Dict[str, Any]) -> Dict[str, Any]:

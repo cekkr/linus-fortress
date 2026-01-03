@@ -32,6 +32,13 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 Once bootstrap tokens are created, unset `FORTRESS_API_KEY` (or keep the default placeholder) to disable the centralized key and reduce long-term risk.
 If `FORTRESS_API_KEY` is unset or left as the default placeholder, `X-API-Key` authentication is disabled.
 
+## Code map (selected)
+
+- `py/server.py`: FastAPI routes and orchestration.
+- `py/fortress/auth.py`: master key resolution, delegated token checks, container scope enforcement.
+- `py/fortress/storage.py`: JSON load/save helpers for API users, recipes, hosts, and VMs.
+- `py/fortress/recipes.py`: recipe models, dependency resolution, and template rendering.
+
 ## API Reference
 
 A full OpenAPI description is provided in [`api-v1.yaml`](api-v1.yaml) (import it into Swagger UI, Postman, Insomnia, etc.). The summaries below highlight each route, the permissions enforced by `py/server.py`, and the body/parameter semantics that `fortress-cli.py` uses under the hood.

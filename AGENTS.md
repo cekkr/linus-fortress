@@ -2,6 +2,8 @@ This file contains the directives for AIs and must be kept current with the mini
 
 ## Project status
 - py/server.py contains the main central server with APIs and now includes the containers router
+- `py/fortress/auth.py` centralizes master key resolution, delegated token verification, and container scope enforcement
+- `py/fortress/storage.py` centralizes JSON store helpers for API users, recipes, hosts, and VMs
 - py/fortress/monitoring.py centralizes host/container resource snapshots with alert thresholds
 - Container lifecycle/access/connectivity APIs are implemented in `py/fortress/api/containers.py` with LXC helpers in `py/fortress/containers.py`
 - `py/fortress/system.py` owns the shared `run_command` helper used by server and container management
@@ -11,7 +13,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Master API key is optional (set via `FORTRESS_API_KEY`/`API_SECRET_KEY`) and should be disabled after bootstrap; delegated tokens are preferred long-term
 - New recipe automation endpoints (`/recipes`, `/recipes/{name}`, `/recipes/apply`) allow "nix-like" install blueprints with dependencies, packages, and commands (templated with `{{param}}`), stored in `/var/lib/fortress/recipes.json`
 - A new fortress.audit module powers the SQLite-based command register that captures all API activity plus container exec behaviour for investigation
-- `py/fortress/recipes.py` holds recipe models, storage helpers, dependency resolution, and template rendering
+- `py/fortress/recipes.py` holds recipe models, dependency resolution, and template rendering
 - `py/fortress/hosts.py` tracks SSH-managed host records for provisioning/probing on non-VM machines; shared SSH/script helpers are in `py/fortress/remote.py`
 - fortress-cli.py now includes `recipes list|create|apply` helpers in addition to status/api-users/package/backup calls
 - Unit tests in `tests/test_recipes.py` cover recipe dependency resolution and apply planning
@@ -36,6 +38,7 @@ This file contains the directives for AIs and must be kept current with the mini
 |   |-- server.py
 |   `-- fortress
 |       |-- __init__.py
+|       |-- auth.py
 |       |-- audit.py
 |       |-- containers.py
 |       |-- monitoring.py
@@ -43,6 +46,7 @@ This file contains the directives for AIs and must be kept current with the mini
 |       |-- remote.py
 |       |-- vms.py
 |       |-- recipes.py
+|       |-- storage.py
 |       |-- system.py
 |       `-- api
 |           |-- __init__.py

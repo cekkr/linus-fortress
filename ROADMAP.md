@@ -3,9 +3,9 @@
 Security posture: assume capable attackers and prioritize least privilege, auditability, and safe rollback paths.
 
 ## Path 1: Core auth and storage modularization (short term)
-- Extract auth/token utilities into `py/fortress/auth.py`.
-- Extract storage helpers into `py/fortress/storage.py`.
-- Keep `py/server.py` focused on route wiring and orchestration.
+- Done: Extract auth/token utilities into `py/fortress/auth.py`.
+- Done: Extract storage helpers into `py/fortress/storage.py`.
+- Done: Keep `py/server.py` focused on route wiring and orchestration.
 
 ## Path 2: Monitoring baseline and anomaly detection (short term)
 - Persist historical resource snapshots for hosts and containers.

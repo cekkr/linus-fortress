@@ -10,9 +10,16 @@ from datetime import datetime
 from cryptography.fernet import Fernet
 import base64
 import hashlib
-import json
 from contextvars import ContextVar
 
+from fortress.auth import (
+    DEFAULT_API_SECRET,
+    enforce_container_scope,
+    enforce_container_scopes,
+    mask_token,
+    resolve_master_key,
+    verify_token,
+)
 from fortress.audit import CommandLogger
 from fortress.api.containers import build_container_router
 from fortress.containers import (
@@ -43,6 +50,7 @@ from fortress.monitoring import (
     DEFAULT_HOST_THRESHOLDS,
     gather_resource_snapshot,
 )
+from fortress.storage import load_json_dict, save_json
 from fortress.vms import (
     VMCreateRequest,
     VMUpdateRequest,
@@ -86,7 +94,6 @@ from fortress.hosts import (
 
 # --- CONFIGURATION ---
 # In production, load these from environment variables
-DEFAULT_API_SECRET = "CHANGE_THIS_TO_A_VERY_LONG_RANDOM_STRING"
 API_SECRET_KEY = os.environ.get("FORTRESS_API_KEY", os.environ.get("API_SECRET_KEY", DEFAULT_API_SECRET))
 BACKUP_ENCRYPTION_PASSWORD = os.environ.get("FORTRESS_BACKUP_PASSWORD", "CHANGE_THIS_TO_YOUR_STRONG_BACKUP_PASSWORD")
 HOST_INTERFACE = os.environ.get("FORTRESS_HOST_INTERFACE", "0.0.0.0")
@@ -100,19 +107,11 @@ COMMAND_LOG_DB = "/var/lib/fortress/command_log.db"
 VMS_DB = "/var/lib/fortress/vms.json"
 HOSTS_DB = "/var/lib/fortress/hosts.json"
 
-def resolve_master_key() -> Optional[str]:
-    if not API_SECRET_KEY:
-        return None
-    key = API_SECRET_KEY.strip()
-    if not key or key == DEFAULT_API_SECRET:
-        return None
-    return key
-
 # Logging setup
 logging.basicConfig(filename='/var/log/fortress.log', level=logging.INFO, 
                     format='%(asctime)s %(levelname)s: %(message)s')
 
-MASTER_API_KEY = resolve_master_key()
+MASTER_API_KEY = resolve_master_key(API_SECRET_KEY, DEFAULT_API_SECRET)
 if MASTER_API_KEY is None:
     logging.warning("Master API key disabled or defaulted; only delegated tokens accepted.")
 
@@ -126,11 +125,6 @@ def get_fernet_key(password: str) -> bytes:
     """Derive a 32-byte base64 key from the password for AES encryption."""
     digest = hashlib.sha256(password.encode()).digest()
     return base64.urlsafe_b64encode(digest)
-
-def ensure_parent_dir(path: str):
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
 
 def set_request_context(actor: str, endpoint: str):
     REQUEST_CONTEXT.set({"actor": actor or "system", "endpoint": endpoint})
@@ -173,15 +167,14 @@ def sanitize_payload_fuzzy(payload: Dict[str, Any], sensitive_keywords: Optional
             redacted[key] = value
     return redacted
 
-def mask_token(token: str) -> str:
-    if not token:
-        return ""
-    if len(token) <= 8:
-        return "***"
-    return f"{token[:4]}...{token[-4:]}"
-
 def authorize(endpoint: str, required_permission: Optional[str], x_api_key: Optional[str], x_user_token: Optional[str], containers: Optional[Union[str, List[str]]] = None):
-    auth_context = verify_token(x_api_key, x_user_token, required_permission=required_permission)
+    auth_context = verify_token(
+        x_api_key,
+        x_user_token,
+        required_permission=required_permission,
+        master_key=MASTER_API_KEY,
+        load_users=load_api_users,
+    )
     set_request_context(auth_context.get("actor", "system"), endpoint)
     if containers:
         if isinstance(containers, str):
@@ -191,55 +184,14 @@ def authorize(endpoint: str, required_permission: Optional[str], x_api_key: Opti
     return auth_context
 
 def load_api_users() -> Dict[str, Dict]:
-    if not os.path.exists(API_USERS_DB):
-        return {}
-    try:
-        with open(API_USERS_DB, "r") as fh:
-            return json.load(fh)
-    except (json.JSONDecodeError, OSError):
-        logging.error("Failed to load API user database, falling back to empty set.")
-        return {}
+    return load_json_dict(
+        API_USERS_DB,
+        label="API user",
+        error_message="Failed to load API user database, falling back to empty set.",
+    )
 
 def save_api_users(users: Dict[str, Dict]):
-    ensure_parent_dir(API_USERS_DB)
-    with open(API_USERS_DB, "w") as fh:
-        json.dump(users, fh, indent=2)
-
-def verify_token(x_api_key: Optional[str], x_user_token: Optional[str] = None, required_permission: Optional[str] = None):
-    """Validate access either via master API key or delegated user token."""
-    if MASTER_API_KEY and x_api_key and x_api_key == MASTER_API_KEY:
-        return {"actor": "admin", "permissions": ["*"], "allowed_containers": None}
-
-    if x_user_token:
-        users = load_api_users()
-        record = users.get(x_user_token)
-        if not record:
-            logging.warning("Unknown API user token attempted.")
-            raise HTTPException(status_code=403, detail="Invalid API token")
-
-        permissions = record.get("permissions", [])
-        if required_permission and required_permission not in permissions and "*" not in permissions:
-            logging.warning("API user lacks permission %s", required_permission)
-            raise HTTPException(status_code=403, detail="Permission denied for this API user")
-
-        return {
-            "actor": record.get("username", "api-user"),
-            "permissions": permissions,
-            "allowed_containers": record.get("allowed_containers"),
-        }
-
-    logging.warning("Unauthorized access attempt.")
-    raise HTTPException(status_code=403, detail="Invalid authentication headers")
-
-def enforce_container_scope(auth_context: Dict, container_name: str):
-    allowed = auth_context.get("allowed_containers")
-    if allowed and container_name not in allowed:
-        logging.warning("User %s attempted to access container %s without scope.", auth_context.get("actor"), container_name)
-        raise HTTPException(status_code=403, detail=f"Container {container_name} not in allowed scope")
-
-def enforce_container_scopes(auth_context: Dict, containers: List[str]):
-    for container in containers:
-        enforce_container_scope(auth_context, container)
+    save_json(API_USERS_DB, users)
 
 def ensure_packages_list(packages: List[str]):
     if not packages:

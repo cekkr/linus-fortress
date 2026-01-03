@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from fortress.remote import SSHConfig, build_probe_script, load_provision_script, run_ssh_script
+from fortress.storage import ensure_parent_dir, load_json_dict, save_json
 from fortress.system import run_command
 
 VM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -101,12 +102,6 @@ def utc_now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
-def ensure_parent_dir(path: str) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-
-
 def validate_vm_name(name: str) -> None:
     if not name or not VM_NAME_PATTERN.match(name):
         raise HTTPException(status_code=400, detail="VM name must be 1-64 chars using letters, digits, ., _, or -")
@@ -119,23 +114,11 @@ def normalize_provider(provider: str) -> str:
 
 
 def load_vms(path: str) -> Dict[str, Dict[str, Any]]:
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            return data
-        logging.error("VM store at %s is not a dict; resetting.", path)
-    except (json.JSONDecodeError, OSError) as exc:
-        logging.error("Failed to load VM store %s: %s", path, exc)
-    return {}
+    return load_json_dict(path, label="VM")
 
 
 def save_vms(path: str, vms: Dict[str, Dict[str, Any]]) -> None:
-    ensure_parent_dir(path)
-    with open(path, "w") as fh:
-        json.dump(vms, fh, indent=2)
+    save_json(path, vms)
 
 
 def sanitize_vm_record(record: Dict[str, Any]) -> Dict[str, Any]:
