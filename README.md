@@ -1,6 +1,10 @@
 # linus-fortress
 
-Linus' Fortress is a FastAPI service that centralizes automation for LXD-based VPS deployments: container lifecycle, routing, encrypted backups, delegated API users, security hardening, and now firewall plus package orchestration for both Ubuntu (`apt`) and AlmaLinux (`dnf`) style hosts.
+Linus' Fortress is a FastAPI service that centralizes automation for LXD-based deployments: container lifecycle, routing, encrypted backups, delegated API users, monitoring and audit trails, recipe automation, and firewall/package orchestration for Ubuntu (`apt`) and AlmaLinux (`dnf`) style hosts. It also supports SSH-based host provisioning and VM-based test environments.
+
+## Security posture
+
+The system assumes capable adversaries and focuses on least privilege, scoped credentials, audit trails, and safe rollback behavior when applying changes.
 
 ## Authentication
 
@@ -427,6 +431,4 @@ By default TLS certificates are verified; pass `--insecure` during `setup` only 
 
 ## Roadmap
 
-- Continue modularizing `py/server.py` (auth/storage) now that container APIs live in `py/fortress/api/containers.py`.
-- Extend recipe automation with versioning and export/import bundles.
-- Add automated tests or contract tests for each API route.
+See `ROADMAP.md` for the detailed development paths and sequencing.

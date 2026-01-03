@@ -1,4 +1,4 @@
-This file contains the directives for AIs, and has to be updated by AIs itself to containing all strictly needed informations about the entire project to avoid repeated studies and next steps to do. In the meanwhile, update project's README.md
+This file contains the directives for AIs and must be kept current with the minimum information needed to understand the project quickly and avoid repeated study. Keep README.md and ROADMAP.md aligned when this file changes.
 
 ## Project status
 - py/server.py contains the main central server with APIs and now includes the containers router
@@ -7,6 +7,7 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 - `py/fortress/system.py` owns the shared `run_command` helper used by server and container management
 - py/server.py also manages host/container package operations (apt + dnf) and firewall rules (ufw + firewalld)
 - `/monitoring/resources` exposes structured host+container metrics plus alert flags for automation against anomalous usage/malware-like spikes
+- Security posture assumes strong adversaries; prefer least privilege, audit trails, and rollback on failure
 - Master API key is optional (set via `FORTRESS_API_KEY`/`API_SECRET_KEY`) and should be disabled after bootstrap; delegated tokens are preferred long-term
 - New recipe automation endpoints (`/recipes`, `/recipes/{name}`, `/recipes/apply`) allow "nix-like" install blueprints with dependencies, packages, and commands (templated with `{{param}}`), stored in `/var/lib/fortress/recipes.json`
 - A new fortress.audit module powers the SQLite-based command register that captures all API activity plus container exec behaviour for investigation
@@ -22,9 +23,14 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 ## Project structure (tree)
 ```
 .
-|-- AI_REFERENCES.md
+|-- AGENTS.md
+|-- LICENSE
 |-- README.md
+|-- ROADMAP.md
 |-- api-v1.yaml
+|-- docs
+|   `-- notes
+|       `-- venv-cmd.md
 |-- fortress-cli.py
 |-- py
 |   |-- server.py
@@ -41,6 +47,7 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 |       `-- api
 |           |-- __init__.py
 |           `-- containers.py
+|-- requirements.txt
 |-- scripts
 |   `-- provision
 |       |-- provision_fedora.sh
@@ -57,8 +64,4 @@ This file contains the directives for AIs, and has to be updated by AIs itself t
 - `api-v1.yaml`: canonical OpenAPI reference; README.md mirrors route summaries and permissions
 
 ## Roadmap for AI
-- Short term: extract auth/token utilities + storage helpers into `py/fortress/auth.py` and `py/fortress/storage.py` to keep py/server.py lean
-- Short term: add unit tests for container scope enforcement and audit logging (mock LXC subprocess calls)
-- Short term: add persistence/baseline tracking for monitoring to surface rate-based anomalies (CPU deltas, network spikes)
-- Mid term: add integration tests for core API flows and permission matrix
-- Mid term: recipe export/import bundles with semantic versioning and change history
+- See ROADMAP.md for detailed development paths and sequencing (modularization, monitoring baselines, tests, recipe lifecycle).
