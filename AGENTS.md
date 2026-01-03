@@ -1,4 +1,4 @@
-This file contains the directives for AIs and must be kept current with the minimum information needed to understand the project quickly and avoid repeated study. Keep README.md and ROADMAP.md aligned when this file changes.
+This file contains the directives for AIs and must be kept current with the minimum information needed to understand the project quickly and avoid repeated study. Keep README.md and ROADMAP.md aligned when this file changes. When implementing or planning new features, append any related next steps or not-yet-implemented parts to ROADMAP.md.
 
 ## Project status
 - py/server.py contains the main central server with APIs and now includes the containers router
