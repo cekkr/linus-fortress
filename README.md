@@ -6,6 +6,23 @@ Linus' Fortress is a FastAPI service that centralizes automation for LXD-based d
 
 The system assumes capable adversaries and focuses on least privilege, scoped credentials, audit trails, and safe rollback behavior when applying changes.
 
+### Threat model (concise)
+- Stolen or leaked API tokens that could be used to manage containers or exfiltrate data.
+- Malicious or compromised containers attempting lateral movement to the host or other containers.
+- Abuse of exposed ports/routing to pivot into internal services.
+- Unauthorized SSH or provisioning access to managed hosts or VMs.
+- Supply chain risk via package installs or recipe execution.
+
+### Hardening checklist (operator)
+- Disable the master API key after bootstrap; rely on delegated tokens with minimal permissions and `allowed_containers`.
+- Bind the API to a private interface; terminate TLS at a trusted proxy; rotate credentials regularly.
+- Set `FORTRESS_BACKUP_PASSWORD` and store it outside the host; verify backup restores.
+- Keep host OS and LXD patched; apply security updates before provisioning new containers.
+- Restrict firewall rules and `POST /containers/expose` to known allowlists; prefer specific bind addresses.
+- Run the service under a dedicated user with a tight sudoers policy for the required system commands.
+- Keep audit logs (`/var/lib/fortress/command_log.db`) and ship them off-host for retention.
+- Use SSH keys only for host/VM provisioning; disable password login for privileged accounts.
+
 ## Authentication
 
 - `X-API-Key`: optional centralized master key with unrestricted access, best used only during bootstrap (set `FORTRESS_API_KEY` or `API_SECRET_KEY`). Disable it long-term to reduce blast radius.
