@@ -324,6 +324,11 @@ body {
   color: #5f3d12;
 }
 
+.pill.install {
+  background: rgba(140, 207, 85, 0.25);
+  color: #2a3b1f;
+}
+
 .card-actions {
   display: flex;
   flex-wrap: wrap;

@@ -1,0 +1,18 @@
+{
+  "id": "container-lamp-apache",
+  "title": "Apache",
+  "description": "HTTP server with PHP support.",
+  "icon": "server",
+  "scope": "container",
+  "stack": "lamp",
+  "parent": "container-lamp",
+  "service": "apache",
+  "order": 1,
+  "actions": [
+    {
+      "id": "install-apache",
+      "label": "Install",
+      "variant": "ghost"
+    }
+  ]
+}

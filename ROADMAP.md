@@ -41,3 +41,4 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.
 - Add monitoring dashboards powered by `/monitoring/resources` with alert overlays.
 - Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.
+- LAMP module: add HTTPS routing wizard, web file manager option, and service detection backed by container labels or probes.

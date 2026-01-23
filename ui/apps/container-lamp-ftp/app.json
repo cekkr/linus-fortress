@@ -1,0 +1,23 @@
+{
+  "id": "container-lamp-ftp",
+  "title": "FTP",
+  "description": "FTP service for legacy file transfers.",
+  "icon": "transfer",
+  "scope": "container",
+  "stack": "lamp",
+  "parent": "container-lamp",
+  "service": "ftp",
+  "order": 4,
+  "actions": [
+    {
+      "id": "install-ftp",
+      "label": "Install",
+      "variant": "ghost"
+    },
+    {
+      "id": "open-ftp",
+      "label": "Expose",
+      "variant": "ghost"
+    }
+  ]
+}

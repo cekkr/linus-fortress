@@ -119,6 +119,124 @@ const iconMap = {
       <path d="M7 4h10l5 8-5 8H7l-5-8 5-8z"></path>
     </svg>
   `,
+  lamp: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 18h8"></path>
+      <path d="M9 21h6"></path>
+      <path d="M6 10a6 6 0 0112 0c0 2-1 3-2 4-1 1-1 2-1 3H9c0-1 0-2-1-3-1-1-2-2-2-4z"></path>
+    </svg>
+  `,
+  server: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="16" height="6" rx="2"></rect>
+      <rect x="4" y="14" width="16" height="6" rx="2"></rect>
+      <path d="M8 7h.01"></path>
+      <path d="M8 17h.01"></path>
+    </svg>
+  `,
+  globe: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9"></circle>
+      <path d="M3 12h18"></path>
+      <path d="M12 3c2.8 3 2.8 15 0 18"></path>
+      <path d="M12 3c-2.8 3-2.8 15 0 18"></path>
+    </svg>
+  `,
+  database: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <ellipse cx="12" cy="5" rx="7" ry="3"></ellipse>
+      <path d="M5 5v10c0 1.7 3.1 3 7 3s7-1.3 7-3V5"></path>
+      <path d="M5 10c0 1.7 3.1 3 7 3s7-1.3 7-3"></path>
+    </svg>
+  `,
+  transfer: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 7h8"></path>
+      <path d="M7 7l3-3"></path>
+      <path d="M7 7l3 3"></path>
+      <path d="M17 17h-8"></path>
+      <path d="M17 17l-3-3"></path>
+      <path d="M17 17l-3 3"></path>
+    </svg>
+  `,
+  folder: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 7h7l2 2h9v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"></path>
+    </svg>
+  `,
+  lock: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="6" y="11" width="12" height="9" rx="2"></rect>
+      <path d="M8 11V8a4 4 0 018 0v3"></path>
+    </svg>
+  `,
+};
+
+function buildRecipeDefinition(name, description, commands, dependencies = []) {
+  return {
+    name,
+    description,
+    dependencies,
+    packages: [],
+    commands,
+    parameters: {},
+    required_parameters: [],
+  };
+}
+
+const LAMP_STACK_NAME = "lamp-stack";
+const LAMP_STACK_DEPENDENCIES = ["lamp-apache", "lamp-mysql", "lamp-ftp", "lamp-filemanager"];
+
+const RECIPE_CATALOG = {
+  "lamp-apache": buildRecipeDefinition(
+    "lamp-apache",
+    "Install Apache and PHP runtime.",
+    [
+      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 apache2-utils libapache2-mod-php php php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now apache2 >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; fi",
+    ]
+  ),
+  "lamp-nginx": buildRecipeDefinition(
+    "lamp-nginx",
+    "Install Nginx with PHP-FPM.",
+    [
+      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php-fpm php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; fi",
+    ]
+  ),
+  "lamp-mysql": buildRecipeDefinition(
+    "lamp-mysql",
+    "Install MariaDB or MySQL engine.",
+    [
+      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client; systemctl enable --now mariadb >/dev/null 2>&1 || systemctl enable --now mysql >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; fi",
+    ]
+  ),
+  "lamp-ftp": buildRecipeDefinition(
+    "lamp-ftp",
+    "Install vsftpd for legacy FTP.",
+    [
+      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; fi",
+    ]
+  ),
+  "lamp-filemanager": buildRecipeDefinition(
+    "lamp-filemanager",
+    "Install CLI file manager tools.",
+    [
+      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mc ranger; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mc ranger; fi",
+    ]
+  ),
+  [LAMP_STACK_NAME]: buildRecipeDefinition(
+    LAMP_STACK_NAME,
+    "Install Apache, database, FTP, and file manager tools.",
+    [],
+    LAMP_STACK_DEPENDENCIES
+  ),
+};
+
+const SERVICE_ACTIONS = {
+  "install-apache": "lamp-apache",
+  "install-nginx": "lamp-nginx",
+  "install-mysql": "lamp-mysql",
+  "install-ftp": "lamp-ftp",
+  "install-filemanager": "lamp-filemanager",
 };
 
 function iconFor(name) {
@@ -173,6 +291,17 @@ function normalizeStatus(status) {
   return "unknown";
 }
 
+function resolveServiceState(service, containerMeta) {
+  if (!service || !containerMeta) {
+    return null;
+  }
+  const services = Array.isArray(containerMeta.services) ? containerMeta.services : [];
+  if (!services.length) {
+    return "unknown";
+  }
+  return services.includes(service) ? "available" : "missing";
+}
+
 function renderTree() {
   const path = buildPath(state.selectedId || state.rootId);
   elements.tree.innerHTML = path
@@ -205,7 +334,7 @@ function renderStatusLine() {
 function renderCard(node, index) {
   const actions = Array.isArray(node.actions) ? node.actions.slice(0, 3) : [];
   const status = node.meta && node.meta.status ? normalizeStatus(node.meta.status) : null;
-  const badge = node.badge ? "soon" : null;
+  const badgeClass = node.badge ? node.badge.toLowerCase().replace(/[^a-z0-9]+/g, "-") : null;
   const selected = node.id === state.selectedId ? "selected" : "";
   const delay = `${index * 0.05}s`;
   return `
@@ -215,7 +344,7 @@ function renderCard(node, index) {
       <div class="card-desc">${node.description || ""}</div>
       <div class="card-meta">
         ${status ? `<span class="pill ${status}">${status}</span>` : ""}
-        ${badge ? `<span class="pill ${badge}">${node.badge}</span>` : ""}
+        ${badgeClass ? `<span class="pill ${badgeClass}">${node.badge}</span>` : ""}
         ${node.meta && node.meta.ip ? `<span class="pill">${node.meta.ip}</span>` : ""}
       </div>
       ${
@@ -252,14 +381,20 @@ function renderPreview() {
   const contextContainer = node.context ? node.context.container : null;
   const containerMeta = contextContainer ? state.containerIndex.get(contextContainer) : null;
   const status = containerMeta ? normalizeStatus(containerMeta.status) : null;
-  const badge = node.badge ? "soon" : null;
+  const badgeClass = node.badge ? node.badge.toLowerCase().replace(/[^a-z0-9]+/g, "-") : null;
+  const serviceState = resolveServiceState(node.service, containerMeta);
+  const stackLabel = containerMeta && containerMeta.stack ? containerMeta.stack : null;
+  const servicesLabel =
+    containerMeta && Array.isArray(containerMeta.services) && containerMeta.services.length
+      ? containerMeta.services.join(", ")
+      : null;
 
   elements.preview.innerHTML = `
     <div class="preview-title">${node.title}</div>
     <div>${node.description || ""}</div>
     <div class="card-meta">
       ${status ? `<span class="pill ${status}">${status}</span>` : ""}
-      ${badge ? `<span class="pill ${badge}">${node.badge}</span>` : ""}
+      ${badgeClass ? `<span class="pill ${badgeClass}">${node.badge}</span>` : ""}
       ${contextContainer ? `<span class="pill">${contextContainer}</span>` : ""}
     </div>
     ${
@@ -282,6 +417,40 @@ function renderPreview() {
           <strong>Type</strong>
           <span>${containerMeta.type || "container"}</span>
         </div>
+        ${
+          stackLabel
+            ? `
+        <div>
+          <strong>Stack</strong>
+          <span>${stackLabel}</span>
+        </div>
+        `
+            : ""
+        }
+        ${
+          servicesLabel
+            ? `
+        <div>
+          <strong>Services</strong>
+          <span>${servicesLabel}</span>
+        </div>
+        `
+            : ""
+        }
+        ${
+          node.service
+            ? `
+        <div>
+          <strong>Service</strong>
+          <span>${node.service}</span>
+        </div>
+        <div>
+          <strong>Detected</strong>
+          <span>${serviceState || "unknown"}</span>
+        </div>
+        `
+            : ""
+        }
       </div>
     `
         : ""
@@ -451,16 +620,71 @@ async function apiRequest(path, options = {}) {
   }
   if (!response.ok) {
     const error = new Error((data && data.error) || "Request failed");
+    error.status = response.status;
     error.details = data;
     throw error;
   }
   return data;
 }
 
+async function ensureRecipe(recipe) {
+  if (!recipe) {
+    throw new Error("Missing recipe definition");
+  }
+  try {
+    await apiRequest(`/api/recipes/${recipe.name}`);
+    return false;
+  } catch (err) {
+    if (err.status === 404) {
+      await apiRequest("/api/recipes", {
+        method: "POST",
+        body: JSON.stringify(recipe),
+      });
+      return true;
+    }
+    throw err;
+  }
+}
+
+async function applyRecipe(recipeName, containerName) {
+  return apiRequest("/api/recipes/apply", {
+    method: "POST",
+    body: JSON.stringify({
+      recipe_name: recipeName,
+      container_name: containerName,
+      include_dependencies: true,
+      update_index: true,
+    }),
+  });
+}
+
+async function installRecipe(recipeName, containerName) {
+  const recipe = RECIPE_CATALOG[recipeName];
+  await ensureRecipe(recipe);
+  return applyRecipe(recipeName, containerName);
+}
+
+async function installLampStack(containerName) {
+  for (const dependency of LAMP_STACK_DEPENDENCIES) {
+    await ensureRecipe(RECIPE_CATALOG[dependency]);
+  }
+  await ensureRecipe(RECIPE_CATALOG[LAMP_STACK_NAME]);
+  return applyRecipe(LAMP_STACK_NAME, containerName);
+}
+
 async function handleAction(actionId, node) {
   if (actionId === "refresh") {
     await loadGraph();
     logEvent("success", "Synced fortress state");
+    return;
+  }
+
+  if (actionId === "open-routing") {
+    if (state.nodesById.has("routing")) {
+      selectNode("routing");
+    } else {
+      logEvent("error", "Routing app not available");
+    }
     return;
   }
 
@@ -475,6 +699,21 @@ async function handleAction(actionId, node) {
   const contextContainer = node && node.context ? node.context.container : null;
   if (!contextContainer) {
     logEvent("error", "No container selected for this action");
+    return;
+  }
+
+  if (actionId === "install-lamp") {
+    const response = await installLampStack(contextContainer);
+    logEvent("success", response.message || `LAMP stack applied to ${contextContainer}`);
+    await loadGraph();
+    return;
+  }
+
+  const serviceRecipe = SERVICE_ACTIONS[actionId];
+  if (serviceRecipe) {
+    const response = await installRecipe(serviceRecipe, contextContainer);
+    logEvent("success", response.message || `${serviceRecipe} applied to ${contextContainer}`);
+    await loadGraph();
     return;
   }
 

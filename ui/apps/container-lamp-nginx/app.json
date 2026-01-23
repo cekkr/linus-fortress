@@ -1,0 +1,18 @@
+{
+  "id": "container-lamp-nginx",
+  "title": "Nginx",
+  "description": "Reverse proxy or alternate web front end.",
+  "icon": "globe",
+  "scope": "container",
+  "stack": "lamp",
+  "parent": "container-lamp",
+  "service": "nginx",
+  "order": 2,
+  "actions": [
+    {
+      "id": "install-nginx",
+      "label": "Install",
+      "variant": "ghost"
+    }
+  ]
+}

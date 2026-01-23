@@ -1,0 +1,21 @@
+{
+  "id": "container-lamp",
+  "title": "LAMP Stack",
+  "description": "Apache, PHP, and database stack with add-on services.",
+  "icon": "lamp",
+  "scope": "container",
+  "stack": "lamp",
+  "order": 0,
+  "actions": [
+    {
+      "id": "install-lamp",
+      "label": "Install Stack",
+      "variant": "primary"
+    },
+    {
+      "id": "open-routing",
+      "label": "HTTPS Routing",
+      "variant": "ghost"
+    }
+  ]
+}

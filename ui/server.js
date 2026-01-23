@@ -89,9 +89,54 @@ function normalizeIps(state) {
   return Array.from(ips);
 }
 
+const STACK_KEYS = ["user.lizard.stack", "user.fortress.stack", "user.stack"];
+const SERVICES_KEYS = ["user.lizard.services", "user.fortress.services", "user.services"];
+
+function readConfigValue(config, expandedConfig, keys) {
+  for (const key of keys) {
+    if (config && typeof config[key] === "string" && config[key].trim()) {
+      return config[key].trim();
+    }
+    if (expandedConfig && typeof expandedConfig[key] === "string" && expandedConfig[key].trim()) {
+      return expandedConfig[key].trim();
+    }
+  }
+  return null;
+}
+
+function parseServiceList(value) {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function resolveContainerStack(name, config, expandedConfig) {
+  const value = readConfigValue(config, expandedConfig, STACK_KEYS);
+  if (value) {
+    return value.toLowerCase();
+  }
+  if (name && name.toLowerCase().includes("lamp")) {
+    return "lamp";
+  }
+  return null;
+}
+
+function resolveContainerServices(config, expandedConfig) {
+  const value = readConfigValue(config, expandedConfig, SERVICES_KEYS);
+  return parseServiceList(value);
+}
+
 function normalizeContainer(raw) {
   const status = raw.status || (raw.state ? raw.state.status : "unknown") || "unknown";
   const ips = normalizeIps(raw.state || {});
+  const config = raw.config && typeof raw.config === "object" ? raw.config : {};
+  const expandedConfig = raw.expanded_config && typeof raw.expanded_config === "object" ? raw.expanded_config : {};
+  const stack = resolveContainerStack(raw.name, config, expandedConfig);
+  const services = resolveContainerServices(config, expandedConfig);
   return {
     name: raw.name,
     status,
@@ -99,6 +144,8 @@ function normalizeContainer(raw) {
     ips,
     ip: ips[0] || null,
     architecture: raw.architecture || null,
+    stack,
+    services,
   };
 }
 
@@ -211,15 +258,28 @@ function buildAppGraph(modules, containers) {
       });
 
       for (const module of containerModules) {
+        const moduleStack = module.stack ? String(module.stack).toLowerCase() : null;
+        if (moduleStack && moduleStack !== container.stack) {
+          continue;
+        }
+        const containerServices = Array.isArray(container.services) ? container.services : [];
+        const serviceInstalled = module.service ? containerServices.includes(module.service) : null;
+        const resolvedBadge = module.service && !serviceInstalled ? module.install_badge || "Install" : module.badge;
+        const resolvedParent = module.parent ? `${containerId}:${module.parent}` : containerId;
         nodes.push({
           ...module,
           id: `${containerId}:${module.id}`,
-          parent: containerId,
+          parent: resolvedParent,
           type: module.type || "container-app",
+          badge: resolvedBadge,
           context: {
             container: container.name,
           },
-          meta: container,
+          meta: {
+            ...container,
+            service: module.service || null,
+            service_installed: serviceInstalled,
+          },
         });
       }
     }
@@ -331,6 +391,46 @@ app.post(
   "/api/containers/:name/backup",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequest("POST", `/backup/${req.params.name}`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/packages/install",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequest("POST", "/packages/install", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/recipes",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequest("GET", "/recipes");
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/recipes/:name",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequest("GET", `/recipes/${req.params.name}`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/recipes",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequest("POST", "/recipes", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/recipes/apply",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequest("POST", "/recipes/apply", req.body || {});
     res.json(payload);
   })
 );

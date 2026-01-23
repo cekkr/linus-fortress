@@ -56,6 +56,9 @@ Environment variables:
 - `FORTRESS_UI_API_KEY` or `FORTRESS_UI_USER_TOKEN` for authentication.
 - `FORTRESS_UI_INSECURE_TLS=1` to allow self-signed TLS when proxying to the API.
 
+LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` (or `user.fortress.stack=lamp`) via LXD config, or when the container name includes `lamp`.
+Optional service hints can be supplied with `user.lizard.services=apache,mysql,ftp` (comma-separated) to remove the install badge.
+
 ## API Reference
 
 A full OpenAPI description is provided in [`api-v1.yaml`](api-v1.yaml) (import it into Swagger UI, Postman, Insomnia, etc.). The summaries below highlight each route, the permissions enforced by `py/server.py`, and the body/parameter semantics that `fortress-cli.py` uses under the hood.

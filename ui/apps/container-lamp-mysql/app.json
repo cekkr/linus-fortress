@@ -1,0 +1,18 @@
+{
+  "id": "container-lamp-mysql",
+  "title": "MySQL",
+  "description": "MariaDB or MySQL database engine.",
+  "icon": "database",
+  "scope": "container",
+  "stack": "lamp",
+  "parent": "container-lamp",
+  "service": "mysql",
+  "order": 3,
+  "actions": [
+    {
+      "id": "install-mysql",
+      "label": "Install",
+      "variant": "ghost"
+    }
+  ]
+}

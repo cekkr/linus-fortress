@@ -1,0 +1,18 @@
+{
+  "id": "container-lamp-https",
+  "title": "HTTPS",
+  "description": "Route HTTPS to the container via host TLS settings.",
+  "icon": "lock",
+  "scope": "container",
+  "stack": "lamp",
+  "parent": "container-lamp",
+  "order": 6,
+  "badge": "Soon",
+  "actions": [
+    {
+      "id": "open-routing",
+      "label": "Open Routing",
+      "variant": "ghost"
+    }
+  ]
+}

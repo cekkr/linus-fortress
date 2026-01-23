@@ -1,0 +1,18 @@
+{
+  "id": "container-lamp-filemanager",
+  "title": "File Manager",
+  "description": "CLI file manager tooling inside the container.",
+  "icon": "folder",
+  "scope": "container",
+  "stack": "lamp",
+  "parent": "container-lamp",
+  "service": "filemanager",
+  "order": 5,
+  "actions": [
+    {
+      "id": "install-filemanager",
+      "label": "Install",
+      "variant": "ghost"
+    }
+  ]
+}
