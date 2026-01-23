@@ -709,6 +709,42 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+  /containers/probe:
+    post:
+      summary: Probe container services and optionally update service labels
+      tags: [Containers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerServiceProbe"
+      responses:
+        "200":
+          description: Service probe results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  container:
+                    type: string
+                  services:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+                  available:
+                    type: array
+                    items:
+                      type: string
+                  missing:
+                    type: array
+                    items:
+                      type: string
+                  labels_updated:
+                    type: boolean
+                  label_value:
+                    type: string
   /containers/connect/tcp:
     post:
       summary: Create LXD proxy tunnel between containers
@@ -1716,6 +1752,21 @@ components:
           type: string
         group_name:
           type: string
+    ContainerServiceProbe:
+      type: object
+      required:
+        - container_name
+      properties:
+        container_name:
+          type: string
+        services:
+          type: array
+          items:
+            type: string
+          description: Optional list of service keys to probe (e.g. apache, nginx, mysql, ftp, filemanager).
+        update_labels:
+          type: boolean
+          default: false
     ContainerLinkRequest:
       type: object
       required:
