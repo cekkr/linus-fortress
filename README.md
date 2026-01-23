@@ -138,6 +138,20 @@ Body fields (defaults shown):
 - `ram_limit` (string, default `512MB`).
 - `disk_limit` (string, default `10GB`).
 
+#### `POST /containers/probe` (permission `manage_containers`, container scoped)
+Body (example):
+```json
+{
+  "container_name": "web01",
+  "services": ["apache", "nginx", "mysql", "ftp", "filemanager"],
+  "update_labels": true
+}
+```
+- `container_name` (**required** string) – target container.
+- `services` (array of strings, optional) – defaults to probing Apache, Nginx, MySQL/MariaDB, FTP, and file manager.
+- `update_labels` (bool, optional, default `false`) – write `user.lizard.services` and `user.fortress.services` LXD labels from the detected services.
+- Returns `services` (map), `available`, `missing`, and optional `label_value`.
+
 #### `DELETE /container/{name}` (permission `manage_containers`, scoped)
 - Path parameter `name` is required; shuts down and deletes the container (`lxc delete --force`).
 
