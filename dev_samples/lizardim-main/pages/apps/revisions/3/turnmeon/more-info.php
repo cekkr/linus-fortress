@@ -1,0 +1,1 @@
+Visualizzare quali applicazioni sono presenti e funzionanti.

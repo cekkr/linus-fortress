@@ -1,0 +1,5 @@
+
+<?php
+if(isPacketInstalled("apache2")) echo '<div class="fiberGreenBox">Apache è stato installato!</div>';
+else echo '<div class="fiberRedBox"><h2>Apache non è stato installato</h2><h3>Avvia l\'App per procedere con l\'installazione</h3></div>';
+?>

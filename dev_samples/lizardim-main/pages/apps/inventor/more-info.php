@@ -1,0 +1,1 @@
+<script>function change2Developer(){	$.get('/pages/apps/get_menu.php?r=dev', function(data) {		$("#content-0-0").html(data);	});}</script><div style="text-align:center; opacity:1;">	<button onClick="change2Developer()">Watch Developer Menu</button></div>

@@ -1,0 +1,1 @@
+Manage and setting you computer.

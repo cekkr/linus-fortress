@@ -1,0 +1,26 @@
+<?php
+$appath = $_REQUEST['p'];
+
+include('sdk.php');
+include($appath . "/info.php");
+
+$beautifulRand = rand(0,9999999);
+?>
+
+<div class="inMoreInfoTable">
+  <div class="inMoreInfoApp">
+    <img width="128" height="128" src="pages/apps/<?php echo $appath; ?>/icon.png"/>
+    <br>
+    <input type="button" value="Run App" onClick="openApp('<?php echo $appath; ?>','<?php echo $app_name; ?>');" class="startButton"/>
+    <br><br>
+    <input type="button" value="Delete App" class="deleteButton"/>
+  </div>
+  <div class="inMoreInfoSettings" style="opacity:0;" id="moreInfoEhm<?php echo $beautifulRand; ?>">
+    <?php //include($appath . "/more-info.php"); ?>
+  </div>
+  
+  <script>
+    loadInDiv('pages/apps/get_more-info_ajax.php?p=<?php echo $appath; ?>', '#moreInfoEhm<?php echo $beautifulRand; ?>');
+  </script>
+</div>
+

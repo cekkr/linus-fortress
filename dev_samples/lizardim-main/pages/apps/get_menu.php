@@ -1,0 +1,1 @@
+<?phpinclude("../../settings.php");include("../menu.php");$req = $_REQUEST['r'];if($req=='dev') writeMenuDeveloper();?>

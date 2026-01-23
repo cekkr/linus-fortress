@@ -1,0 +1,13 @@
+.change:hover { 
+background-color: #F0F0F0;
+
+border-color:gray;
+
+cursor:pointer;
+} 
+
+.change{
+border-style:dashed;
+border-color:white;
+border-width:1px;
+}

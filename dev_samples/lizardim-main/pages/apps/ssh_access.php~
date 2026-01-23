@@ -1,0 +1,51 @@
+<?php
+set_include_path(get_include_path() . PATH_SEPARATOR . 'phpseclib');
+include('Net/SSH2.php');
+
+function startSshOnce()
+{
+	if(!isset($_GLOBAL['pc_ssh']))
+	{
+		$_GLOBAL['pc_ssh'] = new Net_SSH2('127.0.0.1');
+		$_GLOBAL['pc_ssh']->login('riccardo', 'cecchini');
+	}
+
+	return $_GLOBAL['pc_ssh'];
+}
+
+function isPacketInstalled($name)
+{
+	if(isset($_SESSION['packetIsInstalled_'.$name])) return $_SESSION['packetIsInstalled_'.$name];
+
+	$ecco = startSshOnce();
+
+	$out = $ecco->exec("apt-cache policy ". $name);
+	$lines = explode("\n", $out);
+	$val = explode(":", $out)[0];
+	
+	$ret = false;
+	if(strpos($val, "(nessuno)")) $ret = true;
+	
+	$_SESSION['packetIsInstalled_'.$name] = $ret;
+	return $ret;
+}
+
+
+/*echo $_GLOBAL['pc_ssh']->read('[prompt]');
+$_GLOBAL['pc_ssh']->write("sudo su\n");
+$_GLOBAL['pc_ssh']->read('Password:');
+$_GLOBAL['pc_ssh']->write("emanuele\n");
+echo $_GLOBAL['pc_ssh']->read('[prompt]');*/
+
+/*$_GLOBAL['pc_ssh']->read('emanuele@emanuele-desktop:~$');
+$_GLOBAL['pc_ssh']->write("sudo su\n");
+$output = $_GLOBAL['pc_ssh']->read('[sudo] password for emanuele:');
+$_GLOBAL['pc_ssh']->write("emanuele\n");
+echo $_GLOBAL['pc_ssh']->read(' ');*/
+
+/*$_GLOBAL['pc_ssh']->write("sudo apt-get --yes install apache2\n");
+$_GLOBAL['pc_ssh']->read('[sudo] password for emanuele:');
+$_GLOBAL['pc_ssh']->write("emanuele\n");
+echo $_GLOBAL['pc_ssh']->read('emanuele@emanuele-desktop:~$');*/
+
+?>

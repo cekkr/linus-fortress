@@ -1,0 +1,529 @@
+<?php 
+include("settings.php");
+
+//if($_SESSION['login'] != 1) header('location: login.php');
+?>
+
+<!DOCTYPE html>
+<html>
+  <head>
+	<link rel="stylesheet" type="text/css" href="style/style.css" />
+	<link href='http://fonts.googleapis.com/css?family=Roboto:400,900italic,900,700italic,700,500italic,500,400italic,300italic,300,100italic,100' rel='stylesheet' type='text/css'>
+
+	<!-- jQuery -->
+	<link href="css/ui-lightness/jquery-ui-1.10.1.custom.css" rel="stylesheet">
+	<script src="js/jquery-1.9.1.js"></script>
+	<script src="js/jquery-ui-1.10.1.custom.js"></script>
+
+	<!-- Javascript -->
+	<script>		
+		var openedMoreInfo = -1;
+
+		function openMoreInfoApp(app)
+		{
+			if(openedMoreInfo == -1)
+			{
+				$('#menuAppPreBlack'+ app).animate({
+					opacity: 1,
+					}, 300, function() {
+					$('#menuAppPreBlack'+ app).animate({
+					      height: '71px'
+					    }, 100, "linear");
+				});
+
+				var riga = Math.floor(app/4);
+				$(function () {
+					$('#appMoreInfo'+ riga).animate({
+						opacity: 1
+						}, { duration: 300, queue: false });
+					
+					$('#appMoreInfo'+ riga).animate({
+						height:'260px'
+						}, { duration: 400, queue: false });
+				});
+
+				//Ridefinisci colore contenitore app
+				$('#menuAppPre'+app).animate({borderBottomColor:"white"},200);
+				
+				openedMoreInfo = app;
+				
+				//Caricamento schermata more-info con ajax
+				$('#inAppMoreInfo'+riga).css("opacity", 0);
+				$.get('pages/apps/get_more-info.php?p='+arrayApps[app], function(data) {
+					$('#inAppMoreInfo'+riga).html(data);
+					
+					$('#inAppMoreInfo'+ riga).animate({
+						opacity:1
+						}, 200);
+				});
+			}
+			else
+			{
+				var aaaaaahhhThisApp = app;
+				if(openedMoreInfo != app) setTimeout(function() {
+				  openMoreInfoApp(aaaaaahhhThisApp);
+				}, 500);
+				
+				app = openedMoreInfo;
+				
+				$('#menuAppPreBlack'+ app).animate({
+					height: '69px'
+					}, 100, "linear", function() {
+					$('#menuAppPreBlack'+ app).animate({
+					      opacity: 0
+					    }, 300);
+				});
+				
+				var riga = Math.floor(app/4);
+				$('#appMoreInfo'+ riga).animate({
+					height:'0px'
+					}, { duration: 400, queue: false }, function() {
+					// Animation complete.
+				});
+				
+				setTimeout(function() {
+				    $('#appMoreInfo'+ riga).animate({
+					opacity: 0
+					}, { duration: 300, queue: false }, function() {
+					// Animation complete.
+				    });
+				}, 100);
+				
+				//Ridefinisci colore contenitore app
+				setTimeout(function() {
+				  $('#menuAppPre'+app).animate({borderBottomColor:"silver"},200);
+				}, 200);
+
+				openedMoreInfo = -1;
+			}
+		}
+		
+		var inPhaseOfChangePage = 0;
+		var pageNow = 0;
+		var erContentPos;
+		var erContentWidth;
+		var pages = new Array();
+		pages[pageNow + '.cont'] = 0;
+		var appPathNow = "";
+		function openPage(url, name)
+		{
+			inPhaseOfChangePage = 1;
+			var contNow = pages[pageNow + '.cont'];	
+			url = appPathNow + '/' + url;
+
+			//Create or manage new div
+			contNow++;
+			pages[pageNow + '.cont'] = contNow;
+			
+			var contName = 'content-'+ pageNow+'-'+contNow;
+			var newContent = $("#pagesCont").html() + '<div id="'+contName+'" class="content" style="opacity:0; position:absolute; right:0px; top:'+erContentPos.top+'px;width:'+erContentWidth+'px;">Miao</div>';
+			if(pages['ex.'+contName]!=1 && !$('#'+contName)[0])
+			{
+				$("#pagesCont").html(newContent);
+				pages['ex.'+contName] = 1;
+			}
+			
+			//Make animation
+			$('#'+contName).show();
+			$('#'+contName).animate({
+			    opacity: "1",
+			    left:erContentPos.left+"px"
+			    }, 500, function() {
+			    inPhaseOfChangePage = 0;
+			});
+			
+			$('#content-'+ pageNow+'-'+(contNow-1)).animate({
+			    opacity: "0",
+			    left:"0px"
+			    }, 500, function() {
+			    $('#content-'+ pageNow+'-'+(contNow-1)).hide();
+			});
+			
+			if($('html, body').scrollTop>300)
+			{
+			  $('html, body').animate({
+			      scrollTop: 0
+			  }, 500);
+			}
+			
+			//Carica i contenuti
+			$.get('pages/apps/get.php?u='+url, function(data) {
+				$('#content-'+ pageNow+'-'+contNow).html(data);
+			});
+			
+			//Aggiungi contenitore a menù
+			var exMenu = $('#whereNav-'+pageNow+'-'+(contNow-1));
+			var widfhcasd = (exMenu.position().left+exMenu.width()) + 5;
+			
+			contName = 'whereNav-'+pageNow+'-'+contNow;
+			var newContent = $("#nav-"+pageNow).html() + '<span id="'+contName+'" onClick="closePage('+contNow+')" style="position:absolute; opacity:0; left:0px; top:'+exMenu.position().top+'px"> &raquo <span id="'+contName+'-text" class="whereNav">'+name+'</span></div>';
+			if(pages['ex.'+contName]!=1 && !$('#'+contName)[0]) 
+			{
+				$("#nav-"+pageNow).html(newContent);
+				pages['ex.'+contName] = 1;
+			}
+			else
+			{
+				$('#'+contName).css('opacity','0');
+				$('#'+contName).css('left','0px');
+				$('#'+contName).css('top',exMenu.position()+'px');
+				
+				$('#'+contName+"-text").html(name);
+			}
+			
+			$('#'+contName).show();
+			$('#'+contName).animate({
+			    opacity: "1",
+			    left:(widfhcasd) + "px"
+			    }, 500, function() {
+			    // Animation complete.
+			});
+			
+			
+			//Gestisci contenitore
+			pages[pageNow + '.' + contNow + '.url'] = url;
+			pages[pageNow + '.' + contNow + '.name'] = name;
+		}
+		
+		function openApp(url, name)
+		{
+			appPathNow = url;
+			openPage('start', name);
+		}
+		
+		function closePage(page)
+		{	
+			var contNow = pages[pageNow + '.cont'];
+				
+			if(page < contNow)
+			{
+				inPhaseOfChangePage = 1;
+			
+				for(i=contNow; i>page; i--)
+				{
+				  $('#whereNav-'+pageNow+'-'+i).animate({
+				    opacity: "0",
+				    left:"1024px"
+				    }, { duration: 500, queue: false }, function() {
+				    // Animation complete.
+				  });
+				}
+				
+				$('#content-'+ pageNow+'-'+contNow).animate({
+				    opacity: "0",
+				    left:($(window).width()-1024)+"px"
+				    }, 500, function() {
+				    $('#content-'+ pageNow+'-'+contNow).hide();
+				    inPhaseOfChangePage = 1;
+				});
+				
+				$('#content-'+ pageNow+'-'+page).show();
+				$('#content-'+ pageNow+'-'+page).animate({
+				    opacity: "1",
+				    left:$("#absoluteTitle").position().left+"px"
+				    }, 500, function() {
+				    // Animation complete.
+				});
+				
+				pages[pageNow + '.cont'] = page;
+			}
+		}
+
+		function goPageBack()
+		{
+			closePage(pages[pageNow + '.cont']-1);
+		}
+		
+		//Controlla l'attuale posizione left della div del momento
+		function controlPagePosition() {
+		  if(inPhaseOfChangePage==0)
+		  {
+			var pagNow = '#content-'+ pageNow+'-'+pages[pageNow + '.cont'];
+			
+			var pos = $("#absoluteTitle").position();
+			$(pagNow).css("left",pos.left+"px");
+		  }
+		  
+		  setTimeout(controlPagePosition,100);
+		}
+	
+
+		//WIZARD JAVASCRIPT
+		var numStep = 0;
+		function startWizard()
+		{
+			numStep = 0;
+			$('#step'+listStepsId[0]).animate({
+				backgroundColor: "#3AA0FF"
+				}, 100, function() {
+
+					var listDiv = "";
+					for(step=0; step<wizardNumStep; step++)
+					{
+						$('#' + listStepsId[step]).hide();
+						listDiv +=  '<div style="display:none; opacity:0;" id="form'+listStepsId[step]+'" >'+$('#'+listStepsId[step]).html()+'</div>';
+					}
+
+					$('#inappWizardContent').html(listDiv);
+
+					$('#form' + listStepsId[0]).show();
+					$('#form' + listStepsId[0]).css('opacity','1');
+				});
+
+		}
+
+		function wizardNext()
+		{
+				if(numStep>=(wizardNumStep-1))
+				{
+					$('#inappWizardContent').html($('#endOfWizard').html());
+
+					$('#wizardNavigate').animate({
+					opacity:0
+					}, 100, function() {
+						$('#wizardNavigate').hide();
+					});
+
+					$('#step'+listStepsId[numStep]).animate({
+					backgroundColor: "#448844",
+					opacity:0.8
+					}, 300, function() {
+					});
+
+					endOfWizard();
+				}
+				else
+				{
+					//Preoccupati del vecchio step
+					$('#step'+listStepsId[numStep]).animate({
+					backgroundColor: "#888888",
+					opacity:0.6
+					}, 300, function() {
+					});
+
+					//Step successivo
+					numStep++;
+					$('#step'+listStepsId[numStep]).animate({
+					backgroundColor: "#3AA0FF",
+					opacity:1
+					}, 300, function() {
+					});
+
+					$('#form'+listStepsId[numStep-1]).animate({
+						opacity:0
+					}, 100, function() {
+						$('#form'+listStepsId[numStep-1]).hide();
+						$('#form'+listStepsId[numStep]).show();
+
+						$('#form'+listStepsId[numStep]).animate({
+							opacity:1
+						}, 100, function() {
+						});
+					});
+
+					wizardNextStep(numStep);
+
+					//Gestione pulsante
+					if(numStep>0) $('#wizardBack').show("fast");
+					if(numStep==(wizardNumStep-1)) $('#wizardNext').html("Finish");
+				}
+		}
+
+		function wizardBack()
+		{
+				//Preoccupati del vecchio step
+				$('#step'+listStepsId[numStep]).animate({
+				backgroundColor: "#888888",
+				opacity:0.4
+				}, 300, function() {
+				});
+
+				//Step precedente
+				numStep--;
+				$('#step'+listStepsId[numStep]).animate({
+				backgroundColor: "#3AA0FF",
+				opacity:1
+				}, 300, function() {
+				});
+
+				$('#form'+listStepsId[numStep+1]).animate({
+					opacity:0
+				}, 100, function() {
+					$('#form'+listStepsId[numStep+1]).hide();
+					$('#form'+listStepsId[numStep]).show();
+
+					$('#form'+listStepsId[numStep]).animate({
+						opacity:1
+					}, 100, function() {
+					});
+				});
+
+				//Gestione pulsante
+				if(numStep==0) $('#wizardBack').hide("fast");
+				if(numStep<(wizardNumStep-1)) $('#wizardNext').html("Next");
+		}
+		
+		//General function
+		function loadInDiv(url, div)
+		{
+		  $.get(url, function(data) {
+		    $(div).html(data);
+		    
+		     $('#book').animate({
+			opacity: 1
+		      }, 300, function() {
+		      });
+		  });
+		}
+	</script>
+
+    <title>Lizard</title>
+  </head>
+  <body>
+    <div class="body">
+		<div id="absoluteTitle" class="title">
+			<img src="style/image/logo.png"> 
+		</div>
+	
+		<div class="nav" id="nav-0">
+			<span id="whereNav-0-0" onClick="closePage(0)"><span class="whereNav">Home</span></span> 
+		</div>
+
+		<div id="pagesCont" style="padding:0px">
+		
+			<div class="content" id="content-0-0">
+				<div id="menu">
+					<div id="list">
+						<?php
+							$listOfVarJavascript = "var arrayApps = new Array(); ";
+						
+							$appPerRow = 4;
+							$rowPerPage = 5;
+
+							$ip = 0;
+
+							echo '<div class="page" id="page0">'; //Apertura pagina
+							echo '<div class="row" id="row0">'; //Apertura riga
+
+							$results = $db->query('SELECT * FROM "apps" ORDER BY position');
+							while ($row = $results->fetchArray()) {
+								//Inizio gestione regione app
+								echo '<div class="menuApp" id="menuApp'.$ip .'" onClick="openMoreInfoApp('.$ip.')"><div style="position:relative; padding-bottom:0px;">'; //Inizio riga
+									//								
+									//WHITE VERSION	
+									//							
+									echo '<div class="menuAppPre" id="menuAppPre'.$ip .'">';
+									echo '<div class="menuAppIcon"><img width="64" height="64" src="pages/apps/'.$row['path'].'/icon.png"/></div>'; //Gestione icona
+
+									//Gestione titolo e sottotitolo
+									echo '<div class="menuAppTitleDescr">';	
+									echo '<div class="menuAppTitle">' . $row['name'] . '</div>'; //Scrivi nome
+									echo '<div class="menuAppDescription">' . $row['descrizione'] . '</div>'; //Scrivi descrizione			
+									echo '</div>';					
+
+									echo '</div>'; //Chiusura menuAppPre
+
+									//
+									//BLACK VERSION
+									//
+									echo '<div class="menuAppPreBlack" id="menuAppPreBlack'.$ip .'">';
+									echo '<div class="menuAppIcon"><img width="64" height="64" src="pages/apps/'.$row['path'].'/icon.png"/></div>'; //Gestione icona
+
+									//Gestione titolo e sottotitolo
+									echo '<div class="menuAppTitleDescrBlack">';	
+									echo '<div class="menuAppTitleBlack">' . $row['name'] . '</div>'; //Scrivi nome
+									echo '<div class="menuAppDescriptionBlack">' . $row['descrizione'] . '</div>'; //Scrivi descrizione			
+									echo '</div>';					
+
+									echo '</div>'; //Chiusura menuAppPre
+
+								echo '</div></div>'; //Chiusura menuApp 
+								
+								//Aggiunta app alle variabili javascript
+								$listOfVarJavascript .= "arrayApps[".$ip."]='".$row['path']."'; ";
+
+								//Fine controllo regione app
+
+								$ip++; //Incrementa
+
+								if(($ip % $appPerRow) == 0){ //Morta una riga se fa un'altra
+									echo '</div>';
+									
+									$thisRow = ((int)(($ip-1)/$appPerRow));
+									echo '<div id="appMoreInfo'.$thisRow.'" class="appMoreInfo"><div id="inAppMoreInfo'.$thisRow.'">'; //Creazione riga di moreInfo
+									echo '</div></div>';
+									
+									echo '<div class="row" id="row' . ((int)(($ip)/$appPerRow)) . '">';
+								}
+
+								if(($ip % ($appPerRow*$rowPerPage)) == 0) //Morta una pagina se ne fa un'altra
+								{
+									echo '</div>';
+									echo '<div class="page" id="page'.((int)($ip/($appPerRow*$rowPerPage))).'">';
+								}
+							}
+
+							echo '</div>'; //Chiudi ultima riga
+							
+							$thisRow = ((int)(($ip)/$appPerRow));
+							echo '<div id="appMoreInfo'.$thisRow.'" class="appMoreInfo"><div id="inAppMoreInfo'.$thisRow.'">'; //Creazione riga di moreInfo
+							echo '</div></div>';
+							
+							echo '</div>'; //Chiudi ultima pagina
+							
+							//Stampa javascript con le variabili
+							echo '<script>'. $listOfVarJavascript . '</script>';
+						?>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>	
+  </body>
+</html>
+
+<!-- Ed infine... -->
+<script> 
+	//Trasforma in absolute il container fondatore
+	function initiErContentAbsolute()
+	{
+		var el = $('#content-0-0');
+		erContentPos = el.offset();
+		erContentWidth = el.width();
+		
+		el.css({ position: "absolute",
+		marginLeft: 0, marginTop: 0,
+		top: erContentPos.top, left: erContentPos.left });
+		
+		el.width(erContentWidth);
+		
+		//Gestione barra di navigazione
+		var nav = $('#nav-0');
+		var navHeight = nav.height();
+		var navWidth = nav.width();
+		
+		pos = nav.offset();
+		
+		nav.css({ position: "absolute",
+		marginLeft: 0, marginTop: 0,
+		top: pos.top, left: pos.left });
+		
+		nav.height(navHeight);
+		nav.width(navWidth);
+		
+		//Gestione whereNav
+		var el = $('#whereNav-0-0');
+		pos = el.position();
+		
+		el.css({ position: "absolute",
+		marginLeft: 0, marginTop: 0,
+		top: pos.top, left: pos.left });
+		
+		el.css({"z-index":"1"});
+
+	}
+	setTimeout("initiErContentAbsolute()",500);
+	
+	controlPagePosition();
+</script>
+
