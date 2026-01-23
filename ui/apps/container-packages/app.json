@@ -1,0 +1,9 @@
+{
+  "id": "container-packages",
+  "title": "Packages",
+  "description": "Manage apt/dnf installs inside the container.",
+  "icon": "stack",
+  "scope": "container",
+  "order": 4,
+  "badge": "Soon"
+}

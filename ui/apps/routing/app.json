@@ -1,0 +1,9 @@
+{
+  "id": "routing",
+  "title": "Routing",
+  "description": "Nginx routes, domains, and TLS bindings.",
+  "icon": "route",
+  "parent": "home",
+  "order": 3,
+  "badge": "Soon"
+}

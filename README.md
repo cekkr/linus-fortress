@@ -39,6 +39,22 @@ If `FORTRESS_API_KEY` is unset or left as the default placeholder, `X-API-Key` a
 - `py/fortress/storage.py`: JSON load/save helpers for API users, recipes, hosts, and VMs.
 - `py/fortress/routing.py`: nginx routing config rendering, domain validation, TLS path checks.
 - `py/fortress/recipes.py`: recipe models, dependency resolution, and template rendering.
+- `ui/`: optional Node/Express Lizard UI with modular app directories in `ui/apps`.
+
+## Optional Lizard UI (Node/Express)
+
+The `ui/` directory ships an optional app-based web interface inspired by the legacy Lizardim control panel. It runs on a separate port and proxies calls to the Fortress API.
+
+Quick start:
+- `cd ui`
+- `npm install`
+- `FORTRESS_UI_API_KEY=... FORTRESS_API_URL=https://127.0.0.1:8443 npm start`
+
+Environment variables:
+- `FORTRESS_UI_HOST` (default `127.0.0.1`) and `FORTRESS_UI_PORT` (default `8090`).
+- `FORTRESS_API_URL` (default `https://127.0.0.1:8443`).
+- `FORTRESS_UI_API_KEY` or `FORTRESS_UI_USER_TOKEN` for authentication.
+- `FORTRESS_UI_INSECURE_TLS=1` to allow self-signed TLS when proxying to the API.
 
 ## API Reference
 

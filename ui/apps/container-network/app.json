@@ -1,0 +1,9 @@
+{
+  "id": "container-network",
+  "title": "Network",
+  "description": "Links, proxy devices, and exposure rules.",
+  "icon": "radar",
+  "scope": "container",
+  "order": 3,
+  "badge": "Soon"
+}

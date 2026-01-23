@@ -1,0 +1,31 @@
+{
+  "id": "container-handle",
+  "title": "Container",
+  "description": "Live container handle with quick actions.",
+  "icon": "crate",
+  "template": "container",
+  "parent": "containers",
+  "order": 10,
+  "actions": [
+    {
+      "id": "open-ssh",
+      "label": "Open SSH",
+      "variant": "ghost"
+    },
+    {
+      "id": "open-ftp",
+      "label": "Open FTP",
+      "variant": "ghost"
+    },
+    {
+      "id": "backup-container",
+      "label": "Backup",
+      "variant": "ghost"
+    },
+    {
+      "id": "delete-container",
+      "label": "Delete",
+      "variant": "danger"
+    }
+  ]
+}

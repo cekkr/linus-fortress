@@ -1,0 +1,9 @@
+{
+  "id": "container-recipes",
+  "title": "Recipes",
+  "description": "Apply recipe blueprints to a running container.",
+  "icon": "wand",
+  "scope": "container",
+  "order": 5,
+  "badge": "Soon"
+}

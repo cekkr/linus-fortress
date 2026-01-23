@@ -1,0 +1,9 @@
+{
+  "id": "monitoring",
+  "title": "Monitoring",
+  "description": "Host and container resource pulse.",
+  "icon": "pulse",
+  "parent": "home",
+  "order": 2,
+  "badge": "Soon"
+}

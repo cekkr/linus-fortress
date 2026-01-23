@@ -1,0 +1,8 @@
+{
+  "id": "home",
+  "title": "Control Deck",
+  "description": "Lizard control deck for fortress operations.",
+  "icon": "compass",
+  "root": true,
+  "order": 0
+}

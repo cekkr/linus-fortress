@@ -33,3 +33,11 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Add automatic TLS issuance/renewal (Let's Encrypt) for routing entries.
 - Support multi-domain routes and wildcard certificates.
 - Refresh nginx upstreams when container IPs change (or add LXD DNS-based upstreams).
+
+## Path 8: Lizard UI (app-based web manager) (short term)
+- Add UI auth flow with server-side sessions backed by delegated tokens (no tokens in the browser).
+- Expand container actions: start/stop/restart, snapshots, exec, user/group management, and port exposure flows.
+- Implement step-by-step wizards for container creation, routing, recipe apply, and backup/restore.
+- Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.
+- Add monitoring dashboards powered by `/monitoring/resources` with alert overlays.
+- Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.

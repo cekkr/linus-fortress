@@ -1,0 +1,9 @@
+{
+  "id": "vms",
+  "title": "VM Labs",
+  "description": "QEMU/VirtualBox lab machines and snapshots.",
+  "icon": "hex",
+  "parent": "home",
+  "order": 8,
+  "badge": "Soon"
+}

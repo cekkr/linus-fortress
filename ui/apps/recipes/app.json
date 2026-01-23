@@ -1,0 +1,9 @@
+{
+  "id": "recipes",
+  "title": "Recipes",
+  "description": "Blueprint automation and dependency planning.",
+  "icon": "wand",
+  "parent": "home",
+  "order": 4,
+  "badge": "Soon"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "firewall",
+  "title": "Firewall",
+  "description": "UFW or firewalld rules across host and containers.",
+  "icon": "shield",
+  "parent": "home",
+  "order": 5,
+  "badge": "Soon"
+}

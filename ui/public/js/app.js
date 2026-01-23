@@ -1,0 +1,624 @@
+const state = {
+  nodes: [],
+  nodesById: new Map(),
+  rootId: "home",
+  selectedId: null,
+  containers: [],
+  containerIndex: new Map(),
+  fortress: { status: "unknown" },
+  events: [],
+  wizard: {
+    active: false,
+    step: 0,
+    busy: false,
+    error: null,
+    form: {
+      name: "",
+      distro: "ubuntu:22.04",
+      cpu_limit: "1",
+      ram_limit: "512MB",
+      disk_limit: "10GB",
+    },
+  },
+};
+
+const elements = {
+  tree: document.getElementById("tree"),
+  grid: document.getElementById("app-grid"),
+  preview: document.getElementById("preview"),
+  wizard: document.getElementById("wizard"),
+  eventLog: document.getElementById("event-log"),
+  breadcrumb: document.getElementById("breadcrumb"),
+  statusLine: document.getElementById("status-line"),
+  fortressStatus: document.getElementById("fortress-status"),
+};
+
+const iconMap = {
+  compass: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9"></circle>
+      <path d="M9 15l6-6"></path>
+      <path d="M10 10l4 4"></path>
+    </svg>
+  `,
+  cube: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"></path>
+      <path d="M12 12l8-4.5"></path>
+      <path d="M12 12L4 7.5"></path>
+    </svg>
+  `,
+  crate: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+      <path d="M4 9h16"></path>
+      <path d="M9 4v16"></path>
+    </svg>
+  `,
+  pulse: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 12h4l2-5 4 10 2-5h4"></path>
+    </svg>
+  `,
+  link: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 7h-2a4 4 0 000 8h2"></path>
+      <path d="M15 7h2a4 4 0 010 8h-2"></path>
+      <path d="M8 12h8"></path>
+    </svg>
+  `,
+  radar: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8"></circle>
+      <path d="M12 12l5-5"></path>
+      <path d="M12 4v8"></path>
+    </svg>
+  `,
+  stack: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 7l8-4 8 4-8 4-8-4z"></path>
+      <path d="M4 12l8 4 8-4"></path>
+      <path d="M4 16l8 4 8-4"></path>
+    </svg>
+  `,
+  wand: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20l10-10"></path>
+      <path d="M15 5l2-2"></path>
+      <path d="M18 8l2-2"></path>
+      <path d="M12 2l2 2"></path>
+    </svg>
+  `,
+  vault: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M12 9v6"></path>
+    </svg>
+  `,
+  shield: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3l7 4v5c0 4.2-3 7.6-7 9-4-1.4-7-4.8-7-9V7l7-4z"></path>
+    </svg>
+  `,
+  route: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="6" cy="6" r="2"></circle>
+      <circle cx="18" cy="18" r="2"></circle>
+      <path d="M7.5 7.5c3 3 6 6 8.5 8.5"></path>
+    </svg>
+  `,
+  tower: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="8" y="3" width="8" height="18"></rect>
+      <path d="M5 21h14"></path>
+    </svg>
+  `,
+  hex: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 4h10l5 8-5 8H7l-5-8 5-8z"></path>
+    </svg>
+  `,
+};
+
+function iconFor(name) {
+  return iconMap[name] || iconMap.compass;
+}
+
+function buildNodeIndex(nodes) {
+  state.nodesById = new Map(nodes.map((node) => [node.id, node]));
+  state.containerIndex = new Map(state.containers.map((container) => [container.name, container]));
+}
+
+function getNode(id) {
+  return state.nodesById.get(id) || null;
+}
+
+function getChildren(parentId) {
+  return state.nodes
+    .filter((node) => node.parent === parentId)
+    .sort((a, b) => {
+      const order = (a.order || 0) - (b.order || 0);
+      if (order !== 0) {
+        return order;
+      }
+      return a.title.localeCompare(b.title);
+    });
+}
+
+function buildPath(id) {
+  const path = [];
+  let current = getNode(id);
+  while (current) {
+    path.unshift(current);
+    if (!current.parent) {
+      break;
+    }
+    current = getNode(current.parent);
+  }
+  return path;
+}
+
+function normalizeStatus(status) {
+  if (!status) {
+    return "unknown";
+  }
+  const lowered = status.toLowerCase();
+  if (lowered.includes("running")) {
+    return "running";
+  }
+  if (lowered.includes("stopped") || lowered.includes("stop")) {
+    return "stopped";
+  }
+  return "unknown";
+}
+
+function renderTree() {
+  const path = buildPath(state.selectedId || state.rootId);
+  elements.tree.innerHTML = path
+    .map((node, index) => {
+      const active = index === path.length - 1 ? "active" : "";
+      return `
+        <button class="tree-item ${active}" data-node-id="${node.id}">
+          <span class="tree-index">${index + 1}</span>
+          <span>${node.title}</span>
+        </button>
+      `;
+    })
+    .join("");
+  elements.breadcrumb.textContent = path.map((node) => node.title).join(" / ");
+}
+
+function renderStatusLine() {
+  const count = state.containers.length;
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  elements.statusLine.textContent = `Containers: ${count} | Last sync: ${time}`;
+  if (state.fortress.status === "error") {
+    elements.fortressStatus.textContent = `Fortress: offline`;
+    elements.fortressStatus.classList.add("error");
+  } else {
+    elements.fortressStatus.textContent = `Fortress: online`;
+    elements.fortressStatus.classList.remove("error");
+  }
+}
+
+function renderCard(node, index) {
+  const actions = Array.isArray(node.actions) ? node.actions.slice(0, 3) : [];
+  const status = node.meta && node.meta.status ? normalizeStatus(node.meta.status) : null;
+  const badge = node.badge ? "soon" : null;
+  const selected = node.id === state.selectedId ? "selected" : "";
+  const delay = `${index * 0.05}s`;
+  return `
+    <div class="app-card ${selected}" data-node-id="${node.id}" style="animation-delay: ${delay}">
+      <div class="card-icon">${iconFor(node.icon)}</div>
+      <div class="card-title">${node.title}</div>
+      <div class="card-desc">${node.description || ""}</div>
+      <div class="card-meta">
+        ${status ? `<span class="pill ${status}">${status}</span>` : ""}
+        ${badge ? `<span class="pill ${badge}">${node.badge}</span>` : ""}
+        ${node.meta && node.meta.ip ? `<span class="pill">${node.meta.ip}</span>` : ""}
+      </div>
+      ${
+        actions.length
+          ? `
+        <div class="card-actions">
+          ${actions
+            .map(
+              (action) =>
+                `<button class="action ${action.variant || ""}" data-action-id="${action.id}" data-node-id="${node.id}">${action.label}</button>`
+            )
+            .join("")}
+        </div>
+      `
+          : ""
+      }
+    </div>
+  `;
+}
+
+function renderGrid() {
+  const children = getChildren(state.selectedId || state.rootId);
+  elements.grid.innerHTML = children.map(renderCard).join("");
+}
+
+function renderPreview() {
+  const node = getNode(state.selectedId || state.rootId);
+  if (!node) {
+    elements.preview.textContent = "Select an app to preview.";
+    return;
+  }
+
+  const actions = Array.isArray(node.actions) ? node.actions : [];
+  const contextContainer = node.context ? node.context.container : null;
+  const containerMeta = contextContainer ? state.containerIndex.get(contextContainer) : null;
+  const status = containerMeta ? normalizeStatus(containerMeta.status) : null;
+  const badge = node.badge ? "soon" : null;
+
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>${node.description || ""}</div>
+    <div class="card-meta">
+      ${status ? `<span class="pill ${status}">${status}</span>` : ""}
+      ${badge ? `<span class="pill ${badge}">${node.badge}</span>` : ""}
+      ${contextContainer ? `<span class="pill">${contextContainer}</span>` : ""}
+    </div>
+    ${
+      containerMeta
+        ? `
+      <div class="preview-meta">
+        <div>
+          <strong>Status</strong>
+          <span>${containerMeta.status || "unknown"}</span>
+        </div>
+        <div>
+          <strong>Primary IP</strong>
+          <span>${containerMeta.ip || "n/a"}</span>
+        </div>
+        <div>
+          <strong>Architecture</strong>
+          <span>${containerMeta.architecture || "n/a"}</span>
+        </div>
+        <div>
+          <strong>Type</strong>
+          <span>${containerMeta.type || "container"}</span>
+        </div>
+      </div>
+    `
+        : ""
+    }
+    ${
+      actions.length
+        ? `
+      <div class="card-actions">
+        ${actions
+          .map(
+            (action) =>
+              `<button class="action ${action.variant || ""}" data-action-id="${action.id}" data-node-id="${node.id}">${action.label}</button>`
+          )
+          .join("")}
+      </div>
+    `
+        : ""
+    }
+  `;
+}
+
+function renderEvents() {
+  if (!state.events.length) {
+    elements.eventLog.innerHTML = "No actions yet.";
+    return;
+  }
+  elements.eventLog.innerHTML = state.events
+    .map(
+      (event) => `
+      <div class="event-item ${event.type === "error" ? "error" : ""}">
+        <div>${event.message}</div>
+        <div>${event.time}</div>
+      </div>
+    `
+    )
+    .join("");
+}
+
+function renderWizard() {
+  const wizard = state.wizard;
+  if (!wizard.active) {
+    elements.wizard.innerHTML = `
+      <div>Wizard idle. Choose a card action to start a guided flow.</div>
+    `;
+    return;
+  }
+
+  const steps = ["Identity", "Resources", "Confirm"];
+  const stepMarkup = steps
+    .map((title, index) => {
+      const active = index === wizard.step ? "active" : "";
+      return `<div class="wizard-step ${active}">${title}</div>`;
+    })
+    .join("");
+
+  let bodyMarkup = "";
+  if (wizard.step === 0) {
+    bodyMarkup = `
+      <div class="wizard-field">
+        <label for="wiz-name">Container name</label>
+        <input id="wiz-name" name="name" value="${wizard.form.name}" placeholder="web-01" />
+      </div>
+      <div class="wizard-field">
+        <label for="wiz-distro">Distro</label>
+        <select id="wiz-distro" name="distro">
+          <option value="ubuntu:22.04" ${wizard.form.distro === "ubuntu:22.04" ? "selected" : ""}>Ubuntu 22.04</option>
+          <option value="ubuntu:20.04" ${wizard.form.distro === "ubuntu:20.04" ? "selected" : ""}>Ubuntu 20.04</option>
+          <option value="debian:12" ${wizard.form.distro === "debian:12" ? "selected" : ""}>Debian 12</option>
+          <option value="almalinux:9" ${wizard.form.distro === "almalinux:9" ? "selected" : ""}>AlmaLinux 9</option>
+        </select>
+      </div>
+    `;
+  } else if (wizard.step === 1) {
+    bodyMarkup = `
+      <div class="wizard-field">
+        <label for="wiz-cpu">CPU limit</label>
+        <input id="wiz-cpu" name="cpu_limit" value="${wizard.form.cpu_limit}" placeholder="2" />
+      </div>
+      <div class="wizard-field">
+        <label for="wiz-ram">RAM limit</label>
+        <input id="wiz-ram" name="ram_limit" value="${wizard.form.ram_limit}" placeholder="1GB" />
+      </div>
+      <div class="wizard-field">
+        <label for="wiz-disk">Disk limit</label>
+        <input id="wiz-disk" name="disk_limit" value="${wizard.form.disk_limit}" placeholder="10GB" />
+      </div>
+    `;
+  } else {
+    bodyMarkup = `
+      <div>Confirm the container launch profile.</div>
+      <div class="preview-meta">
+        <div>
+          <strong>Name</strong>
+          <span>${wizard.form.name || "(missing)"}</span>
+        </div>
+        <div>
+          <strong>Distro</strong>
+          <span>${wizard.form.distro}</span>
+        </div>
+        <div>
+          <strong>CPU</strong>
+          <span>${wizard.form.cpu_limit}</span>
+        </div>
+        <div>
+          <strong>RAM</strong>
+          <span>${wizard.form.ram_limit}</span>
+        </div>
+        <div>
+          <strong>Disk</strong>
+          <span>${wizard.form.disk_limit}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  const errorMarkup = wizard.error ? `<div class="event-item error">${wizard.error}</div>` : "";
+  const nextLabel = wizard.step === steps.length - 1 ? (wizard.busy ? "Launching..." : "Launch") : "Next";
+
+  elements.wizard.innerHTML = `
+    <div class="wizard-steps">${stepMarkup}</div>
+    ${bodyMarkup}
+    ${errorMarkup}
+    <div class="wizard-actions">
+      <button class="action ghost" data-wizard-action="close">Close</button>
+      <button class="action ghost" data-wizard-action="back" ${wizard.step === 0 ? "disabled" : ""}>Back</button>
+      <button class="action" data-wizard-action="next" ${wizard.busy ? "disabled" : ""}>${nextLabel}</button>
+    </div>
+  `;
+}
+
+function renderAll() {
+  renderTree();
+  renderStatusLine();
+  renderGrid();
+  renderPreview();
+  renderWizard();
+  renderEvents();
+}
+
+function selectNode(id) {
+  state.selectedId = id;
+  renderAll();
+}
+
+function logEvent(type, message) {
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  state.events.unshift({ type, message, time });
+  state.events = state.events.slice(0, 6);
+  renderEvents();
+}
+
+async function apiRequest(path, options = {}) {
+  const response = await fetch(path, {
+    headers: {
+      "Content-Type": "application/json",
+    },
+    ...options,
+  });
+  const text = await response.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (err) {
+      data = text;
+    }
+  }
+  if (!response.ok) {
+    const error = new Error((data && data.error) || "Request failed");
+    error.details = data;
+    throw error;
+  }
+  return data;
+}
+
+async function handleAction(actionId, node) {
+  if (actionId === "refresh") {
+    await loadGraph();
+    logEvent("success", "Synced fortress state");
+    return;
+  }
+
+  if (actionId === "create-container") {
+    state.wizard.active = true;
+    state.wizard.step = 0;
+    state.wizard.error = null;
+    renderWizard();
+    return;
+  }
+
+  const contextContainer = node && node.context ? node.context.container : null;
+  if (!contextContainer) {
+    logEvent("error", "No container selected for this action");
+    return;
+  }
+
+  if (actionId === "open-ssh" || actionId === "open-ftp") {
+    const service = actionId === "open-ftp" ? "ftp" : "ssh";
+    const response = await apiRequest(`/api/containers/${contextContainer}/access`, {
+      method: "POST",
+      body: JSON.stringify({ service }),
+    });
+    logEvent("success", response.message || `Access opened for ${contextContainer}`);
+    return;
+  }
+
+  if (actionId === "backup-container") {
+    const response = await apiRequest(`/api/containers/${contextContainer}/backup`, { method: "POST" });
+    logEvent("success", response.message || `Backup triggered for ${contextContainer}`);
+    return;
+  }
+
+  if (actionId === "delete-container") {
+    const confirmed = window.confirm(`Delete container ${contextContainer}?`);
+    if (!confirmed) {
+      return;
+    }
+    const response = await apiRequest(`/api/containers/${contextContainer}`, { method: "DELETE" });
+    logEvent("success", response.message || `Deleted ${contextContainer}`);
+    await loadGraph();
+    return;
+  }
+
+  logEvent("error", `Unhandled action: ${actionId}`);
+}
+
+async function handleWizardAction(action) {
+  if (!state.wizard.active) {
+    return;
+  }
+  if (action === "close") {
+    state.wizard.active = false;
+    state.wizard.error = null;
+    renderWizard();
+    return;
+  }
+  if (action === "back") {
+    state.wizard.step = Math.max(0, state.wizard.step - 1);
+    renderWizard();
+    return;
+  }
+  if (action === "next") {
+    if (state.wizard.step < 2) {
+      state.wizard.step += 1;
+      renderWizard();
+      return;
+    }
+    state.wizard.busy = true;
+    state.wizard.error = null;
+    renderWizard();
+    try {
+      const payload = {
+        name: state.wizard.form.name.trim(),
+        distro: state.wizard.form.distro,
+        cpu_limit: state.wizard.form.cpu_limit,
+        ram_limit: state.wizard.form.ram_limit,
+        disk_limit: state.wizard.form.disk_limit,
+      };
+      if (!payload.name) {
+        throw new Error("Container name is required");
+      }
+      await apiRequest("/api/containers", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      logEvent("success", `Container ${payload.name} created`);
+      state.wizard.active = false;
+      await loadGraph();
+    } catch (err) {
+      state.wizard.error = err.message || "Failed to create container";
+    } finally {
+      state.wizard.busy = false;
+      renderWizard();
+    }
+  }
+}
+
+async function loadGraph() {
+  const response = await apiRequest("/api/apps", { method: "GET" });
+  state.nodes = response.nodes || [];
+  state.rootId = response.rootId || "home";
+  state.containers = response.containers || [];
+  state.fortress = response.fortress || { status: "unknown" };
+  buildNodeIndex(state.nodes);
+  if (!state.selectedId || !state.nodesById.has(state.selectedId)) {
+    state.selectedId = state.rootId;
+  }
+  renderAll();
+}
+
+function bindEvents() {
+  document.addEventListener("click", async (event) => {
+    const action = event.target.closest("[data-action-id]");
+    if (action) {
+      event.stopPropagation();
+      const nodeId = action.getAttribute("data-node-id");
+      const node = nodeId ? getNode(nodeId) : getNode(state.selectedId);
+      try {
+        await handleAction(action.getAttribute("data-action-id"), node);
+      } catch (err) {
+        logEvent("error", err.message || "Action failed");
+      }
+      return;
+    }
+
+    const card = event.target.closest(".app-card");
+    if (card) {
+      selectNode(card.getAttribute("data-node-id"));
+      return;
+    }
+
+    const treeItem = event.target.closest(".tree-item");
+    if (treeItem) {
+      selectNode(treeItem.getAttribute("data-node-id"));
+    }
+  });
+
+  elements.wizard.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-wizard-action]");
+    if (!action) {
+      return;
+    }
+    handleWizardAction(action.getAttribute("data-wizard-action"));
+  });
+
+  elements.wizard.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!target.name) {
+      return;
+    }
+    state.wizard.form[target.name] = target.value;
+  });
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  bindEvents();
+  loadGraph().catch((err) => {
+    logEvent("error", err.message || "Failed to load apps");
+  });
+});

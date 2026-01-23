@@ -1,0 +1,9 @@
+{
+  "id": "packages",
+  "title": "Host Packages",
+  "description": "Package installs on the host or container context.",
+  "icon": "stack",
+  "parent": "home",
+  "order": 6,
+  "badge": "Soon"
+}

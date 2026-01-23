@@ -1,0 +1,20 @@
+{
+  "id": "container-access",
+  "title": "Access Gates",
+  "description": "Expose SSH/FTP or close access quickly.",
+  "icon": "link",
+  "scope": "container",
+  "order": 2,
+  "actions": [
+    {
+      "id": "open-ssh",
+      "label": "Open SSH",
+      "variant": "ghost"
+    },
+    {
+      "id": "open-ftp",
+      "label": "Open FTP",
+      "variant": "ghost"
+    }
+  ]
+}

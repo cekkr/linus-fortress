@@ -1,0 +1,15 @@
+{
+  "id": "container-backups",
+  "title": "Backups",
+  "description": "Trigger encrypted container exports.",
+  "icon": "vault",
+  "scope": "container",
+  "order": 6,
+  "actions": [
+    {
+      "id": "backup-container",
+      "label": "Backup",
+      "variant": "ghost"
+    }
+  ]
+}

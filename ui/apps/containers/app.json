@@ -1,0 +1,15 @@
+{
+  "id": "containers",
+  "title": "Containers",
+  "description": "Launch, inspect, and wire LXD containers.",
+  "icon": "cube",
+  "parent": "home",
+  "order": 1,
+  "actions": [
+    {
+      "id": "create-container",
+      "label": "New Container",
+      "variant": "primary"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "container-overview",
+  "title": "Overview",
+  "description": "Status, IPs, and surface checks.",
+  "icon": "pulse",
+  "scope": "container",
+  "order": 1
+}
