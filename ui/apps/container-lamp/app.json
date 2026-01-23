@@ -13,6 +13,11 @@
       "variant": "primary"
     },
     {
+      "id": "probe-services",
+      "label": "Detect Services",
+      "variant": "ghost"
+    },
+    {
       "id": "open-routing",
       "label": "HTTPS Routing",
       "variant": "ghost"

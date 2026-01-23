@@ -464,6 +464,11 @@ body {
   font-size: 12px;
 }
 
+.wizard-field input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--leaf);
+}
+
 .wizard-actions {
   display: flex;
   justify-content: space-between;

@@ -56,8 +56,12 @@ Environment variables:
 - `FORTRESS_UI_API_KEY` or `FORTRESS_UI_USER_TOKEN` for authentication.
 - `FORTRESS_UI_INSECURE_TLS=1` to allow self-signed TLS when proxying to the API.
 
+For full LAMP automation and routing flows, the delegated token should include `manage_containers`, `manage_routing`, `recipes_manage`, and `recipes_apply`.
+
 LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` (or `user.fortress.stack=lamp`) via LXD config, or when the container name includes `lamp`.
 Optional service hints can be supplied with `user.lizard.services=apache,mysql,ftp` (comma-separated) to remove the install badge.
+The UI can probe service availability via `POST /containers/probe` (permission `manage_containers`) and update the LXD labels automatically.
+The file manager install uses Tiny File Manager under `/var/www/html/filemanager` and prompts for `fm_user`/`fm_password`.
 
 ## API Reference
 

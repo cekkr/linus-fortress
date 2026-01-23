@@ -120,6 +120,12 @@ class MultiInterfaceExposeRequest(BaseModel):
     exposures: List[InterfaceExposure]
 
 
+class ContainerServiceProbe(BaseModel):
+    container_name: str
+    services: Optional[List[str]] = None
+    update_labels: bool = False
+
+
 def build_container_router(
     authorize: AuthorizeFn,
     audit_api: AuditFn,
@@ -537,5 +543,36 @@ def build_container_router(
             )
             raise
         return {"message": f"Share {payload.share_name} detached from requested containers"}
+
+    @router.post("/containers/probe")
+    def probe_container_services(
+        payload: ContainerServiceProbe,
+        x_api_key: Optional[str] = Header(default=None),
+        x_user_token: Optional[str] = Header(default=None),
+    ):
+        authorize("containers_probe", "manage_containers", x_api_key, x_user_token, containers=payload.container_name)
+        try:
+            results = container_ops.probe_container_services(payload.container_name, payload.services)
+            label_value = None
+            if payload.update_labels:
+                label_value = container_ops.set_container_services_label(payload.container_name, results)
+            available = sorted([name for name, status in results.items() if status])
+            missing = sorted([name for name, status in results.items() if not status])
+            audit_api(
+                "containers_probe",
+                target=payload.container_name,
+                details={"available": available, "missing": missing, "labels_updated": payload.update_labels},
+            )
+            return {
+                "container": payload.container_name,
+                "services": results,
+                "available": available,
+                "missing": missing,
+                "labels_updated": payload.update_labels,
+                "label_value": label_value,
+            }
+        except Exception as exc:
+            audit_api("containers_probe", target=payload.container_name, details={"error": str(exc)}, status="error")
+            raise
 
     return router

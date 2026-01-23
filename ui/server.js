@@ -396,6 +396,18 @@ app.post(
 );
 
 app.post(
+  "/api/containers/:name/probe",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequest("POST", "/containers/probe", {
+      container_name: req.params.name,
+      services: req.body && req.body.services ? req.body.services : undefined,
+      update_labels: Boolean(req.body && req.body.update_labels),
+    });
+    res.json(payload);
+  })
+);
+
+app.post(
   "/api/packages/install",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequest("POST", "/packages/install", req.body || {});
@@ -431,6 +443,14 @@ app.post(
   "/api/recipes/apply",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequest("POST", "/recipes/apply", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/routing",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequest("POST", "/routing/add", req.body || {});
     res.json(payload);
   })
 );

@@ -7,7 +7,6 @@
   "stack": "lamp",
   "parent": "container-lamp",
   "order": 6,
-  "badge": "Soon",
   "actions": [
     {
       "id": "open-routing",

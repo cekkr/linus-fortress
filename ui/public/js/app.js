@@ -7,17 +7,41 @@ const state = {
   containerIndex: new Map(),
   fortress: { status: "unknown" },
   events: [],
+  probedContainers: new Set(),
+  probeInFlight: false,
   wizard: {
     active: false,
+    mode: null,
     step: 0,
     busy: false,
     error: null,
+    context: {
+      container: null,
+    },
     form: {
       name: "",
       distro: "ubuntu:22.04",
       cpu_limit: "1",
       ram_limit: "512MB",
       disk_limit: "10GB",
+    },
+    routing: {
+      domain: "",
+      container_port: "80",
+      container_interface: "eth0",
+      listen_address: "0.0.0.0",
+      listen_port: "80",
+      tls_enabled: true,
+      cert_path: "",
+      key_path: "",
+      chain_path: "",
+      tls_port: "443",
+      redirect_http: true,
+    },
+    filemanager: {
+      username: "",
+      password: "",
+      install_path: "/var/www/html/filemanager",
     },
   },
 };
@@ -184,6 +208,14 @@ function buildRecipeDefinition(name, description, commands, dependencies = []) {
   };
 }
 
+const FILEMANAGER_COMMAND = [
+  "FM_DIR=\"/var/www/html/filemanager\"",
+  "FM_FILE=\"$FM_DIR/index.php\"",
+  "mkdir -p \"$FM_DIR\"",
+  "curl -fsSL https://raw.githubusercontent.com/prasathmani/tinyfilemanager/master/tinyfilemanager.php -o \"$FM_FILE\"",
+  "FM_USER=\"{{fm_user}}\" FM_PASS=\"{{fm_password}}\" FM_FILE=\"$FM_FILE\" php -r '$file=getenv(\"FM_FILE\"); $user=getenv(\"FM_USER\"); $pass=getenv(\"FM_PASS\"); $hash=password_hash($pass, PASSWORD_DEFAULT); $u=addcslashes($user, \"\\\\\\\"\\\\$\"); $h=addcslashes($hash, \"\\\\\\\"\\\\$\"); $replacement=\"\\$auth_users = array(\\\"{$u}\\\" => \\\"{$h}\\\");\"; $pattern=\"/\\\\\\$auth_users\\\\s*=\\\\s*array\\\\(.*?\\\\);/s\"; $content=file_get_contents($file); $content=preg_replace_callback($pattern, function() use ($replacement) { return $replacement; }, $content, 1, $count); if ($count===0){$content=\"<?php\\\\n\".$replacement.\"\\\\n?>\\\\n\".$content;} file_put_contents($file, $content);'",
+].join(" && ");
+
 const LAMP_STACK_NAME = "lamp-stack";
 const LAMP_STACK_DEPENDENCIES = ["lamp-apache", "lamp-mysql", "lamp-ftp", "lamp-filemanager"];
 
@@ -218,10 +250,8 @@ const RECIPE_CATALOG = {
   ),
   "lamp-filemanager": buildRecipeDefinition(
     "lamp-filemanager",
-    "Install CLI file manager tools.",
-    [
-      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mc ranger; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mc ranger; fi",
-    ]
+    "Install Tiny File Manager web panel.",
+    [FILEMANAGER_COMMAND]
   ),
   [LAMP_STACK_NAME]: buildRecipeDefinition(
     LAMP_STACK_NAME,
@@ -230,6 +260,12 @@ const RECIPE_CATALOG = {
     LAMP_STACK_DEPENDENCIES
   ),
 };
+
+RECIPE_CATALOG["lamp-filemanager"].packages = ["curl", "php", "php-cli"];
+RECIPE_CATALOG["lamp-filemanager"].parameters = { "fm_user": "", "fm_password": "" };
+RECIPE_CATALOG["lamp-filemanager"].required_parameters = ["fm_user", "fm_password"];
+
+const SERVICE_PROBE_LIST = ["apache", "nginx", "mysql", "ftp", "filemanager"];
 
 const SERVICE_ACTIONS = {
   "install-apache": "lamp-apache",
@@ -300,6 +336,59 @@ function resolveServiceState(service, containerMeta) {
     return "unknown";
   }
   return services.includes(service) ? "available" : "missing";
+}
+
+function resetCreateWizard() {
+  state.wizard.form = {
+    name: "",
+    distro: "ubuntu:22.04",
+    cpu_limit: "1",
+    ram_limit: "512MB",
+    disk_limit: "10GB",
+  };
+}
+
+function resetRoutingWizard(containerName) {
+  state.wizard.routing = {
+    domain: "",
+    container_port: "80",
+    container_interface: "eth0",
+    listen_address: "0.0.0.0",
+    listen_port: "80",
+    tls_enabled: true,
+    cert_path: "",
+    key_path: "",
+    chain_path: "",
+    tls_port: "443",
+    redirect_http: true,
+  };
+  state.wizard.context.container = containerName || null;
+}
+
+function resetFilemanagerWizard() {
+  state.wizard.filemanager = {
+    username: "",
+    password: "",
+    install_path: "/var/www/html/filemanager",
+  };
+}
+
+function openWizard(mode, contextContainer) {
+  state.wizard.active = true;
+  state.wizard.mode = mode;
+  state.wizard.step = 0;
+  state.wizard.busy = false;
+  state.wizard.error = null;
+  if (mode === "create-container") {
+    resetCreateWizard();
+    state.wizard.context.container = null;
+  } else if (mode === "routing") {
+    resetRoutingWizard(contextContainer);
+  } else if (mode === "filemanager") {
+    resetFilemanagerWizard();
+    state.wizard.context.container = contextContainer || null;
+  }
+  renderWizard();
 }
 
 function renderTree() {
@@ -491,14 +580,204 @@ function renderEvents() {
 
 function renderWizard() {
   const wizard = state.wizard;
-  if (!wizard.active) {
+  if (!wizard.active || !wizard.mode) {
     elements.wizard.innerHTML = `
       <div>Wizard idle. Choose a card action to start a guided flow.</div>
     `;
     return;
   }
 
-  const steps = ["Identity", "Resources", "Confirm"];
+  let steps = [];
+  let bodyMarkup = "";
+  let nextLabel = "Next";
+
+  if (wizard.mode === "create-container") {
+    steps = ["Identity", "Resources", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-name">Container name</label>
+          <input id="wiz-name" name="name" data-wizard-group="form" value="${wizard.form.name}" placeholder="web-01" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-distro">Distro</label>
+          <select id="wiz-distro" name="distro" data-wizard-group="form">
+            <option value="ubuntu:22.04" ${wizard.form.distro === "ubuntu:22.04" ? "selected" : ""}>Ubuntu 22.04</option>
+            <option value="ubuntu:20.04" ${wizard.form.distro === "ubuntu:20.04" ? "selected" : ""}>Ubuntu 20.04</option>
+            <option value="debian:12" ${wizard.form.distro === "debian:12" ? "selected" : ""}>Debian 12</option>
+            <option value="almalinux:9" ${wizard.form.distro === "almalinux:9" ? "selected" : ""}>AlmaLinux 9</option>
+          </select>
+        </div>
+      `;
+    } else if (wizard.step === 1) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-cpu">CPU limit</label>
+          <input id="wiz-cpu" name="cpu_limit" data-wizard-group="form" value="${wizard.form.cpu_limit}" placeholder="2" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-ram">RAM limit</label>
+          <input id="wiz-ram" name="ram_limit" data-wizard-group="form" value="${wizard.form.ram_limit}" placeholder="1GB" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-disk">Disk limit</label>
+          <input id="wiz-disk" name="disk_limit" data-wizard-group="form" value="${wizard.form.disk_limit}" placeholder="10GB" />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Launching..." : "Launch";
+      bodyMarkup = `
+        <div>Confirm the container launch profile.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Name</strong>
+            <span>${wizard.form.name || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>Distro</strong>
+            <span>${wizard.form.distro}</span>
+          </div>
+          <div>
+            <strong>CPU</strong>
+            <span>${wizard.form.cpu_limit}</span>
+          </div>
+          <div>
+            <strong>RAM</strong>
+            <span>${wizard.form.ram_limit}</span>
+          </div>
+          <div>
+            <strong>Disk</strong>
+            <span>${wizard.form.disk_limit}</span>
+          </div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "routing") {
+    const routing = wizard.routing;
+    const containerName = wizard.context.container || "container";
+    steps = ["Domain", "TLS", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div>Route HTTPS for ${containerName}.</div>
+        <div class="wizard-field">
+          <label for="wiz-domain">Domain</label>
+          <input id="wiz-domain" name="domain" data-wizard-group="routing" value="${routing.domain}" placeholder="app.example.com" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-container-port">Container port</label>
+          <input id="wiz-container-port" name="container_port" data-wizard-group="routing" value="${routing.container_port}" placeholder="80" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-container-iface">Container interface</label>
+          <input id="wiz-container-iface" name="container_interface" data-wizard-group="routing" value="${routing.container_interface}" placeholder="eth0" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-listen-address">Listen address</label>
+          <input id="wiz-listen-address" name="listen_address" data-wizard-group="routing" value="${routing.listen_address}" placeholder="0.0.0.0" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-listen-port">Listen port</label>
+          <input id="wiz-listen-port" name="listen_port" data-wizard-group="routing" value="${routing.listen_port}" placeholder="80" />
+        </div>
+      `;
+    } else if (wizard.step === 1) {
+      const tlsDisabled = routing.tls_enabled ? "" : "disabled";
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-tls-enabled">Enable TLS</label>
+          <input id="wiz-tls-enabled" type="checkbox" name="tls_enabled" data-wizard-group="routing" ${routing.tls_enabled ? "checked" : ""} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-cert-path">Cert path</label>
+          <input id="wiz-cert-path" name="cert_path" data-wizard-group="routing" value="${routing.cert_path}" placeholder="/etc/letsencrypt/live/app/fullchain.pem" ${tlsDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-key-path">Key path</label>
+          <input id="wiz-key-path" name="key_path" data-wizard-group="routing" value="${routing.key_path}" placeholder="/etc/letsencrypt/live/app/privkey.pem" ${tlsDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-chain-path">Chain path (optional)</label>
+          <input id="wiz-chain-path" name="chain_path" data-wizard-group="routing" value="${routing.chain_path}" placeholder="/etc/letsencrypt/live/app/chain.pem" ${tlsDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-tls-port">TLS listen port</label>
+          <input id="wiz-tls-port" name="tls_port" data-wizard-group="routing" value="${routing.tls_port}" placeholder="443" ${tlsDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-redirect">Redirect HTTP to HTTPS</label>
+          <input id="wiz-redirect" type="checkbox" name="redirect_http" data-wizard-group="routing" ${routing.redirect_http ? "checked" : ""} ${tlsDisabled} />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Applying..." : "Apply";
+      bodyMarkup = `
+        <div>Confirm HTTPS routing.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Container</strong>
+            <span>${containerName}</span>
+          </div>
+          <div>
+            <strong>Domain</strong>
+            <span>${routing.domain || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>Container Port</strong>
+            <span>${routing.container_port}</span>
+          </div>
+          <div>
+            <strong>Listen</strong>
+            <span>${routing.listen_address}:${routing.listen_port}</span>
+          </div>
+          <div>
+            <strong>TLS</strong>
+            <span>${routing.tls_enabled ? "enabled" : "disabled"}</span>
+          </div>
+          <div>
+            <strong>TLS Port</strong>
+            <span>${routing.tls_port}</span>
+          </div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "filemanager") {
+    const filemanager = wizard.filemanager;
+    const containerName = wizard.context.container || "container";
+    steps = ["Credentials", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div>Install Tiny File Manager on ${containerName}.</div>
+        <div class="wizard-field">
+          <label for="wiz-fm-user">Admin username</label>
+          <input id="wiz-fm-user" name="username" data-wizard-group="filemanager" value="${filemanager.username}" placeholder="admin" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-fm-pass">Admin password</label>
+          <input id="wiz-fm-pass" type="password" name="password" data-wizard-group="filemanager" value="${filemanager.password}" placeholder="change-me" />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Installing..." : "Install";
+      bodyMarkup = `
+        <div>Confirm file manager install.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Container</strong>
+            <span>${containerName}</span>
+          </div>
+          <div>
+            <strong>Username</strong>
+            <span>${filemanager.username || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>Install Path</strong>
+            <span>${filemanager.install_path}</span>
+          </div>
+        </div>
+      `;
+    }
+  }
+
   const stepMarkup = steps
     .map((title, index) => {
       const active = index === wizard.step ? "active" : "";
@@ -506,68 +785,9 @@ function renderWizard() {
     })
     .join("");
 
-  let bodyMarkup = "";
-  if (wizard.step === 0) {
-    bodyMarkup = `
-      <div class="wizard-field">
-        <label for="wiz-name">Container name</label>
-        <input id="wiz-name" name="name" value="${wizard.form.name}" placeholder="web-01" />
-      </div>
-      <div class="wizard-field">
-        <label for="wiz-distro">Distro</label>
-        <select id="wiz-distro" name="distro">
-          <option value="ubuntu:22.04" ${wizard.form.distro === "ubuntu:22.04" ? "selected" : ""}>Ubuntu 22.04</option>
-          <option value="ubuntu:20.04" ${wizard.form.distro === "ubuntu:20.04" ? "selected" : ""}>Ubuntu 20.04</option>
-          <option value="debian:12" ${wizard.form.distro === "debian:12" ? "selected" : ""}>Debian 12</option>
-          <option value="almalinux:9" ${wizard.form.distro === "almalinux:9" ? "selected" : ""}>AlmaLinux 9</option>
-        </select>
-      </div>
-    `;
-  } else if (wizard.step === 1) {
-    bodyMarkup = `
-      <div class="wizard-field">
-        <label for="wiz-cpu">CPU limit</label>
-        <input id="wiz-cpu" name="cpu_limit" value="${wizard.form.cpu_limit}" placeholder="2" />
-      </div>
-      <div class="wizard-field">
-        <label for="wiz-ram">RAM limit</label>
-        <input id="wiz-ram" name="ram_limit" value="${wizard.form.ram_limit}" placeholder="1GB" />
-      </div>
-      <div class="wizard-field">
-        <label for="wiz-disk">Disk limit</label>
-        <input id="wiz-disk" name="disk_limit" value="${wizard.form.disk_limit}" placeholder="10GB" />
-      </div>
-    `;
-  } else {
-    bodyMarkup = `
-      <div>Confirm the container launch profile.</div>
-      <div class="preview-meta">
-        <div>
-          <strong>Name</strong>
-          <span>${wizard.form.name || "(missing)"}</span>
-        </div>
-        <div>
-          <strong>Distro</strong>
-          <span>${wizard.form.distro}</span>
-        </div>
-        <div>
-          <strong>CPU</strong>
-          <span>${wizard.form.cpu_limit}</span>
-        </div>
-        <div>
-          <strong>RAM</strong>
-          <span>${wizard.form.ram_limit}</span>
-        </div>
-        <div>
-          <strong>Disk</strong>
-          <span>${wizard.form.disk_limit}</span>
-        </div>
-      </div>
-    `;
-  }
-
   const errorMarkup = wizard.error ? `<div class="event-item error">${wizard.error}</div>` : "";
-  const nextLabel = wizard.step === steps.length - 1 ? (wizard.busy ? "Launching..." : "Launch") : "Next";
+  const backDisabled = wizard.step === 0 ? "disabled" : "";
+  const nextDisabled = wizard.busy ? "disabled" : "";
 
   elements.wizard.innerHTML = `
     <div class="wizard-steps">${stepMarkup}</div>
@@ -575,8 +795,8 @@ function renderWizard() {
     ${errorMarkup}
     <div class="wizard-actions">
       <button class="action ghost" data-wizard-action="close">Close</button>
-      <button class="action ghost" data-wizard-action="back" ${wizard.step === 0 ? "disabled" : ""}>Back</button>
-      <button class="action" data-wizard-action="next" ${wizard.busy ? "disabled" : ""}>${nextLabel}</button>
+      <button class="action ghost" data-wizard-action="back" ${backDisabled}>Back</button>
+      <button class="action" data-wizard-action="next" ${nextDisabled}>${nextLabel}</button>
     </div>
   `;
 }
@@ -646,22 +866,23 @@ async function ensureRecipe(recipe) {
   }
 }
 
-async function applyRecipe(recipeName, containerName) {
+async function applyRecipe(recipeName, containerName, parameters) {
   return apiRequest("/api/recipes/apply", {
     method: "POST",
     body: JSON.stringify({
       recipe_name: recipeName,
       container_name: containerName,
+      parameters: parameters || undefined,
       include_dependencies: true,
       update_index: true,
     }),
   });
 }
 
-async function installRecipe(recipeName, containerName) {
+async function installRecipe(recipeName, containerName, parameters) {
   const recipe = RECIPE_CATALOG[recipeName];
   await ensureRecipe(recipe);
-  return applyRecipe(recipeName, containerName);
+  return applyRecipe(recipeName, containerName, parameters);
 }
 
 async function installLampStack(containerName) {
@@ -672,14 +893,61 @@ async function installLampStack(containerName) {
   return applyRecipe(LAMP_STACK_NAME, containerName);
 }
 
+async function probeContainerServices(containerName, options = {}) {
+  const response = await apiRequest(`/api/containers/${containerName}/probe`, {
+    method: "POST",
+    body: JSON.stringify({
+      services: SERVICE_PROBE_LIST,
+      update_labels: options.updateLabels !== false,
+    }),
+  });
+  state.probedContainers.add(containerName);
+  if (options.log) {
+    logEvent("success", `Service probe updated for ${containerName}`);
+  }
+  return response;
+}
+
+async function autoProbeContainers() {
+  if (state.probeInFlight) {
+    return;
+  }
+  const targets = state.containers.filter(
+    (container) =>
+      container.stack === "lamp" &&
+      (!Array.isArray(container.services) || container.services.length === 0) &&
+      !state.probedContainers.has(container.name)
+  );
+  if (!targets.length) {
+    return;
+  }
+  state.probeInFlight = true;
+  for (const container of targets) {
+    try {
+      await probeContainerServices(container.name, { updateLabels: true, log: false });
+      state.probedContainers.add(container.name);
+    } catch (err) {
+      state.probedContainers.add(container.name);
+    }
+  }
+  state.probeInFlight = false;
+  await loadGraph({ skipProbe: true });
+}
+
 async function handleAction(actionId, node) {
   if (actionId === "refresh") {
+    state.probedContainers.clear();
     await loadGraph();
     logEvent("success", "Synced fortress state");
     return;
   }
 
   if (actionId === "open-routing") {
+    const contextContainer = node && node.context ? node.context.container : null;
+    if (contextContainer) {
+      openWizard("routing", contextContainer);
+      return;
+    }
     if (state.nodesById.has("routing")) {
       selectNode("routing");
     } else {
@@ -689,10 +957,7 @@ async function handleAction(actionId, node) {
   }
 
   if (actionId === "create-container") {
-    state.wizard.active = true;
-    state.wizard.step = 0;
-    state.wizard.error = null;
-    renderWizard();
+    openWizard("create-container");
     return;
   }
 
@@ -702,10 +967,22 @@ async function handleAction(actionId, node) {
     return;
   }
 
+  if (actionId === "probe-services") {
+    await probeContainerServices(contextContainer, { updateLabels: true, log: true });
+    await loadGraph({ skipProbe: true });
+    return;
+  }
+
   if (actionId === "install-lamp") {
     const response = await installLampStack(contextContainer);
     logEvent("success", response.message || `LAMP stack applied to ${contextContainer}`);
-    await loadGraph();
+    await probeContainerServices(contextContainer, { updateLabels: true, log: false });
+    await loadGraph({ skipProbe: true });
+    return;
+  }
+
+  if (actionId === "install-filemanager") {
+    openWizard("filemanager", contextContainer);
     return;
   }
 
@@ -713,7 +990,8 @@ async function handleAction(actionId, node) {
   if (serviceRecipe) {
     const response = await installRecipe(serviceRecipe, contextContainer);
     logEvent("success", response.message || `${serviceRecipe} applied to ${contextContainer}`);
-    await loadGraph();
+    await probeContainerServices(contextContainer, { updateLabels: true, log: false });
+    await loadGraph({ skipProbe: true });
     return;
   }
 
@@ -754,6 +1032,7 @@ async function handleWizardAction(action) {
   if (action === "close") {
     state.wizard.active = false;
     state.wizard.error = null;
+    state.wizard.mode = null;
     renderWizard();
     return;
   }
@@ -763,7 +1042,13 @@ async function handleWizardAction(action) {
     return;
   }
   if (action === "next") {
-    if (state.wizard.step < 2) {
+    const stepCounts = {
+      "create-container": 3,
+      routing: 3,
+      filemanager: 2,
+    };
+    const steps = stepCounts[state.wizard.mode] || 1;
+    if (state.wizard.step < steps - 1) {
       state.wizard.step += 1;
       renderWizard();
       return;
@@ -772,25 +1057,87 @@ async function handleWizardAction(action) {
     state.wizard.error = null;
     renderWizard();
     try {
-      const payload = {
-        name: state.wizard.form.name.trim(),
-        distro: state.wizard.form.distro,
-        cpu_limit: state.wizard.form.cpu_limit,
-        ram_limit: state.wizard.form.ram_limit,
-        disk_limit: state.wizard.form.disk_limit,
-      };
-      if (!payload.name) {
-        throw new Error("Container name is required");
+      if (state.wizard.mode === "create-container") {
+        const payload = {
+          name: state.wizard.form.name.trim(),
+          distro: state.wizard.form.distro,
+          cpu_limit: state.wizard.form.cpu_limit,
+          ram_limit: state.wizard.form.ram_limit,
+          disk_limit: state.wizard.form.disk_limit,
+        };
+        if (!payload.name) {
+          throw new Error("Container name is required");
+        }
+        await apiRequest("/api/containers", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        logEvent("success", `Container ${payload.name} created`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+        await loadGraph();
+      } else if (state.wizard.mode === "routing") {
+        const routing = state.wizard.routing;
+        const containerName = state.wizard.context.container;
+        if (!containerName) {
+          throw new Error("Container is required for routing");
+        }
+        if (!routing.domain.trim()) {
+          throw new Error("Domain is required");
+        }
+        const payload = {
+          domain: routing.domain.trim(),
+          container_name: containerName,
+          container_port: Number.parseInt(routing.container_port, 10) || 80,
+          container_interface: routing.container_interface || "eth0",
+          listen_address: routing.listen_address || "0.0.0.0",
+          listen_port: Number.parseInt(routing.listen_port, 10) || 80,
+          tls: routing.tls_enabled
+            ? {
+                cert_path: routing.cert_path.trim(),
+                key_path: routing.key_path.trim(),
+                chain_path: routing.chain_path.trim() || undefined,
+                listen_port: Number.parseInt(routing.tls_port, 10) || 443,
+                redirect_http: Boolean(routing.redirect_http),
+              }
+            : null,
+        };
+        if (payload.tls && (!payload.tls.cert_path || !payload.tls.key_path)) {
+          throw new Error("TLS cert and key paths are required");
+        }
+        if (payload.tls && payload.tls.listen_port === payload.listen_port) {
+          throw new Error("TLS listen port must differ from HTTP listen port");
+        }
+        await apiRequest("/api/routing", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        logEvent("success", `Routing applied for ${payload.domain}`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+      } else if (state.wizard.mode === "filemanager") {
+        const containerName = state.wizard.context.container;
+        if (!containerName) {
+          throw new Error("Container is required for file manager install");
+        }
+        if (!state.wizard.filemanager.username.trim()) {
+          throw new Error("File manager username is required");
+        }
+        if (!state.wizard.filemanager.password) {
+          throw new Error("File manager password is required");
+        }
+        const response = await installRecipe("lamp-filemanager", containerName, {
+          fm_user: state.wizard.filemanager.username.trim(),
+          fm_password: state.wizard.filemanager.password,
+        });
+        logEvent("success", response.message || `File manager installed on ${containerName}`);
+        await probeContainerServices(containerName, { updateLabels: true, log: false });
+        await loadGraph({ skipProbe: true });
+        state.wizard.active = false;
+        state.wizard.mode = null;
       }
-      await apiRequest("/api/containers", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      logEvent("success", `Container ${payload.name} created`);
-      state.wizard.active = false;
-      await loadGraph();
     } catch (err) {
-      state.wizard.error = err.message || "Failed to create container";
+      state.wizard.error = err.message || "Wizard action failed";
     } finally {
       state.wizard.busy = false;
       renderWizard();
@@ -798,7 +1145,7 @@ async function handleWizardAction(action) {
   }
 }
 
-async function loadGraph() {
+async function loadGraph(options = {}) {
   const response = await apiRequest("/api/apps", { method: "GET" });
   state.nodes = response.nodes || [];
   state.rootId = response.rootId || "home";
@@ -809,6 +1156,9 @@ async function loadGraph() {
     state.selectedId = state.rootId;
   }
   renderAll();
+  if (!options.skipProbe) {
+    autoProbeContainers().catch(() => {});
+  }
 }
 
 function bindEvents() {
@@ -851,7 +1201,18 @@ function bindEvents() {
     if (!target.name) {
       return;
     }
-    state.wizard.form[target.name] = target.value;
+    const group = target.getAttribute("data-wizard-group") || "form";
+    const value = target.type === "checkbox" ? target.checked : target.value;
+    if (group === "routing") {
+      state.wizard.routing[target.name] = value;
+      if (target.name === "tls_enabled") {
+        renderWizard();
+      }
+    } else if (group === "filemanager") {
+      state.wizard.filemanager[target.name] = value;
+    } else {
+      state.wizard.form[target.name] = value;
+    }
   });
 }
 

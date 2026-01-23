@@ -1,7 +1,7 @@
 {
   "id": "container-lamp-filemanager",
   "title": "File Manager",
-  "description": "CLI file manager tooling inside the container.",
+  "description": "Web file manager panel inside the container.",
   "icon": "folder",
   "scope": "container",
   "stack": "lamp",

@@ -102,6 +102,53 @@ def container_has_binary(container_name: str, binary: str) -> bool:
     return result.returncode == 0
 
 
+CONTAINER_SERVICE_PROBES = {
+    "apache": {"bins": ["apache2", "httpd"]},
+    "nginx": {"bins": ["nginx"]},
+    "mysql": {"bins": ["mysqld", "mariadbd", "mysql"]},
+    "ftp": {"bins": ["vsftpd"]},
+    "filemanager": {"paths": ["/var/www/html/filemanager/index.php", "/var/www/html/tinyfilemanager.php"]},
+}
+
+
+def probe_container_services(container_name: str, services: Optional[List[str]] = None) -> Dict[str, bool]:
+    requested = [service.lower() for service in services] if services else list(CONTAINER_SERVICE_PROBES.keys())
+    unknown = [service for service in requested if service not in CONTAINER_SERVICE_PROBES]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown services: {', '.join(sorted(unknown))}")
+    script_lines = [
+        "check_cmd() { command -v \"$1\" >/dev/null 2>&1; }",
+        "emit() { printf '%s=%s\\n' \"$1\" \"$2\"; }",
+    ]
+    for service in requested:
+        probe = CONTAINER_SERVICE_PROBES[service]
+        checks: List[str] = []
+        for binary in probe.get("bins", []):
+            checks.append(f"check_cmd {shlex.quote(binary)}")
+        for path in probe.get("paths", []):
+            checks.append(f"test -f {shlex.quote(path)}")
+        condition = " || ".join(checks) if checks else "false"
+        script_lines.append(f"if {condition}; then emit {service} 1; else emit {service} 0; fi")
+    output = exec_in_container(container_name, ["sh", "-c", "; ".join(script_lines)])
+    results: Dict[str, bool] = {}
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.strip().split("=", 1)
+        results[key] = value.strip() == "1"
+    for service in requested:
+        results.setdefault(service, False)
+    return results
+
+
+def set_container_services_label(container_name: str, services: Dict[str, bool]) -> str:
+    available = sorted([name for name, status in services.items() if status])
+    value = ",".join(available)
+    for key in ("user.lizard.services", "user.fortress.services"):
+        run_command(["lxc", "config", "set", container_name, key, value])
+    return value
+
+
 def detect_package_manager(container_name: Optional[str] = None) -> str:
     candidates = [("apt", "apt-get"), ("dnf", "dnf")]
     for name, binary in candidates:
