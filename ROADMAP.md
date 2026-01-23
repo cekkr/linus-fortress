@@ -42,3 +42,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Add monitoring dashboards powered by `/monitoring/resources` with alert overlays.
 - Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
+
+## Path 9: Bootstrap and run tooling (short term)
+- Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).
+- Add a least-privilege sudoers template + service-user setup for running without full root.
