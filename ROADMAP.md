@@ -28,3 +28,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Support read-only migrations, dry-run planning, and checksums to validate transferred assets.
 - Store credentials securely and redact them from logs; enforce TLS and least-privilege roles.
 - Provide rollback and cleanup steps for partially applied migrations.
+
+## Path 7: Shared hosting routing (short term)
+- Add automatic TLS issuance/renewal (Let's Encrypt) for routing entries.
+- Support multi-domain routes and wildcard certificates.
+- Refresh nginx upstreams when container IPs change (or add LXD DNS-based upstreams).

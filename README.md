@@ -37,6 +37,7 @@ If `FORTRESS_API_KEY` is unset or left as the default placeholder, `X-API-Key` a
 - `py/server.py`: FastAPI routes and orchestration.
 - `py/fortress/auth.py`: master key resolution, delegated token checks, container scope enforcement.
 - `py/fortress/storage.py`: JSON load/save helpers for API users, recipes, hosts, and VMs.
+- `py/fortress/routing.py`: nginx routing config rendering, domain validation, TLS path checks.
 - `py/fortress/recipes.py`: recipe models, dependency resolution, and template rendering.
 
 ## API Reference
@@ -75,7 +76,14 @@ Body:
   "container_port": 8080,
   "container_interface": "eth0",
   "listen_address": "192.0.2.10",
-  "listen_port": 8080
+  "listen_port": 8080,
+  "tls": {
+    "cert_path": "/etc/letsencrypt/live/app.example.com/fullchain.pem",
+    "key_path": "/etc/letsencrypt/live/app.example.com/privkey.pem",
+    "chain_path": "/etc/letsencrypt/live/app.example.com/chain.pem",
+    "listen_port": 443,
+    "redirect_http": true
+  }
 }
 ```
 - `domain` (string, required)
@@ -83,7 +91,19 @@ Body:
 - `container_port` (int, optional, default `80`) – target port inside the container.
 - `container_interface` (string, optional, default `eth0`) – which container NIC to resolve for upstream traffic.
 - `listen_address` / `listen_port` (optional, default `0.0.0.0:80`) – bind nginx to a specific host interface/port.
+- `tls` (object, optional) – enable HTTPS termination on the host.
+  - `cert_path` / `key_path` (string, required when `tls` set) – absolute paths to PEM files.
+  - `chain_path` (string, optional) – additional trust chain.
+  - `listen_port` (int, optional, default `443`) – HTTPS listen port (must differ from `listen_port`).
+  - `redirect_http` (bool, optional, default `true`) – redirect HTTP to HTTPS instead of proxying plain HTTP.
 - Creates an nginx vhost that proxies to the container IP+port and reloads nginx. Useful for dual-homed hosts or segmented container networks.
+- Routes are tracked in `/var/lib/fortress/routes.json` and written to `/etc/nginx/sites-available` with symlinks in `/etc/nginx/sites-enabled`.
+
+#### `GET /routing` (permission `manage_routing`)
+- Returns stored routing entries plus an `enabled` flag for the nginx symlink.
+
+#### `DELETE /routing/{domain}` (permission `manage_routing`, container scoped)
+- Removes the nginx vhost for the given domain and reloads nginx.
 
 ### Container Lifecycle
 

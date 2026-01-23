@@ -45,6 +45,16 @@ from fortress.recipes import (
     normalize_parameters,
 )
 from fortress.system import run_command
+from fortress.routing import (
+    build_nginx_proxy_config,
+    ensure_nginx_site,
+    reload_nginx,
+    remove_nginx_site,
+    test_nginx_config,
+    validate_domain,
+    validate_tls_paths,
+    write_nginx_config,
+)
 from fortress.monitoring import (
     DEFAULT_CONTAINER_THRESHOLDS,
     DEFAULT_HOST_THRESHOLDS,
@@ -100,12 +110,14 @@ HOST_INTERFACE = os.environ.get("FORTRESS_HOST_INTERFACE", "0.0.0.0")
 HOST_PORT = int(os.environ.get("FORTRESS_HOST_PORT", "8443"))
 BACKUP_DIR = "/var/lib/fortress/backups"
 NGINX_CONFIG_DIR = "/etc/nginx/sites-available"
+NGINX_ENABLED_DIR = "/etc/nginx/sites-enabled"
 API_USERS_DB = "/var/lib/fortress/api_users.json"
 RECIPES_DB = "/var/lib/fortress/recipes.json"
 SHARED_STORAGE_DIR = "/var/lib/fortress/shares"
 COMMAND_LOG_DB = "/var/lib/fortress/command_log.db"
 VMS_DB = "/var/lib/fortress/vms.json"
 HOSTS_DB = "/var/lib/fortress/hosts.json"
+ROUTING_DB = "/var/lib/fortress/routes.json"
 
 # Logging setup
 logging.basicConfig(filename='/var/log/fortress.log', level=logging.INFO, 
@@ -193,11 +205,28 @@ def load_api_users() -> Dict[str, Dict]:
 def save_api_users(users: Dict[str, Dict]):
     save_json(API_USERS_DB, users)
 
+def load_routes() -> Dict[str, Dict[str, Any]]:
+    return load_json_dict(
+        ROUTING_DB,
+        label="routing",
+        error_message="Failed to load routing store, falling back to empty set.",
+    )
+
+def save_routes(routes: Dict[str, Dict[str, Any]]):
+    save_json(ROUTING_DB, routes)
+
 def ensure_packages_list(packages: List[str]):
     if not packages:
         raise HTTPException(status_code=400, detail="Package list cannot be empty")
 
 # --- DATA MODELS ---
+
+class DomainRouteTLS(BaseModel):
+    cert_path: str
+    key_path: str
+    chain_path: Optional[str] = None
+    listen_port: int = 443
+    redirect_http: bool = True
 
 class DomainRoute(BaseModel):
     domain: str
@@ -206,6 +235,7 @@ class DomainRoute(BaseModel):
     container_interface: str = "eth0"
     listen_address: str = "0.0.0.0"
     listen_port: int = 80
+    tls: Optional[DomainRouteTLS] = None
 
 class APIUserCreate(BaseModel):
     username: str
@@ -288,65 +318,140 @@ def monitoring_resources(
 def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("routing_add", "manage_routing", x_api_key, x_user_token, containers=route.container_name)
 
+    validate_domain(route.domain)
     validate_port(route.container_port, "container_port")
     validate_port(route.listen_port, "listen_port")
+    tls_payload = None
+    if route.tls:
+        validate_port(route.tls.listen_port, "tls.listen_port")
+        if route.tls.listen_port == route.listen_port:
+            raise HTTPException(status_code=400, detail="TLS listen_port must differ from listen_port")
+        validate_tls_paths(route.tls.cert_path, route.tls.key_path, route.tls.chain_path)
+        tls_payload = route.tls.dict()
 
     # 1. Get Container IP on the requested interface
     ip = get_container_ip(route.container_name, route.container_interface)
 
-    # 2. Generate Nginx Config restricted to the listen address/port
-    listen_directive = f"{route.listen_address}:{route.listen_port}"
-    config_content = f"""
-server {{
-    listen {listen_directive};
-    server_name {route.domain};
+    # 2. Generate Nginx config restricted to the listen address/port.
+    config_content = build_nginx_proxy_config(
+        domain=route.domain,
+        listen_address=route.listen_address,
+        listen_port=route.listen_port,
+        upstream_host=ip,
+        upstream_port=route.container_port,
+        tls=tls_payload,
+    )
+    config_path = os.path.join(NGINX_CONFIG_DIR, route.domain)
+    previous_config = None
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            previous_config = f.read()
 
-    location / {{
-        proxy_pass http://{ip}:{route.container_port};
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }}
-}}
-    """
-    
-    config_path = f"{NGINX_CONFIG_DIR}/{route.domain}"
-    os.makedirs(NGINX_CONFIG_DIR, exist_ok=True)
-    with open(config_path, "w") as f:
-        f.write(config_content)
-    
-    # 3. Symlink and Reload
+    write_nginx_config(route.domain, config_content, NGINX_CONFIG_DIR)
+
+    # 3. Symlink, validate, and reload.
     try:
-        if not os.path.exists(f"/etc/nginx/sites-enabled/{route.domain}"):
-            os.symlink(config_path, f"/etc/nginx/sites-enabled/{route.domain}")
-        run_command(["systemctl", "reload", "nginx"])
-        
-        # Optional: Auto-certbot could be triggered here
-        
-        audit_api(
-            "routing_add",
-            target=route.domain,
-            details={
-                "container": route.container_name,
-                "port": route.container_port,
-                "listen": f"{route.listen_address}:{route.listen_port}",
-                "interface": route.container_interface,
-            },
-        )
-        return {"message": f"Routing set for {route.domain} -> {ip}"}
-    except Exception as e:
+        ensure_nginx_site(route.domain, config_path, NGINX_ENABLED_DIR)
+        test_nginx_config()
+        reload_nginx()
+    except Exception as exc:
+        if previous_config is not None:
+            write_nginx_config(route.domain, previous_config, NGINX_CONFIG_DIR)
+            ensure_nginx_site(route.domain, config_path, NGINX_ENABLED_DIR)
+        else:
+            remove_nginx_site(route.domain, config_path, NGINX_ENABLED_DIR)
         audit_api(
             "routing_add",
             target=route.domain,
             details={
                 "container": route.container_name,
                 "listen": f"{route.listen_address}:{route.listen_port}",
-                "error": str(e),
+                "tls": bool(route.tls),
+                "error": str(exc),
             },
             status="error",
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    routes = load_routes()
+    routes[route.domain] = route.dict()
+    save_routes(routes)
+
+    audit_api(
+        "routing_add",
+        target=route.domain,
+        details={
+            "container": route.container_name,
+            "port": route.container_port,
+            "listen": f"{route.listen_address}:{route.listen_port}",
+            "interface": route.container_interface,
+            "tls": bool(route.tls),
+            "tls_port": route.tls.listen_port if route.tls else None,
+        },
+    )
+    return {"message": f"Routing set for {route.domain} -> {ip}"}
+
+
+@app.get("/routing")
+def list_domain_routing(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("routing_list", "manage_routing", x_api_key, x_user_token)
+    routes = load_routes()
+    allowed_containers = auth_context.get("allowed_containers")
+    response = []
+    for domain, record in routes.items():
+        if allowed_containers and record.get("container_name") not in allowed_containers:
+            continue
+        entry = dict(record)
+        entry["domain"] = domain
+        enabled_path = os.path.join(NGINX_ENABLED_DIR, domain)
+        entry["enabled"] = os.path.exists(enabled_path)
+        response.append(entry)
+    audit_api("routing_list", details={"count": len(response)})
+    return {"routes": response}
+
+
+@app.delete("/routing/{domain}")
+def remove_domain_routing(domain: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("routing_remove", "manage_routing", x_api_key, x_user_token)
+    validate_domain(domain)
+    routes = load_routes()
+    record = routes.get(domain)
+    if not record:
+        audit_api("routing_remove", target=domain, details={"error": "not found"}, status="error")
+        raise HTTPException(status_code=404, detail="Route not found")
+    if record.get("container_name"):
+        enforce_container_scope(auth_context, record["container_name"])
+
+    config_path = os.path.join(NGINX_CONFIG_DIR, domain)
+    previous_config = None
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            previous_config = f.read()
+
+    try:
+        remove_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+        test_nginx_config()
+        reload_nginx()
+    except Exception as exc:
+        if previous_config is not None:
+            write_nginx_config(domain, previous_config, NGINX_CONFIG_DIR)
+            ensure_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+        audit_api(
+            "routing_remove",
+            target=domain,
+            details={"container": record.get("container_name"), "error": str(exc)},
+            status="error",
+        )
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    routes.pop(domain, None)
+    save_routes(routes)
+    audit_api("routing_remove", target=domain, details={"container": record.get("container_name")})
+    return {"message": f"Routing removed for {domain}"}
 
 # --- API USER MANAGEMENT ---
 

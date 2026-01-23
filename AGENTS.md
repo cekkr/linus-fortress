@@ -6,6 +6,8 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/storage.py` centralizes JSON store helpers for API users, recipes, hosts, and VMs
 - py/fortress/monitoring.py centralizes host/container resource snapshots with alert thresholds
 - Container lifecycle/access/connectivity APIs are implemented in `py/fortress/api/containers.py` with LXC helpers in `py/fortress/containers.py`
+- `py/fortress/routing.py` centralizes nginx routing config rendering, domain validation, TLS path checks, and reload/testing helpers for HTTP(S) host routing
+- Routing entries persist in `/var/lib/fortress/routes.json` and generate nginx vhosts under `/etc/nginx/sites-available` (symlinked into `sites-enabled`)
 - `py/fortress/system.py` owns the shared `run_command` helper used by server and container management
 - py/server.py also manages host/container package operations (apt + dnf) and firewall rules (ufw + firewalld)
 - `/monitoring/resources` exposes structured host+container metrics plus alert flags for automation against anomalous usage/malware-like spikes
@@ -16,10 +18,10 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/recipes.py` holds recipe models, dependency resolution, and template rendering
 - `py/fortress/hosts.py` tracks SSH-managed host records for provisioning/probing on non-VM machines; shared SSH/script helpers are in `py/fortress/remote.py`
 - fortress-cli.py now includes `recipes list|create|apply` helpers in addition to status/api-users/package/backup calls
-- Unit tests in `tests/test_recipes.py` cover recipe dependency resolution and apply planning
+- Unit tests in `tests/test_recipes.py` and `tests/test_routing.py` cover recipe dependency resolution/apply planning plus nginx routing config validation
 - `py/fortress/vms.py` centralizes VM registry + QEMU/VirtualBox lifecycle, snapshots, and SSH probe/provision helpers; provisioning scripts live in `scripts/provision`
 - api-v1.yaml documents the HTTP contract (OpenAPI 3.0.3) and README.md lists request bodies/permissions for each endpoint
-- Domain routing and LXD proxy helpers now support choosing container interfaces, explicit upstream addresses, and host listen ports/addresses for finer TCP/IP exposure control between containers and the host
+- Domain routing and LXD proxy helpers now support choosing container interfaces and host listen ports/addresses for finer TCP/IP exposure control between containers and the host
 - `POST /containers/expose` supports bulk interface/port exposure to a container with port ranges, protocol selection, per-interface upstream selection, and optional firewall allowlists (rolls back devices and firewall rules on failure)
 
 ## Project structure (tree)
@@ -41,6 +43,7 @@ This file contains the directives for AIs and must be kept current with the mini
 |       |-- auth.py
 |       |-- audit.py
 |       |-- containers.py
+|       |-- routing.py
 |       |-- monitoring.py
 |       |-- hosts.py
 |       |-- remote.py
@@ -57,12 +60,13 @@ This file contains the directives for AIs and must be kept current with the mini
 |       |-- provision_fedora.sh
 |       `-- provision_ubuntu.sh
 `-- tests
-    `-- test_recipes.py
+    |-- test_recipes.py
+    `-- test_routing.py
 ```
 
 ## HTTP API map (code ownership)
 - `py/fortress/api/containers.py`: `/container/create`, `/container/{name}`, `/access/external/*`, `/container/users/*`, `/container/groups`, `/containers/connect/*`
-- `py/server.py`: `/status`, `/monitoring/resources`, `/routing/add`, `/api-users*`, `/firewall/*`, `/packages/*`, `/recipes*`, `/backup/*`, `/restore`
+- `py/server.py`: `/status`, `/monitoring/resources`, `/routing`, `/routing/add`, `/routing/{domain}`, `/api-users*`, `/firewall/*`, `/packages/*`, `/recipes*`, `/backup/*`, `/restore`
 - `py/server.py`: `/vms*` (VM registry, start/stop/status, snapshots, SSH provisioning/probing)
 - `py/server.py`: `/hosts*` (SSH-managed host registry, provisioning/probing, saved states)
 - `api-v1.yaml`: canonical OpenAPI reference; README.md mirrors route summaries and permissions
