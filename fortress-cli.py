@@ -20,7 +20,7 @@ import textwrap
 from dataclasses import dataclass, field
 from getpass import getpass
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 from cryptography.fernet import Fernet
@@ -175,6 +175,36 @@ def parse_kv_pairs(pairs: Optional[Sequence[str]]) -> Dict[str, Any]:
         key, value = item.split("=", 1)
         params[key] = value
     return params
+
+
+def parse_rule_specs(specs: Optional[Sequence[str]]) -> List[Dict[str, Any]]:
+    rules: List[Dict[str, Any]] = []
+    if not specs:
+        return rules
+    for raw in specs:
+        parts = raw.split(":")
+        port_proto = parts[0]
+        action = parts[1] if len(parts) > 1 and parts[1] else "allow"
+        direction = parts[2] if len(parts) > 2 and parts[2] else "in"
+        source = parts[3] if len(parts) > 3 and parts[3] else None
+        protocol = "tcp"
+        port_str = port_proto
+        if "/" in port_proto:
+            port_str, protocol = port_proto.split("/", 1)
+        try:
+            port = int(port_str)
+        except ValueError as exc:
+            raise FortressCLIError(f"Invalid rule spec port: {raw}") from exc
+        rules.append(
+            {
+                "port": port,
+                "protocol": protocol,
+                "source": source,
+                "action": action,
+                "direction": direction,
+            }
+        )
+    return rules
 
 
 @dataclass
@@ -462,6 +492,8 @@ def recipes_command(args: argparse.Namespace) -> None:
                 "recipe_name": args.name,
                 "include_dependencies": not args.no_deps,
                 "update_index": not args.no_update_index,
+                "dry_run": args.dry_run,
+                "probe_services": not args.no_probe,
             }
             if args.container:
                 payload["container_name"] = args.container
@@ -471,7 +503,246 @@ def recipes_command(args: argparse.Namespace) -> None:
         result = client.request("POST", "/recipes/apply", json_body=payload, auth_override=auth_override)
         print(json.dumps(result, indent=2))
         return
+    if args.subcommand == "plan":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if not args.name:
+                raise FortressCLIError("Recipe name required when not using --json or --json-file")
+            payload = {
+                "recipe_name": args.name,
+                "include_dependencies": not args.no_deps,
+            }
+            if args.container:
+                payload["container_name"] = args.container
+            params = parse_kv_pairs(args.param)
+            if params:
+                payload["parameters"] = params
+        result = client.request("POST", "/recipes/plan", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "seed":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if not args.bundle:
+                raise FortressCLIError("Bundle name required when not using --json or --json-file")
+            payload = {"bundle": args.bundle, "overwrite": args.overwrite}
+        result = client.request("POST", "/recipes/seed", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
     raise FortressCLIError("Unsupported recipes subcommand")
+
+
+def firewall_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    auth_override = getattr(args, "auth_mode", None)
+    if args.subcommand == "status":
+        result = client.request("GET", "/firewall/status", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "rules":
+        params = {}
+        if args.port is not None:
+            params["port"] = args.port
+        if args.protocol:
+            params["protocol"] = args.protocol
+        if args.source:
+            params["source"] = args.source
+        result = client.request("GET", "/firewall/rules", params=params, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "apply":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            rules = parse_rule_specs(args.rule)
+            if not rules:
+                raise FortressCLIError("Provide --rule entries or use --json/--json-file")
+            payload = {"rules": rules, "mode": args.mode, "dry_run": args.dry_run}
+        result = client.request("POST", "/firewall/rules/apply", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "rollback":
+        payload = {"rollback_id": args.rollback_id, "dry_run": args.dry_run}
+        result = client.request("POST", "/firewall/rollback", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "ddos-status":
+        result = client.request("GET", "/firewall/ddos", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "ddos":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            enabled = True
+            if args.disable:
+                enabled = False
+            payload = {
+                "enabled": enabled,
+                "profile": args.profile,
+                "rate_limit_per_sec": args.rate,
+                "burst": args.burst,
+                "conn_limit": args.conn_limit,
+                "ban_minutes": args.ban_minutes,
+                "allowlist": args.allow or [],
+                "denylist": args.deny or [],
+                "ports": args.ports,
+                "protocol": args.protocol,
+                "dry_run": args.dry_run,
+            }
+        result = client.request("PUT", "/firewall/ddos", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    raise FortressCLIError("Unsupported firewall subcommand")
+
+
+def sites_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    auth_override = getattr(args, "auth_mode", None)
+    if args.subcommand == "list":
+        result = client.request("GET", "/sites", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "get":
+        result = client.request("GET", f"/sites/{args.site_id}", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "create":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if not args.name or not args.domain or not args.container or not args.docroot:
+                raise FortressCLIError("name, domain, container, and docroot are required when not using --json/--json-file")
+            payload = {
+                "name": args.name,
+                "primary_domain": args.domain,
+                "domains": args.aliases or [],
+                "container_name": args.container,
+                "docroot": args.docroot,
+            }
+            if args.php_version or args.runtime_user or args.runtime_group:
+                payload["runtime"] = {
+                    "php_version": args.php_version,
+                    "user": args.runtime_user,
+                    "group": args.runtime_group,
+                }
+            if args.db_name or args.db_user or args.db_password:
+                payload["database"] = {
+                    "engine": args.db_engine,
+                    "name": args.db_name,
+                    "username": args.db_user,
+                    "password": args.db_password,
+                    "host": args.db_host,
+                    "port": args.db_port,
+                }
+            if args.no_db_create:
+                payload["create_database"] = False
+            if args.no_user_create:
+                payload["create_user"] = False
+            if args.listen_port or args.listen_address or args.container_port or args.container_interface:
+                payload["routing"] = {
+                    "listen_address": args.listen_address,
+                    "listen_port": args.listen_port,
+                    "container_port": args.container_port,
+                    "container_interface": args.container_interface,
+                }
+            if args.tls_mode or args.tls_cert or args.tls_key:
+                payload["tls"] = {
+                    "mode": args.tls_mode,
+                    "cert_path": args.tls_cert,
+                    "key_path": args.tls_key,
+                    "chain_path": args.tls_chain,
+                    "listen_port": args.tls_port,
+                }
+        result = client.request("POST", "/sites", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "update":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            raise FortressCLIError("Update requires --json or --json-file")
+        result = client.request("PUT", f"/sites/{args.site_id}", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "delete":
+        result = client.request("DELETE", f"/sites/{args.site_id}", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "deploy":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if not args.source_type or not args.source:
+                raise FortressCLIError("source-type and source are required when not using --json/--json-file")
+            payload = {
+                "source_type": args.source_type,
+                "source": args.source,
+                "ref": args.ref,
+                "subdir": args.subdir,
+                "strip_components": args.strip_components,
+                "post_deploy_commands": args.post or [],
+                "restart_services": not args.no_restart,
+            }
+        result = client.request("POST", f"/sites/{args.site_id}/deploy", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "backup":
+        payload = {"include_database": not args.no_db, "label": args.label}
+        result = client.request("POST", f"/sites/{args.site_id}/backup", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "rollback":
+        payload = {"backup_id": args.backup_id, "restart_services": not args.no_restart}
+        result = client.request("POST", f"/sites/{args.site_id}/rollback", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "logs":
+        params = {}
+        if args.service:
+            params["service"] = args.service
+        if args.lines:
+            params["lines"] = args.lines
+        result = client.request("GET", f"/sites/{args.site_id}/logs", params=params, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "health":
+        result = client.request("GET", f"/sites/{args.site_id}/health", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "restart":
+        payload = {"services": args.service}
+        result = client.request("POST", f"/sites/{args.site_id}/services/restart", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    raise FortressCLIError("Unsupported sites subcommand")
+
+
+def migrations_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    auth_override = getattr(args, "auth_mode", None)
+    if args.subcommand == "status":
+        result = client.request("GET", "/migrations/status", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "plan":
+        payload = {"stores": args.store or [], "dry_run": True}
+        result = client.request("POST", "/migrations/plan", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "apply":
+        payload = {"stores": args.store or [], "dry_run": args.dry_run, "backup": not args.no_backup}
+        result = client.request("POST", "/migrations/apply", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "rollback":
+        payload = {"patch_id": args.patch_id, "dry_run": args.dry_run}
+        result = client.request("POST", "/migrations/rollback", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "ledger":
+        result = client.request("GET", "/migrations/ledger", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    raise FortressCLIError("Unsupported migrations subcommand")
 
 
 def vms_command(args: argparse.Namespace) -> None:
@@ -893,9 +1164,165 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_apply.add_argument("--param", action="append", default=[], help="Parameter override in key=value form")
     recipes_apply.add_argument("--no-deps", action="store_true", help="Skip dependency recipes")
     recipes_apply.add_argument("--no-update-index", action="store_true", help="Skip package index updates")
+    recipes_apply.add_argument("--dry-run", action="store_true", help="Only plan the recipe without executing")
+    recipes_apply.add_argument("--no-probe", action="store_true", help="Skip post-apply service probes")
     recipes_apply.add_argument("--json", help="Inline JSON payload")
     recipes_apply.add_argument("--json-file", help="Path to JSON file used as payload")
     recipes_apply.set_defaults(func=recipes_command)
+    recipes_plan = recipes_sub.add_parser("plan", help="Plan a recipe apply without executing")
+    recipes_plan.add_argument("name", nargs="?", help="Recipe name (required unless using --json/--json-file)")
+    recipes_plan.add_argument("--container", help="Target container name (omit for host)")
+    recipes_plan.add_argument("--param", action="append", default=[], help="Parameter override in key=value form")
+    recipes_plan.add_argument("--no-deps", action="store_true", help="Skip dependency recipes")
+    recipes_plan.add_argument("--json", help="Inline JSON payload")
+    recipes_plan.add_argument("--json-file", help="Path to JSON file used as payload")
+    recipes_plan.set_defaults(func=recipes_command)
+    recipes_seed = recipes_sub.add_parser("seed", help="Seed curated recipe bundles")
+    recipes_seed.add_argument("bundle", nargs="?", help="Bundle name (e.g. lamp)")
+    recipes_seed.add_argument("--overwrite", action="store_true", help="Overwrite existing recipes")
+    recipes_seed.add_argument("--json", help="Inline JSON payload")
+    recipes_seed.add_argument("--json-file", help="Path to JSON file used as payload")
+    recipes_seed.set_defaults(func=recipes_command)
+
+    firewall_parser = subparsers.add_parser("firewall", help="Manage host firewall rules")
+    firewall_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    firewall_sub = firewall_parser.add_subparsers(dest="subcommand")
+    firewall_status = firewall_sub.add_parser("status", help="Show firewall status")
+    firewall_status.set_defaults(func=firewall_command)
+    firewall_rules = firewall_sub.add_parser("rules", help="List firewall rules")
+    firewall_rules.add_argument("--port", type=int)
+    firewall_rules.add_argument("--protocol", choices=["tcp", "udp"])
+    firewall_rules.add_argument("--source")
+    firewall_rules.set_defaults(func=firewall_command)
+    firewall_apply = firewall_sub.add_parser("apply", help="Apply firewall rules")
+    firewall_apply.add_argument("--rule", action="append", help="Rule spec port/proto[:action][:direction][:source]")
+    firewall_apply.add_argument("--mode", choices=["merge", "replace"], default="merge")
+    firewall_apply.add_argument("--dry-run", action="store_true")
+    firewall_apply.add_argument("--json")
+    firewall_apply.add_argument("--json-file")
+    firewall_apply.set_defaults(func=firewall_command)
+    firewall_rollback = firewall_sub.add_parser("rollback", help="Rollback firewall changes")
+    firewall_rollback.add_argument("rollback_id")
+    firewall_rollback.add_argument("--dry-run", action="store_true")
+    firewall_rollback.set_defaults(func=firewall_command)
+    firewall_ddos_status = firewall_sub.add_parser("ddos-status", help="Show anti-DDoS policy")
+    firewall_ddos_status.set_defaults(func=firewall_command)
+    firewall_ddos = firewall_sub.add_parser("ddos", help="Update anti-DDoS policy")
+    firewall_ddos.add_argument("--enable", action="store_true")
+    firewall_ddos.add_argument("--disable", action="store_true")
+    firewall_ddos.add_argument("--profile")
+    firewall_ddos.add_argument("--rate", type=int)
+    firewall_ddos.add_argument("--burst", type=int)
+    firewall_ddos.add_argument("--conn-limit", type=int, dest="conn_limit")
+    firewall_ddos.add_argument("--ban-minutes", type=int)
+    firewall_ddos.add_argument("--allow", action="append")
+    firewall_ddos.add_argument("--deny", action="append")
+    firewall_ddos.add_argument("--ports", type=int, nargs="*")
+    firewall_ddos.add_argument("--protocol", choices=["tcp", "udp"], default="tcp")
+    firewall_ddos.add_argument("--dry-run", action="store_true")
+    firewall_ddos.add_argument("--json")
+    firewall_ddos.add_argument("--json-file")
+    firewall_ddos.set_defaults(func=firewall_command)
+
+    sites_parser = subparsers.add_parser("sites", help="Manage websites")
+    sites_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    sites_sub = sites_parser.add_subparsers(dest="subcommand")
+    sites_list = sites_sub.add_parser("list", help="List sites")
+    sites_list.set_defaults(func=sites_command)
+    sites_get = sites_sub.add_parser("get", help="Get a site")
+    sites_get.add_argument("site_id")
+    sites_get.set_defaults(func=sites_command)
+    sites_create = sites_sub.add_parser("create", help="Create a site")
+    sites_create.add_argument("--name")
+    sites_create.add_argument("--domain")
+    sites_create.add_argument("--alias", dest="aliases", action="append")
+    sites_create.add_argument("--container")
+    sites_create.add_argument("--docroot")
+    sites_create.add_argument("--php-version")
+    sites_create.add_argument("--runtime-user")
+    sites_create.add_argument("--runtime-group")
+    sites_create.add_argument("--db-engine", choices=["mysql", "mariadb"])
+    sites_create.add_argument("--db-name")
+    sites_create.add_argument("--db-user")
+    sites_create.add_argument("--db-password")
+    sites_create.add_argument("--db-host")
+    sites_create.add_argument("--db-port", type=int)
+    sites_create.add_argument("--no-db-create", action="store_true")
+    sites_create.add_argument("--no-user-create", action="store_true")
+    sites_create.add_argument("--listen-address")
+    sites_create.add_argument("--listen-port", type=int)
+    sites_create.add_argument("--container-port", type=int)
+    sites_create.add_argument("--container-interface")
+    sites_create.add_argument("--tls-mode", choices=["manual", "disabled", "letsencrypt"])
+    sites_create.add_argument("--tls-cert")
+    sites_create.add_argument("--tls-key")
+    sites_create.add_argument("--tls-chain")
+    sites_create.add_argument("--tls-port", type=int)
+    sites_create.add_argument("--json")
+    sites_create.add_argument("--json-file")
+    sites_create.set_defaults(func=sites_command)
+    sites_update = sites_sub.add_parser("update", help="Update a site")
+    sites_update.add_argument("site_id")
+    sites_update.add_argument("--json")
+    sites_update.add_argument("--json-file")
+    sites_update.set_defaults(func=sites_command)
+    sites_delete = sites_sub.add_parser("delete", help="Delete a site")
+    sites_delete.add_argument("site_id")
+    sites_delete.set_defaults(func=sites_command)
+    sites_deploy = sites_sub.add_parser("deploy", help="Deploy site content")
+    sites_deploy.add_argument("site_id")
+    sites_deploy.add_argument("--source-type", choices=["git", "archive", "local"])
+    sites_deploy.add_argument("--source")
+    sites_deploy.add_argument("--ref")
+    sites_deploy.add_argument("--subdir")
+    sites_deploy.add_argument("--strip-components", type=int, default=0)
+    sites_deploy.add_argument("--post", action="append")
+    sites_deploy.add_argument("--no-restart", action="store_true")
+    sites_deploy.add_argument("--json")
+    sites_deploy.add_argument("--json-file")
+    sites_deploy.set_defaults(func=sites_command)
+    sites_backup = sites_sub.add_parser("backup", help="Backup a site")
+    sites_backup.add_argument("site_id")
+    sites_backup.add_argument("--no-db", action="store_true")
+    sites_backup.add_argument("--label")
+    sites_backup.set_defaults(func=sites_command)
+    sites_rollback = sites_sub.add_parser("rollback", help="Rollback a site")
+    sites_rollback.add_argument("site_id")
+    sites_rollback.add_argument("backup_id")
+    sites_rollback.add_argument("--no-restart", action="store_true")
+    sites_rollback.set_defaults(func=sites_command)
+    sites_logs = sites_sub.add_parser("logs", help="Fetch site logs")
+    sites_logs.add_argument("site_id")
+    sites_logs.add_argument("--service")
+    sites_logs.add_argument("--lines", type=int, default=200)
+    sites_logs.set_defaults(func=sites_command)
+    sites_health = sites_sub.add_parser("health", help="Check site health")
+    sites_health.add_argument("site_id")
+    sites_health.set_defaults(func=sites_command)
+    sites_restart = sites_sub.add_parser("restart", help="Restart site services")
+    sites_restart.add_argument("site_id")
+    sites_restart.add_argument("--service", action="append")
+    sites_restart.set_defaults(func=sites_command)
+
+    migrations_parser = subparsers.add_parser("migrations", help="Manage data migrations")
+    migrations_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    migrations_sub = migrations_parser.add_subparsers(dest="subcommand")
+    migrations_status = migrations_sub.add_parser("status", help="Show migration status")
+    migrations_status.set_defaults(func=migrations_command)
+    migrations_plan = migrations_sub.add_parser("plan", help="Plan migrations")
+    migrations_plan.add_argument("--store", action="append")
+    migrations_plan.set_defaults(func=migrations_command)
+    migrations_apply = migrations_sub.add_parser("apply", help="Apply migrations")
+    migrations_apply.add_argument("--store", action="append")
+    migrations_apply.add_argument("--dry-run", action="store_true")
+    migrations_apply.add_argument("--no-backup", action="store_true")
+    migrations_apply.set_defaults(func=migrations_command)
+    migrations_rollback = migrations_sub.add_parser("rollback", help="Rollback a migration patch")
+    migrations_rollback.add_argument("patch_id")
+    migrations_rollback.add_argument("--dry-run", action="store_true")
+    migrations_rollback.set_defaults(func=migrations_command)
+    migrations_ledger = migrations_sub.add_parser("ledger", help="List migration ledger entries")
+    migrations_ledger.set_defaults(func=migrations_command)
 
     vms_parser = subparsers.add_parser("vms", help="Manage VM testing environments")
     vms_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")

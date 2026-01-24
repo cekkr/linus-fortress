@@ -64,6 +64,21 @@
       </aside>
     </main>
 
+    <div class="auth-overlay" id="admin-overlay" hidden>
+      <div class="auth-card">
+        <div class="auth-title">Admin Access</div>
+        <div class="auth-sub">Sign in with a UI admin account to continue.</div>
+        <form class="auth-form" id="admin-form">
+          <label class="auth-label" for="admin-username">Username</label>
+          <input class="auth-input" id="admin-username" type="text" autocomplete="username" spellcheck="false" />
+          <label class="auth-label" for="admin-password">Password</label>
+          <input class="auth-input" id="admin-password" type="password" autocomplete="current-password" spellcheck="false" />
+          <button class="action" type="submit">Unlock</button>
+        </form>
+        <div class="auth-message" id="admin-message"></div>
+      </div>
+    </div>
+
     <div class="auth-overlay" id="auth-overlay" hidden>
       <div class="auth-card">
         <div class="auth-title">Unlock the Deck</div>

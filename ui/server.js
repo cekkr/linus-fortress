@@ -16,8 +16,17 @@ const INSECURE_TLS = /^(1|true|yes)$/i.test(process.env.FORTRESS_UI_INSECURE_TLS
 const SESSION_TTL_SECONDS = Number.parseInt(process.env.FORTRESS_UI_SESSION_TTL || "43200", 10);
 const SESSION_COOKIE = process.env.FORTRESS_UI_SESSION_COOKIE || "fortress_session";
 const COOKIE_SECURE = /^(1|true|yes)$/i.test(process.env.FORTRESS_UI_COOKIE_SECURE || "");
+const ADMIN_DB = process.env.FORTRESS_UI_ADMIN_DB || "/var/lib/fortress/ui_admins.json";
+const ADMIN_AUDIT_LOG = process.env.FORTRESS_UI_ADMIN_AUDIT_LOG || "/var/lib/fortress/ui_admin_audit.log";
+const ADMIN_SESSION_TTL_SECONDS = Number.parseInt(process.env.FORTRESS_UI_ADMIN_SESSION_TTL || "43200", 10);
+const ADMIN_SESSION_COOKIE = process.env.FORTRESS_UI_ADMIN_SESSION_COOKIE || "fortress_admin_session";
+const ADMIN_ENABLED = !/^(0|false|no)$/i.test(process.env.FORTRESS_UI_ADMIN_ENABLED || "1");
+const ADMIN_LOCKOUT_THRESHOLD = Number.parseInt(process.env.FORTRESS_UI_LOCKOUT_THRESHOLD || "5", 10);
+const ADMIN_LOCKOUT_MINUTES = Number.parseInt(process.env.FORTRESS_UI_LOCKOUT_MINUTES || "15", 10);
+const PASSWORD_MIN_LENGTH = Number.parseInt(process.env.FORTRESS_UI_PASSWORD_MIN_LENGTH || "12", 10);
 
 const sessions = new Map();
+const adminSessions = new Map();
 
 const dispatcher = INSECURE_TLS
   ? new Agent({
@@ -31,6 +40,25 @@ const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/api", async (req, res, next) => {
+  if (!ADMIN_ENABLED) {
+    next();
+    return;
+  }
+  if (req.path.startsWith("/admin") || req.path === "/health") {
+    next();
+    return;
+  }
+  try {
+    const authorized = await ensureAdminAuthorized(req, res);
+    if (!authorized) {
+      return;
+    }
+    next();
+  } catch (err) {
+    res.status(500).json({ error: "Admin guard failed" });
+  }
+});
 
 function buildHeaders() {
   const headers = {
@@ -119,6 +147,151 @@ function clearSessionCookie(res) {
     cookie += "; Secure";
   }
   res.setHeader("Set-Cookie", cookie);
+}
+
+async function ensureAdminDir() {
+  const dir = path.dirname(ADMIN_DB);
+  await fs.mkdir(dir, { recursive: true });
+}
+
+async function loadAdminStore() {
+  try {
+    const raw = await fs.readFile(ADMIN_DB, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.warn("Failed to read admin DB:", err.message);
+    }
+  }
+  return { users: {} };
+}
+
+async function saveAdminStore(store) {
+  await ensureAdminDir();
+  await fs.writeFile(ADMIN_DB, JSON.stringify(store, null, 2));
+}
+
+async function logAdminEvent(event) {
+  const entry = { ...event, timestamp: new Date().toISOString() };
+  const dir = path.dirname(ADMIN_AUDIT_LOG);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.appendFile(ADMIN_AUDIT_LOG, `${JSON.stringify(entry)}\n`);
+}
+
+function passwordPolicyErrors(password) {
+  const errors = [];
+  if (!password || password.length < PASSWORD_MIN_LENGTH) {
+    errors.push(`min_length:${PASSWORD_MIN_LENGTH}`);
+  }
+  if (!/[a-z]/.test(password || "")) {
+    errors.push("lowercase_required");
+  }
+  if (!/[A-Z]/.test(password || "")) {
+    errors.push("uppercase_required");
+  }
+  if (!/[0-9]/.test(password || "")) {
+    errors.push("digit_required");
+  }
+  return errors;
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const iterations = 200000;
+  const hash = crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256");
+  return {
+    salt: salt.toString("hex"),
+    hash: hash.toString("hex"),
+    iterations,
+    digest: "sha256",
+  };
+}
+
+function verifyPassword(password, record) {
+  if (!record || !record.hash || !record.salt) {
+    return false;
+  }
+  const salt = Buffer.from(record.salt, "hex");
+  const hash = crypto.pbkdf2Sync(password, salt, record.iterations || 200000, 32, record.digest || "sha256");
+  const stored = Buffer.from(record.hash, "hex");
+  if (stored.length !== hash.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(stored, hash);
+}
+
+function createAdminSession(username) {
+  const id = crypto.randomBytes(24).toString("hex");
+  const ttl = Number.isFinite(ADMIN_SESSION_TTL_SECONDS) && ADMIN_SESSION_TTL_SECONDS > 0 ? ADMIN_SESSION_TTL_SECONDS : 0;
+  const expiresAt = ttl ? Date.now() + ttl * 1000 : null;
+  adminSessions.set(id, { username, expiresAt });
+  return id;
+}
+
+function getAdminSession(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionId = cookies[ADMIN_SESSION_COOKIE];
+  if (!sessionId) {
+    return null;
+  }
+  const session = adminSessions.get(sessionId);
+  if (!session) {
+    return null;
+  }
+  if (session.expiresAt && session.expiresAt <= Date.now()) {
+    adminSessions.delete(sessionId);
+    return null;
+  }
+  return session;
+}
+
+function clearAdminSession(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionId = cookies[ADMIN_SESSION_COOKIE];
+  if (sessionId) {
+    adminSessions.delete(sessionId);
+  }
+}
+
+function setAdminSessionCookie(res, sessionId) {
+  const ttl = Number.isFinite(ADMIN_SESSION_TTL_SECONDS) && ADMIN_SESSION_TTL_SECONDS > 0 ? ADMIN_SESSION_TTL_SECONDS : 0;
+  let cookie = `${ADMIN_SESSION_COOKIE}=${sessionId}; Path=/; HttpOnly; SameSite=Lax`;
+  if (ttl) {
+    cookie += `; Max-Age=${ttl}`;
+  }
+  if (COOKIE_SECURE) {
+    cookie += "; Secure";
+  }
+  res.setHeader("Set-Cookie", cookie);
+}
+
+function clearAdminSessionCookie(res) {
+  let cookie = `${ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  if (COOKIE_SECURE) {
+    cookie += "; Secure";
+  }
+  res.setHeader("Set-Cookie", cookie);
+}
+
+async function ensureAdminAuthorized(req, res) {
+  if (!ADMIN_ENABLED) {
+    return true;
+  }
+  const store = await loadAdminStore();
+  const users = store.users || {};
+  if (Object.keys(users).length === 0) {
+    res.status(403).json({ error: "UI admin bootstrap required." });
+    return false;
+  }
+  const session = getAdminSession(req);
+  if (!session) {
+    res.status(401).json({ error: "Admin session required." });
+    return false;
+  }
+  return true;
 }
 
 function resolveAuthMode(req) {
@@ -402,6 +575,229 @@ function asyncHandler(handler) {
     }
   };
 }
+
+function sanitizeAdminUser(user) {
+  return {
+    username: user.username,
+    enabled: user.enabled !== false,
+    locked_until: user.locked_until || null,
+    last_login: user.last_login || null,
+    created_at: user.created_at || null,
+    updated_at: user.updated_at || null,
+  };
+}
+
+app.get(
+  "/api/admin/session",
+  asyncHandler(async (req, res) => {
+    const store = await loadAdminStore();
+    const users = store.users || {};
+    if (Object.keys(users).length === 0) {
+      res.json({ active: false, bootstrap_required: true });
+      return;
+    }
+    const session = getAdminSession(req);
+    res.json({ active: Boolean(session), username: session ? session.username : null });
+  })
+);
+
+app.post(
+  "/api/admin/bootstrap",
+  asyncHandler(async (req, res) => {
+    const store = await loadAdminStore();
+    const users = store.users || {};
+    if (Object.keys(users).length > 0) {
+      res.status(409).json({ error: "Admin already initialized." });
+      return;
+    }
+    const username = req.body && typeof req.body.username === "string" ? req.body.username.trim() : "";
+    const password = req.body && typeof req.body.password === "string" ? req.body.password : "";
+    if (!username) {
+      res.status(400).json({ error: "Username is required." });
+      return;
+    }
+    const errors = passwordPolicyErrors(password);
+    if (errors.length) {
+      res.status(400).json({ error: `Password policy failed: ${errors.join(",")}` });
+      return;
+    }
+    const record = {
+      username,
+      password: hashPassword(password),
+      enabled: true,
+      failed_attempts: 0,
+      locked_until: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    users[username] = record;
+    await saveAdminStore({ users });
+    await logAdminEvent({ action: "bootstrap", username, ip: req.ip, status: "success" });
+    res.json({ message: "Admin bootstrap complete", user: sanitizeAdminUser(record) });
+  })
+);
+
+app.post(
+  "/api/admin/login",
+  asyncHandler(async (req, res) => {
+    const username = req.body && typeof req.body.username === "string" ? req.body.username.trim() : "";
+    const password = req.body && typeof req.body.password === "string" ? req.body.password : "";
+    const store = await loadAdminStore();
+    const users = store.users || {};
+    const record = users[username];
+    if (!record || record.enabled === false) {
+      await logAdminEvent({ action: "login", username, ip: req.ip, status: "error" });
+      res.status(403).json({ error: "Invalid credentials." });
+      return;
+    }
+    if (record.locked_until && new Date(record.locked_until).getTime() > Date.now()) {
+      res.status(429).json({ error: "Account locked. Try later." });
+      return;
+    }
+    const ok = verifyPassword(password, record.password);
+    if (!ok) {
+      record.failed_attempts = (record.failed_attempts || 0) + 1;
+      if (record.failed_attempts >= ADMIN_LOCKOUT_THRESHOLD) {
+        const lockedUntil = new Date(Date.now() + ADMIN_LOCKOUT_MINUTES * 60000);
+        record.locked_until = lockedUntil.toISOString();
+        record.failed_attempts = 0;
+      }
+      record.updated_at = new Date().toISOString();
+      await saveAdminStore({ users });
+      await logAdminEvent({ action: "login", username, ip: req.ip, status: "error" });
+      res.status(403).json({ error: "Invalid credentials." });
+      return;
+    }
+    record.failed_attempts = 0;
+    record.locked_until = null;
+    record.last_login = new Date().toISOString();
+    record.updated_at = record.last_login;
+    await saveAdminStore({ users });
+    const sessionId = createAdminSession(username);
+    setAdminSessionCookie(res, sessionId);
+    await logAdminEvent({ action: "login", username, ip: req.ip, status: "success" });
+    res.json({ message: "Admin session established.", username });
+  })
+);
+
+app.post(
+  "/api/admin/logout",
+  asyncHandler(async (req, res) => {
+    clearAdminSession(req);
+    clearAdminSessionCookie(res);
+    res.json({ message: "Admin session cleared." });
+  })
+);
+
+app.get(
+  "/api/admin/users",
+  asyncHandler(async (req, res) => {
+    const authorized = await ensureAdminAuthorized(req, res);
+    if (!authorized) {
+      return;
+    }
+    const store = await loadAdminStore();
+    const users = Object.values(store.users || {}).map(sanitizeAdminUser);
+    res.json({ users });
+  })
+);
+
+app.post(
+  "/api/admin/users",
+  asyncHandler(async (req, res) => {
+    const authorized = await ensureAdminAuthorized(req, res);
+    if (!authorized) {
+      return;
+    }
+    const username = req.body && typeof req.body.username === "string" ? req.body.username.trim() : "";
+    const password = req.body && typeof req.body.password === "string" ? req.body.password : "";
+    if (!username) {
+      res.status(400).json({ error: "Username is required." });
+      return;
+    }
+    const errors = passwordPolicyErrors(password);
+    if (errors.length) {
+      res.status(400).json({ error: `Password policy failed: ${errors.join(",")}` });
+      return;
+    }
+    const store = await loadAdminStore();
+    const users = store.users || {};
+    if (users[username]) {
+      res.status(409).json({ error: "Admin already exists." });
+      return;
+    }
+    const record = {
+      username,
+      password: hashPassword(password),
+      enabled: true,
+      failed_attempts: 0,
+      locked_until: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    users[username] = record;
+    await saveAdminStore({ users });
+    await logAdminEvent({ action: "create_user", username, ip: req.ip, status: "success" });
+    res.json({ message: "Admin user created", user: sanitizeAdminUser(record) });
+  })
+);
+
+app.put(
+  "/api/admin/users/:username",
+  asyncHandler(async (req, res) => {
+    const authorized = await ensureAdminAuthorized(req, res);
+    if (!authorized) {
+      return;
+    }
+    const store = await loadAdminStore();
+    const users = store.users || {};
+    const record = users[req.params.username];
+    if (!record) {
+      res.status(404).json({ error: "Admin not found." });
+      return;
+    }
+    const password = req.body && typeof req.body.password === "string" ? req.body.password : null;
+    if (password) {
+      const errors = passwordPolicyErrors(password);
+      if (errors.length) {
+        res.status(400).json({ error: `Password policy failed: ${errors.join(",")}` });
+        return;
+      }
+      record.password = hashPassword(password);
+    }
+    if (typeof req.body.enabled === "boolean") {
+      record.enabled = req.body.enabled;
+    }
+    if (req.body.unlock) {
+      record.locked_until = null;
+      record.failed_attempts = 0;
+    }
+    record.updated_at = new Date().toISOString();
+    await saveAdminStore({ users });
+    await logAdminEvent({ action: "update_user", username: record.username, ip: req.ip, status: "success" });
+    res.json({ message: "Admin updated", user: sanitizeAdminUser(record) });
+  })
+);
+
+app.delete(
+  "/api/admin/users/:username",
+  asyncHandler(async (req, res) => {
+    const authorized = await ensureAdminAuthorized(req, res);
+    if (!authorized) {
+      return;
+    }
+    const store = await loadAdminStore();
+    const users = store.users || {};
+    if (!users[req.params.username]) {
+      res.status(404).json({ error: "Admin not found." });
+      return;
+    }
+    delete users[req.params.username];
+    await saveAdminStore({ users });
+    await logAdminEvent({ action: "delete_user", username: req.params.username, ip: req.ip, status: "success" });
+    res.json({ message: "Admin removed." });
+  })
+);
 
 app.get(
   "/api/health",

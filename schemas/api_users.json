@@ -1,0 +1,12 @@
+{
+  "store": "api_users",
+  "schema_version": "1",
+  "record_type": "mapping",
+  "fields": ["username", "permissions", "allowed_containers"],
+  "defaults": {
+    "permissions": [],
+    "allowed_containers": []
+  },
+  "aliases": {},
+  "prune_unknown": false
+}

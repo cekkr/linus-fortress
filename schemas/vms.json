@@ -1,0 +1,39 @@
+{
+  "store": "vms",
+  "schema_version": "1",
+  "record_type": "mapping",
+  "fields": [
+    "name",
+    "provider",
+    "provider_display",
+    "cpu_cores",
+    "memory_mb",
+    "disk_gb",
+    "disk_path",
+    "iso_path",
+    "os_type",
+    "vm_dir",
+    "qemu_binary",
+    "network_mode",
+    "bridge_name",
+    "ssh_forward_port",
+    "extra_args",
+    "ssh",
+    "labels",
+    "notes",
+    "installed",
+    "state",
+    "pid",
+    "created_at",
+    "updated_at",
+    "snapshots"
+  ],
+  "defaults": {
+    "labels": {},
+    "installed": false,
+    "extra_args": [],
+    "network_mode": "user"
+  },
+  "aliases": {},
+  "prune_unknown": false
+}

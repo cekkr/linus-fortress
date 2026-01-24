@@ -1,0 +1,23 @@
+{
+  "store": "routes",
+  "schema_version": "1",
+  "record_type": "mapping",
+  "fields": [
+    "domain",
+    "domains",
+    "container_name",
+    "container_port",
+    "container_interface",
+    "listen_address",
+    "listen_port",
+    "tls"
+  ],
+  "defaults": {
+    "container_port": 80,
+    "container_interface": "eth0",
+    "listen_address": "0.0.0.0",
+    "listen_port": 80
+  },
+  "aliases": {},
+  "prune_unknown": false
+}

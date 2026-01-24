@@ -34,6 +34,8 @@ class RecipeApplyRequest(BaseModel):
     parameters: Optional[Dict[str, str]] = None
     include_dependencies: bool = True
     update_index: bool = True
+    dry_run: bool = False
+    probe_services: bool = True
 
 
 def validate_recipe_name(name: str) -> None:

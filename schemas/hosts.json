@@ -1,0 +1,29 @@
+{
+  "store": "hosts",
+  "schema_version": "1",
+  "record_type": "mapping",
+  "fields": [
+    "name",
+    "os_type",
+    "ssh",
+    "labels",
+    "notes",
+    "installed",
+    "service_name",
+    "created_at",
+    "updated_at",
+    "saved_states",
+    "last_probe",
+    "last_probe_at",
+    "last_provisioned_at",
+    "last_provision_profile"
+  ],
+  "defaults": {
+    "labels": {},
+    "installed": false,
+    "service_name": "fortress",
+    "saved_states": []
+  },
+  "aliases": {},
+  "prune_unknown": false
+}

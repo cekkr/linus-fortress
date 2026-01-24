@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from fortress.system import run_command
 
 SERVICE_DEFAULT_PORTS = {"ssh": 22, "ftp": 21}
-SENSITIVE_KEYWORDS = {"password", "passwd", "secret", "token", "key", "chpasswd"}
+SENSITIVE_KEYWORDS = {"password", "passwd", "secret", "token", "key", "chpasswd", "pwd", "identified"}
 MAX_PORT = 65535
 MIN_PORT = 1
 MAX_PROXY_DEVICES_PER_REQUEST = 50

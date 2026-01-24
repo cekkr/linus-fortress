@@ -61,6 +61,8 @@ Acceptance criteria:
 - Rule changes are idempotent, auditable, and revert on partial failure.
 - Anti-DDoS policies can be enabled/disabled per host with visible effective rules and rollback history.
 - WebUI exposes a minimal firewall dashboard and the CLI includes one-command rule operations.
+Next:
+- Add conn-limit enforcement (nftables/iptables integration) for anti-DDoS profiles.
 
 ### Path 10.2: LAMP recipes (container-ready)
 Milestones:
@@ -85,6 +87,8 @@ Acceptance criteria:
 - Password policy (length, complexity, rotation hints) is enforced and configurable.
 - Failed login attempts are rate-limited and recorded in the audit log with source IP and user agent.
 - Admin sessions can be revoked and have explicit TTLs.
+Next:
+- Add optional TOTP MFA enrollment and verification for admin accounts.
 
 ### Path 10.4: Website lifecycle management for PHP sites
 Milestones:
@@ -97,6 +101,9 @@ Acceptance criteria:
 - Backups and rollbacks are one-click and leave the site in a consistent state.
 - Logs (web + PHP-FPM) are retrievable via API with bounded output and permissions.
 - Routing, TLS, and service restarts are coordinated and rollback-safe.
+Next:
+- Add Let's Encrypt automation to site TLS workflows and surface TLS status.
+- Support php.ini override injection and FPM pool tuning during site updates.
 
 ### Path 10.5: Auto-upgrade + migrations
 Milestones:
@@ -108,6 +115,8 @@ Acceptance criteria:
 - Every JSON store carries a schema version and can be migrated forward in a dry-run that reports all changes.
 - Applying a migration creates a backup and writes a patch ledger entry with checksums and timestamps.
 - Rollback restores from the last known-good backup and replays integrity checks before unblocking the API.
+Next:
+- Extend schema coverage to monitoring history and any new JSON stores.
 
 Design: migration engine (schema registry + patch tracking)
 - Registry: keep `schemas/*.json` with `schema_version`, `schema_hash`, defaults, and `aliases` for renamed fields.

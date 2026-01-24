@@ -26,7 +26,7 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 ## Authentication
 
 - `X-API-Key`: optional centralized master key with unrestricted access, best used only during bootstrap (set `FORTRESS_API_KEY` or `API_SECRET_KEY`). Disable it long-term to reduce blast radius.
-- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `migration_admin`, `ui_admin_manage`) and optional `allowed_containers` scope.
+- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `migration_admin`) and optional `allowed_containers` scope.
 - Either header grants access; if both are provided the master key takes precedence. Tokens scoped to containers must match the container(s) referenced by the request payload.
 
 Once bootstrap tokens are created, unset `FORTRESS_API_KEY` (or keep the default placeholder) to disable the centralized key and reduce long-term risk.
@@ -59,10 +59,11 @@ Environment variables:
 - `FORTRESS_UI_INSECURE_TLS=1` to allow self-signed TLS when proxying to the API.
 - `FORTRESS_UI_SESSION_TTL` (seconds, default `43200`) and `FORTRESS_UI_SESSION_COOKIE` to tune UI session lifetimes.
 - `FORTRESS_UI_COOKIE_SECURE=1` to set Secure on the UI session cookie when served via HTTPS.
+- Admin security: `FORTRESS_UI_ADMIN_DB`, `FORTRESS_UI_ADMIN_AUDIT_LOG`, `FORTRESS_UI_ADMIN_SESSION_COOKIE`, `FORTRESS_UI_ADMIN_SESSION_TTL`, `FORTRESS_UI_PASSWORD_MIN_LENGTH`, `FORTRESS_UI_LOCKOUT_THRESHOLD`, `FORTRESS_UI_LOCKOUT_MINUTES`, `FORTRESS_UI_ADMIN_ENABLED=0` to disable enforcement (not recommended).
 
 For full LAMP automation and routing flows, the delegated token should include `manage_containers`, `manage_routing`, `recipes_manage`, `recipes_apply`, and `sites_manage`.
 
-Planned: UI admin accounts with password policy, lockout, and optional TOTP. Admin management will use `ui_admin_manage` for bootstrap and a session cookie for subsequent UI calls.
+The UI service enforces admin login (password policy + lockout + audit log) before allowing delegated-token sessions. Admin sessions are stored in a UI-only cookie (`FORTRESS_UI_ADMIN_SESSION_COOKIE`).
 
 LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` (or `user.fortress.stack=lamp`) via LXD config, or when the container name includes `lamp`.
 Optional service hints can be supplied with `user.lizard.services=apache,mysql,ftp` (comma-separated) to remove the install badge.
@@ -87,7 +88,6 @@ Least-privilege setup:
 A full OpenAPI description is provided in [`api-v1.yaml`](api-v1.yaml) (import it into Swagger UI, Postman, Insomnia, etc.). The summaries below highlight each route, the permissions enforced by `py/server.py`, and the body/parameter semantics that `fortress-cli.py` uses under the hood.
 
 All endpoints require either `X-API-Key` or `X-User-Token`. Permissions listed below map to the capabilities stored in the delegated API user records.
-Sections labeled "planned" describe draft endpoints that are not implemented yet.
 
 ### Status & Routing
 
@@ -170,7 +170,7 @@ Body:
 #### `DELETE /routing/{domain}` (permission `manage_routing`, container scoped)
 - Removes the nginx vhost for the given domain and reloads nginx.
 
-### Website Management (planned)
+### Website Management
 
 #### `GET /sites` (permission `sites_read`)
 - Returns a list of managed websites.
@@ -185,11 +185,12 @@ Body:
   "container_name": "web01",
   "docroot": "/var/www/app",
   "runtime": {"php_version": "8.2"},
-  "database": {"engine": "mariadb", "name": "app_db", "username": "app_user"},
-  "tls": {"mode": "letsencrypt", "email": "admin@example.com"}
+  "database": {"engine": "mariadb", "name": "app_db", "username": "app_user", "password": "strong-secret"},
+  "tls": {"mode": "manual", "cert_path": "/etc/ssl/certs/app.pem", "key_path": "/etc/ssl/private/app.key"}
 }
 ```
-- Creates the site record, configures routing/TLS, and provisions DB credentials when enabled.
+- Creates the site record, configures routing/TLS, and provisions DB credentials when enabled (requires `database.password`).
+- LetsEncrypt automation is not wired yet; use manual TLS paths for HTTPS today.
 
 #### `GET /sites/{site_id}` / `PUT /sites/{site_id}` / `DELETE /sites/{site_id}` (permission `sites_manage`)
 - Retrieve, update, or remove a website definition.
@@ -365,26 +366,26 @@ Body may include:
 #### `DELETE /api-users/{token}` (permission `api_user_admin`)
 - Removes the delegated token.
 
-### UI Admin (planned, UI service)
+### UI Admin (UI service)
 
-The UI runs its own session cookie (see `FORTRESS_UI_SESSION_COOKIE`) and does not store tokens in the browser.
+The UI runs its own admin session cookie (see `FORTRESS_UI_ADMIN_SESSION_COOKIE`) and does not store tokens in the browser.
 
-#### `POST /ui/admin/bootstrap` (permission `ui_admin_manage`)
-- Bootstraps the first UI admin account.
+#### `POST /api/admin/bootstrap`
+- Bootstraps the first UI admin account (only when no admins exist).
 
-#### `POST /ui/admin/login`
+#### `POST /api/admin/login`
 - Validates credentials and returns session metadata (cookie-based auth).
 
-#### `POST /ui/admin/logout`
-- Destroys the current UI session.
+#### `POST /api/admin/logout`
+- Destroys the current UI admin session.
 
-#### `GET /ui/admin/session`
+#### `GET /api/admin/session`
 - Returns the active UI admin session details.
 
-#### `GET /ui/admin/users` / `POST /ui/admin/users`
+#### `GET /api/admin/users` / `POST /api/admin/users`
 - Lists or creates UI admin accounts (session required).
 
-#### `PUT /ui/admin/users/{username}` / `DELETE /ui/admin/users/{username}`
+#### `PUT /api/admin/users/{username}` / `DELETE /api/admin/users/{username}`
 - Updates or removes a UI admin account (session required).
 
 ### External Access
@@ -514,13 +515,13 @@ Common body:
 ```
 - `port` (int, required); `protocol` optional default `tcp`; `source` optional CIDR (only for ufw rich rule / firewalld rich rule).
 
-#### `GET /firewall/status` (planned)
+#### `GET /firewall/status`
 - Returns firewall backend (`ufw`/`firewalld`), active state, defaults, and rule counts.
 
-#### `GET /firewall/rules` (planned)
+#### `GET /firewall/rules`
 - Optional query params: `port`, `protocol`, `source`.
 
-#### `POST /firewall/rules/apply` (planned)
+#### `POST /firewall/rules/apply`
 Body:
 ```json
 {
@@ -533,10 +534,10 @@ Body:
 ```
 - Applies a bulk ruleset and returns a rollback id when changes are made.
 
-#### `POST /firewall/rollback` (planned)
+#### `POST /firewall/rollback`
 - Body: `{"rollback_id": "fw-20240301-120000"}`.
 
-#### `GET /firewall/ddos` and `PUT /firewall/ddos` (planned)
+#### `GET /firewall/ddos` and `PUT /firewall/ddos`
 - Manage anti-DDoS profiles (rate/connection limits, ban lists, allowlists) with safe rollback and observability.
 
 ### Package Management (permission `package_manage`, scoped if `container_name` set)
@@ -570,7 +571,7 @@ Body:
 }
 ```
 
-#### `POST /recipes/seed` (permission `recipes_manage`, planned)
+#### `POST /recipes/seed` (permission `recipes_manage`)
 Body:
 ```json
 {"bundle": "lamp", "overwrite": false}
@@ -611,7 +612,7 @@ Example dependency recipe:
 }
 ```
 
-#### `POST /recipes/plan` (permission `recipes_apply`, planned)
+#### `POST /recipes/plan` (permission `recipes_apply`)
 - Same body as `/recipes/apply`; returns the ordered plan without executing commands.
 
 ### Backup & Restore
@@ -628,7 +629,7 @@ Example dependency recipe:
 #### `POST /restore` (permission `restore_container`, scoped)
 - Query parameter `container_name` and multipart form body containing `file` (encrypted `.enc` upload). The service decrypts with the server-side Fernet key and runs `lxc import`.
 
-### Migrations & Upgrades (planned, permission `migration_admin`)
+### Migrations & Upgrades (permission `migration_admin`)
 
 #### `GET /migrations/status`
 - Returns schema versions per JSON store and whether migrations are pending.
@@ -658,6 +659,8 @@ Body (optional):
 
 - Server listens via uvicorn (`HOST_INTERFACE`, `HOST_PORT`). For production, terminate TLS via web server or provide `ssl_keyfile`/`ssl_certfile`.
 - Set filesystem paths (`BACKUP_DIR`, `NGINX_CONFIG_DIR`, `API_USERS_DB`, `RECIPES_DB`, `SHARED_STORAGE_DIR`) to match your host.
+- Migration schemas default to `./schemas`; override with `FORTRESS_SCHEMA_DIR` if you relocate them.
+- Site backups default to `/var/lib/fortress/site_backups`; ensure the service user can read/write.
 - Configure secrets via env vars (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`) instead of hardcoding defaults.
 - Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), and package commands (`apt-get` or `dnf`).
 
@@ -672,17 +675,17 @@ Body (optional):
    - `python fortress-cli.py backup list|trigger|download|decrypt ...`
    - `python fortress-cli.py api-users create alice --permissions manage_containers read_status`
    - `python fortress-cli.py recipes list|create|apply ...`
-   - `python fortress-cli.py recipes seed|plan ...` (planned)
-   - `python fortress-cli.py firewall status|rules|apply|rollback|ddos ...` (planned)
-   - `python fortress-cli.py sites list|create|deploy|backup|rollback|logs|health|restart ...` (planned)
-   - `python fortress-cli.py migrations status|plan|apply|rollback|ledger ...` (planned)
+   - `python fortress-cli.py recipes seed|plan ...`
+   - `python fortress-cli.py firewall status|rules|apply|rollback|ddos ...`
+   - `python fortress-cli.py sites list|create|deploy|backup|rollback|logs|health|restart ...`
+   - `python fortress-cli.py migrations status|plan|apply|rollback|ledger ...`
 3. Encrypted backups can be downloaded and decrypted locally via `python fortress-cli.py backup download foo.enc --dest ./foo.enc` followed by `python fortress-cli.py backup decrypt ./foo.enc --output ./foo.tar.gz`.
 
 Recipe CLI examples:
 - Create a recipe: `python fortress-cli.py recipes create --name base-python --package python3 --package python3-pip`
 - Apply to a container: `python fortress-cli.py recipes apply base-python --container web01`
-- Seed LAMP bundle: `python fortress-cli.py recipes seed lamp` (planned)
-- Dry-run plan: `python fortress-cli.py recipes plan app-bootstrap --container web01` (planned)
+- Seed LAMP bundle: `python fortress-cli.py recipes seed lamp`
+- Dry-run plan: `python fortress-cli.py recipes plan app-bootstrap --container web01`
 
 By default TLS certificates are verified; pass `--insecure` during `setup` only if you are pointing at a self-signed lab server. Use the CLI’s `info` command to inspect the stored metadata without revealing secrets.
 

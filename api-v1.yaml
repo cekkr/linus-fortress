@@ -592,7 +592,6 @@ paths:
     get:
       summary: List managed websites
       tags: [Sites]
-      x-status: planned
       responses:
         "200":
           description: Site list
@@ -608,7 +607,6 @@ paths:
     post:
       summary: Create a managed website
       tags: [Sites]
-      x-status: planned
       requestBody:
         required: true
         content:
@@ -631,7 +629,6 @@ paths:
     get:
       summary: Retrieve a website by id
       tags: [Sites]
-      x-status: planned
       parameters:
         - in: path
           name: site_id
@@ -651,7 +648,6 @@ paths:
     put:
       summary: Update a website
       tags: [Sites]
-      x-status: planned
       parameters:
         - in: path
           name: site_id
@@ -679,7 +675,6 @@ paths:
     delete:
       summary: Delete a website
       tags: [Sites]
-      x-status: planned
       parameters:
         - in: path
           name: site_id
@@ -697,7 +692,6 @@ paths:
     post:
       summary: Deploy website content
       tags: [Sites]
-      x-status: planned
       parameters:
         - in: path
           name: site_id
@@ -721,7 +715,6 @@ paths:
     post:
       summary: Backup a website (files and optional database)
       tags: [Sites]
-      x-status: planned
       parameters:
         - in: path
           name: site_id
@@ -745,7 +738,6 @@ paths:
     post:
       summary: Roll back a website to a backup
       tags: [Sites]
-      x-status: planned
       parameters:
         - in: path
           name: site_id
@@ -769,7 +761,6 @@ paths:
     get:
       summary: Fetch website logs
       tags: [Sites]
-      x-status: planned
       parameters:
         - in: path
           name: site_id
@@ -802,7 +793,6 @@ paths:
     get:
       summary: Run website health checks
       tags: [Sites]
-      x-status: planned
       parameters:
         - in: path
           name: site_id
@@ -820,7 +810,6 @@ paths:
     post:
       summary: Restart website services
       tags: [Sites]
-      x-status: planned
       parameters:
         - in: path
           name: site_id
@@ -917,164 +906,6 @@ paths:
       responses:
         "200":
           description: Deletion acknowledgement
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Message"
-  /ui/admin/bootstrap:
-    post:
-      summary: Bootstrap the first UI admin account
-      tags: [UI Admin]
-      x-status: planned
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UiAdminBootstrapRequest"
-      responses:
-        "200":
-          description: Bootstrap result
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Message"
-  /ui/admin/login:
-    post:
-      summary: Log in to the UI admin portal
-      tags: [UI Admin]
-      x-status: planned
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UiAdminLoginRequest"
-      responses:
-        "200":
-          description: UI session details
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UiAdminSession"
-  /ui/admin/logout:
-    post:
-      summary: Log out of the UI admin portal
-      tags: [UI Admin]
-      x-status: planned
-      security:
-        - UiSessionAuth: []
-      responses:
-        "200":
-          description: Logout acknowledgement
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Message"
-  /ui/admin/session:
-    get:
-      summary: Get current UI admin session
-      tags: [UI Admin]
-      x-status: planned
-      security:
-        - UiSessionAuth: []
-      responses:
-        "200":
-          description: Current session info
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UiAdminSession"
-  /ui/admin/users:
-    get:
-      summary: List UI admin users
-      tags: [UI Admin]
-      x-status: planned
-      security:
-        - UiSessionAuth: []
-      responses:
-        "200":
-          description: UI admin user list
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  users:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/UiAdminUser"
-    post:
-      summary: Create a UI admin user
-      tags: [UI Admin]
-      x-status: planned
-      security:
-        - UiSessionAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UiAdminCreateRequest"
-      responses:
-        "200":
-          description: UI admin creation result
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  user:
-                    $ref: "#/components/schemas/UiAdminUser"
-  /ui/admin/users/{username}:
-    put:
-      summary: Update a UI admin user
-      tags: [UI Admin]
-      x-status: planned
-      security:
-        - UiSessionAuth: []
-      parameters:
-        - in: path
-          name: username
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UiAdminUpdateRequest"
-      responses:
-        "200":
-          description: UI admin update result
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  user:
-                    $ref: "#/components/schemas/UiAdminUser"
-    delete:
-      summary: Delete a UI admin user
-      tags: [UI Admin]
-      x-status: planned
-      security:
-        - UiSessionAuth: []
-      parameters:
-        - in: path
-          name: username
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: UI admin deletion result
           content:
             application/json:
               schema:
@@ -1410,7 +1241,6 @@ paths:
     get:
       summary: Inspect firewall backend and defaults
       tags: [Firewall]
-      x-status: planned
       responses:
         "200":
           description: Firewall status
@@ -1422,7 +1252,6 @@ paths:
     get:
       summary: List firewall rules
       tags: [Firewall]
-      x-status: planned
       parameters:
         - in: query
           name: port
@@ -1447,7 +1276,6 @@ paths:
     post:
       summary: Apply a firewall rule set
       tags: [Firewall]
-      x-status: planned
       requestBody:
         required: true
         content:
@@ -1465,7 +1293,6 @@ paths:
     post:
       summary: Roll back firewall rules from a rollback id
       tags: [Firewall]
-      x-status: planned
       requestBody:
         required: true
         content:
@@ -1483,7 +1310,6 @@ paths:
     get:
       summary: Get anti-DDoS policy status
       tags: [Firewall]
-      x-status: planned
       responses:
         "200":
           description: Anti-DDoS policy
@@ -1494,7 +1320,6 @@ paths:
     put:
       summary: Update anti-DDoS policy
       tags: [Firewall]
-      x-status: planned
       requestBody:
         required: true
         content:
@@ -1605,7 +1430,6 @@ paths:
     post:
       summary: Seed curated recipe bundles
       tags: [Recipes]
-      x-status: planned
       requestBody:
         required: true
         content:
@@ -1728,7 +1552,6 @@ paths:
     post:
       summary: Plan a recipe apply without executing
       tags: [Recipes]
-      x-status: planned
       requestBody:
         required: true
         content:
@@ -1824,7 +1647,6 @@ paths:
     get:
       summary: Inspect migration status for JSON stores
       tags: [Migrations]
-      x-status: planned
       responses:
         "200":
           description: Migration status
@@ -1836,7 +1658,6 @@ paths:
     post:
       summary: Plan migrations without applying changes
       tags: [Migrations]
-      x-status: planned
       requestBody:
         required: false
         content:
@@ -1854,7 +1675,6 @@ paths:
     post:
       summary: Apply pending migrations
       tags: [Migrations]
-      x-status: planned
       requestBody:
         required: false
         content:
@@ -1872,7 +1692,6 @@ paths:
     post:
       summary: Roll back migrations using a patch id
       tags: [Migrations]
-      x-status: planned
       requestBody:
         required: true
         content:
@@ -1890,7 +1709,6 @@ paths:
     get:
       summary: List migration ledger entries
       tags: [Migrations]
-      x-status: planned
       responses:
         "200":
           description: Migration ledger
@@ -2079,11 +1897,6 @@ components:
       type: apiKey
       in: header
       name: X-User-Token
-    UiSessionAuth:
-      type: apiKey
-      in: cookie
-      name: FORTRESS_UI_SESSION
-      description: UI session cookie (name configurable via FORTRESS_UI_SESSION_COOKIE).
   schemas:
     Message:
       type: object
@@ -3340,6 +3153,13 @@ components:
             type: string
         log_only:
           type: boolean
+        ports:
+          type: array
+          items:
+            type: integer
+        protocol:
+          type: string
+          enum: [tcp, udp]
     DdosPolicyUpdateRequest:
       allOf:
         - $ref: "#/components/schemas/DdosPolicy"
@@ -3354,6 +3174,10 @@ components:
         policy:
           $ref: "#/components/schemas/DdosPolicy"
         effective_rules:
+          type: array
+          items:
+            type: string
+        warnings:
           type: array
           items:
             type: string
@@ -3407,6 +3231,8 @@ components:
           type: string
         username:
           type: string
+        password:
+          type: string
         host:
           type: string
         port:
@@ -3426,6 +3252,10 @@ components:
           type: string
         staging:
           type: boolean
+        listen_port:
+          type: integer
+        redirect_http:
+          type: boolean
     SiteRouting:
       type: object
       properties:
@@ -3433,6 +3263,10 @@ components:
           type: string
         listen_port:
           type: integer
+        container_port:
+          type: integer
+        container_interface:
+          type: string
     SiteSummary:
       type: object
       properties:
@@ -3709,66 +3543,3 @@ components:
           type: string
         backup_path:
           type: string
-    UiAdminBootstrapRequest:
-      type: object
-      required:
-        - username
-        - password
-      properties:
-        username:
-          type: string
-        password:
-          type: string
-    UiAdminLoginRequest:
-      type: object
-      required:
-        - username
-        - password
-      properties:
-        username:
-          type: string
-        password:
-          type: string
-    UiAdminSession:
-      type: object
-      properties:
-        username:
-          type: string
-        issued_at:
-          type: string
-        expires_at:
-          type: string
-        requires_mfa:
-          type: boolean
-    UiAdminUser:
-      type: object
-      properties:
-        username:
-          type: string
-        enabled:
-          type: boolean
-        locked_until:
-          type: string
-        last_login:
-          type: string
-        created_at:
-          type: string
-    UiAdminCreateRequest:
-      type: object
-      required:
-        - username
-        - password
-      properties:
-        username:
-          type: string
-        password:
-          type: string
-    UiAdminUpdateRequest:
-      type: object
-      properties:
-        password:
-          type: string
-        enabled:
-          type: boolean
-        unlock:
-          type: boolean

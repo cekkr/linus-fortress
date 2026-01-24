@@ -2,10 +2,11 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
 from pydantic import BaseModel
 import os
+import shlex
 import shutil
 import secrets
 import logging
-from typing import Optional, List, Dict, Literal, Union, Any
+from typing import Optional, List, Dict, Literal, Union, Any, Tuple
 from datetime import datetime
 from cryptography.fernet import Fernet
 import base64
@@ -32,7 +33,17 @@ from fortress.containers import (
     update_package_index,
     validate_port,
 )
-from fortress.firewall import apply_firewall_rule
+from fortress.firewall import (
+    apply_ddos_policy,
+    apply_firewall_rule,
+    apply_firewall_rules,
+    get_ddos_policy,
+    get_firewall_status,
+    list_firewall_rules,
+    remove_ddos_policy,
+    rollback_firewall_rules,
+    update_ddos_policy,
+)
 from fortress.recipes import (
     RecipeDefinition,
     RecipeUpdate,
@@ -43,6 +54,25 @@ from fortress.recipes import (
     build_recipe_execution,
     validate_recipe_name,
     normalize_parameters,
+)
+from fortress.migrations import MigrationEngine, load_ledger_entries
+from fortress.sites import (
+    SiteCreateRequest,
+    SiteUpdateRequest,
+    SiteDeployRequest,
+    SiteBackupRequest,
+    SiteRollbackRequest,
+    SiteServiceActionRequest,
+    build_site_backup_id,
+    build_site_summary,
+    build_service_names,
+    create_site_record,
+    delete_site_record,
+    extract_service_targets,
+    load_sites,
+    sanitize_site_record,
+    save_sites,
+    update_site_record,
 )
 from fortress.system import run_command
 from fortress.routing import (
@@ -113,6 +143,7 @@ API_SECRET_KEY = os.environ.get("FORTRESS_API_KEY", os.environ.get("API_SECRET_K
 BACKUP_ENCRYPTION_PASSWORD = os.environ.get("FORTRESS_BACKUP_PASSWORD", "CHANGE_THIS_TO_YOUR_STRONG_BACKUP_PASSWORD")
 HOST_INTERFACE = os.environ.get("FORTRESS_HOST_INTERFACE", "0.0.0.0")
 HOST_PORT = int(os.environ.get("FORTRESS_HOST_PORT", "8443"))
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BACKUP_DIR = "/var/lib/fortress/backups"
 NGINX_CONFIG_DIR = "/etc/nginx/sites-available"
 NGINX_ENABLED_DIR = "/etc/nginx/sites-enabled"
@@ -124,6 +155,13 @@ VMS_DB = "/var/lib/fortress/vms.json"
 HOSTS_DB = "/var/lib/fortress/hosts.json"
 ROUTING_DB = "/var/lib/fortress/routes.json"
 MONITORING_HISTORY_DB = "/var/lib/fortress/monitoring_history.json"
+SITES_DB = "/var/lib/fortress/sites.json"
+SITE_BACKUP_DIR = "/var/lib/fortress/site_backups"
+MIGRATIONS_DIR = "/var/lib/fortress/migrations"
+SCHEMA_DIR = os.environ.get("FORTRESS_SCHEMA_DIR", os.path.join(BASE_DIR, "schemas"))
+FIREWALL_STATE_DIR = "/var/lib/fortress/firewall"
+FIREWALL_ROLLBACK_DIR = os.path.join(FIREWALL_STATE_DIR, "rollbacks")
+FIREWALL_DDOS_POLICY_PATH = os.path.join(FIREWALL_STATE_DIR, "ddos_policy.json")
 
 # Logging setup
 logging.basicConfig(filename='/var/log/fortress.log', level=logging.INFO, 
@@ -136,6 +174,18 @@ if MASTER_API_KEY is None:
 app = FastAPI(title="VPS Fortress Manager")
 REQUEST_CONTEXT = ContextVar("REQUEST_CONTEXT", default={"actor": "system", "endpoint": "internal"})
 command_logger = CommandLogger(COMMAND_LOG_DB)
+MIGRATION_ENGINE = MigrationEngine(
+    SCHEMA_DIR,
+    MIGRATIONS_DIR,
+    {
+        "api_users": API_USERS_DB,
+        "recipes": RECIPES_DB,
+        "hosts": HOSTS_DB,
+        "vms": VMS_DB,
+        "routes": ROUTING_DB,
+        "sites": SITES_DB,
+    },
+)
 
 # --- SECURITY UTILS ---
 
@@ -257,6 +307,55 @@ class FirewallRule(BaseModel):
     port: int
     protocol: Literal["tcp", "udp"] = "tcp"
     source: Optional[str] = None
+
+class FirewallRuleEntry(BaseModel):
+    port: int
+    protocol: Literal["tcp", "udp"] = "tcp"
+    source: Optional[str] = None
+    action: Literal["allow", "deny"] = "allow"
+    direction: Literal["in", "out"] = "in"
+    description: Optional[str] = None
+
+class FirewallRulesApplyRequest(BaseModel):
+    rules: List[FirewallRuleEntry]
+    mode: Literal["merge", "replace"] = "merge"
+    dry_run: bool = False
+    comment: Optional[str] = None
+
+class FirewallRollbackRequest(BaseModel):
+    rollback_id: str
+    dry_run: bool = False
+
+class DdosPolicyRequest(BaseModel):
+    enabled: bool = False
+    profile: Optional[str] = None
+    rate_limit_per_sec: Optional[int] = None
+    burst: Optional[int] = None
+    conn_limit: Optional[int] = None
+    ban_minutes: Optional[int] = None
+    allowlist: List[str] = []
+    denylist: List[str] = []
+    log_only: bool = False
+    ports: Optional[List[int]] = None
+    protocol: Optional[Literal["tcp", "udp"]] = "tcp"
+    dry_run: bool = False
+
+class RecipeSeedRequest(BaseModel):
+    bundle: str
+    overwrite: bool = False
+
+class MigrationPlanRequest(BaseModel):
+    stores: Optional[List[str]] = None
+    dry_run: bool = True
+
+class MigrationApplyRequest(BaseModel):
+    stores: Optional[List[str]] = None
+    dry_run: bool = False
+    backup: bool = True
+
+class MigrationRollbackRequest(BaseModel):
+    patch_id: str
+    dry_run: bool = False
 
 class PackageInstallRequest(BaseModel):
     packages: List[str]
@@ -663,6 +762,107 @@ def close_firewall(rule: FirewallRule, x_api_key: Optional[str] = Header(default
         raise
     return {"message": f"Firewall closing rule applied for port {rule.port}/{rule.protocol}"}
 
+@app.get("/firewall/status")
+def firewall_status(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("firewall_status", "firewall_admin", x_api_key, x_user_token)
+    status = get_firewall_status()
+    audit_api("firewall_status", details={"backend": status.get("backend"), "active": status.get("active")})
+    return status
+
+@app.get("/firewall/rules")
+def firewall_rules(
+    port: Optional[int] = None,
+    protocol: Optional[str] = None,
+    source: Optional[str] = None,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    authorize("firewall_rules", "firewall_admin", x_api_key, x_user_token)
+    rules = list_firewall_rules()
+    if port is not None:
+        rules = [rule for rule in rules if rule.get("port") == port]
+    if protocol:
+        rules = [rule for rule in rules if rule.get("protocol") == protocol]
+    if source:
+        rules = [rule for rule in rules if rule.get("source") == source]
+    audit_api("firewall_rules", details={"count": len(rules)})
+    backend = get_firewall_status().get("backend")
+    return {"backend": backend, "rules": rules}
+
+@app.post("/firewall/rules/apply")
+def firewall_rules_apply(
+    payload: FirewallRulesApplyRequest,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    authorize("firewall_rules_apply", "firewall_admin", x_api_key, x_user_token)
+    rules = [rule.dict() for rule in payload.rules]
+    result = apply_firewall_rules(rules, payload.mode, payload.dry_run, FIREWALL_ROLLBACK_DIR)
+    audit_api(
+        "firewall_rules_apply",
+        details={
+            "mode": payload.mode,
+            "dry_run": payload.dry_run,
+            "applied": result.get("applied"),
+            "rollback_id": result.get("rollback_id"),
+        },
+    )
+    backend = get_firewall_status().get("backend")
+    return {
+        "message": "Firewall rules applied",
+        "backend": backend,
+        "applied_count": result.get("applied"),
+        "skipped_count": result.get("skipped"),
+        "rollback_id": result.get("rollback_id"),
+        "dry_run": payload.dry_run,
+    }
+
+@app.post("/firewall/rollback")
+def firewall_rollback(
+    payload: FirewallRollbackRequest,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    authorize("firewall_rollback", "firewall_admin", x_api_key, x_user_token)
+    rollback_path = os.path.join(FIREWALL_ROLLBACK_DIR, f"{payload.rollback_id}.json")
+    rollback_firewall_rules(rollback_path, payload.dry_run)
+    audit_api("firewall_rollback", details={"rollback_id": payload.rollback_id, "dry_run": payload.dry_run})
+    return {"message": "Firewall rollback complete"}
+
+@app.get("/firewall/ddos")
+def firewall_ddos_status(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("firewall_ddos_status", "firewall_admin", x_api_key, x_user_token)
+    policy = get_ddos_policy(FIREWALL_DDOS_POLICY_PATH)
+    audit_api("firewall_ddos_status", details={"enabled": policy.get("enabled")})
+    return {"policy": policy, "effective_rules": [], "warnings": []}
+
+@app.put("/firewall/ddos")
+def firewall_ddos_update(
+    payload: DdosPolicyRequest,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    authorize("firewall_ddos_update", "firewall_admin", x_api_key, x_user_token)
+    policy = payload.dict()
+    dry_run = bool(policy.pop("dry_run", False))
+    existing = get_ddos_policy(FIREWALL_DDOS_POLICY_PATH)
+    effective_rules: List[str] = []
+    warnings: List[str] = []
+    if dry_run:
+        if policy.get("conn_limit"):
+            warnings.append("conn_limit not supported by backend helper")
+        if policy.get("rate_limit_per_sec"):
+            effective_rules.append("rate_limit enabled")
+    else:
+        remove_ddos_policy(existing)
+        effective_rules, warnings = apply_ddos_policy(policy)
+        update_ddos_policy(policy, FIREWALL_DDOS_POLICY_PATH)
+    audit_api(
+        "firewall_ddos_update",
+        details={"enabled": policy.get("enabled"), "dry_run": dry_run, "warnings": warnings},
+    )
+    return {"policy": policy, "effective_rules": effective_rules, "warnings": warnings}
+
 # --- PACKAGE MANAGEMENT ---
 
 @app.post("/packages/install")
@@ -964,6 +1164,101 @@ def _ensure_recipe_dependencies(recipes: Dict[str, Dict[str, Any]], dependencies
         if dep not in recipes:
             raise HTTPException(status_code=400, detail=f"Missing recipe dependency: {dep}")
 
+FILEMANAGER_PHP = (
+    r'$file=getenv("FM_FILE"); $user=getenv("FM_USER"); $pass=getenv("FM_PASS"); '
+    r'$hash=password_hash($pass, PASSWORD_DEFAULT); '
+    r'$u=addcslashes($user, "\\\"\\$"); $h=addcslashes($hash, "\\\"\\$"); '
+    r'$replacement="\\$auth_users = array(\\"{$u}\\" => \\"{$h}\\");"; '
+    r'$pattern="/\\$auth_users\\s*=\\s*array\\(.*?\\);/s"; '
+    r'$content=file_get_contents($file); '
+    r'$content=preg_replace_callback($pattern, function() use ($replacement) { return $replacement; }, $content, 1, $count); '
+    r'if ($count===0){$content="<?php\\n".$replacement."\\n?>\\n".$content;} '
+    r'file_put_contents($file, $content);'
+)
+
+FILEMANAGER_COMMAND = " && ".join(
+    [
+        'FM_DIR="/var/www/html/filemanager"',
+        'FM_FILE="$FM_DIR/index.php"',
+        'mkdir -p "$FM_DIR"',
+        'curl -fsSL https://raw.githubusercontent.com/prasathmani/tinyfilemanager/master/tinyfilemanager.php -o "$FM_FILE"',
+        f'FM_USER="{{{{fm_user}}}}" FM_PASS="{{{{fm_password}}}}" FM_FILE="$FM_FILE" php -r \'{FILEMANAGER_PHP}\'',
+    ]
+)
+
+LAMP_RECIPE_BUNDLE = {
+    "lamp-apache": {
+        "name": "lamp-apache",
+        "description": "Install Apache and PHP runtime.",
+        "dependencies": [],
+        "packages": [],
+        "commands": [
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 apache2-utils libapache2-mod-php php php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now apache2 >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; fi",
+        ],
+        "parameters": {},
+        "required_parameters": [],
+    },
+    "lamp-nginx": {
+        "name": "lamp-nginx",
+        "description": "Install Nginx with PHP-FPM.",
+        "dependencies": [],
+        "packages": [],
+        "commands": [
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php-fpm php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; fi",
+        ],
+        "parameters": {},
+        "required_parameters": [],
+    },
+    "lamp-mysql": {
+        "name": "lamp-mysql",
+        "description": "Install MariaDB or MySQL engine.",
+        "dependencies": [],
+        "packages": [],
+        "commands": [
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client; systemctl enable --now mariadb >/dev/null 2>&1 || systemctl enable --now mysql >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; fi",
+        ],
+        "parameters": {},
+        "required_parameters": [],
+    },
+    "lamp-ftp": {
+        "name": "lamp-ftp",
+        "description": "Install vsftpd for legacy FTP.",
+        "dependencies": [],
+        "packages": [],
+        "commands": [
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; fi",
+        ],
+        "parameters": {},
+        "required_parameters": [],
+    },
+    "lamp-filemanager": {
+        "name": "lamp-filemanager",
+        "description": "Install Tiny File Manager web panel.",
+        "dependencies": [],
+        "packages": ["curl", "php", "php-cli"],
+        "commands": [FILEMANAGER_COMMAND],
+        "parameters": {"fm_user": "", "fm_password": ""},
+        "required_parameters": ["fm_user", "fm_password"],
+    },
+    "lamp-stack": {
+        "name": "lamp-stack",
+        "description": "Install Apache, database, FTP, and file manager tools.",
+        "dependencies": ["lamp-apache", "lamp-mysql", "lamp-ftp", "lamp-filemanager"],
+        "packages": [],
+        "commands": [],
+        "parameters": {},
+        "required_parameters": [],
+    },
+}
+
+def _format_recipe_plan(steps: List[Dict[str, Any]]) -> List[str]:
+    rendered: List[str] = []
+    for step in steps:
+        rendered.append(
+            f"{step['name']} packages={len(step['packages'])} commands={len(step['commands'])}"
+        )
+    return rendered
+
 @app.get("/recipes")
 def list_recipes(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_list", "recipes_manage", x_api_key, x_user_token)
@@ -1017,6 +1312,25 @@ def create_recipe(recipe: RecipeDefinition, x_api_key: Optional[str] = Header(de
         },
     )
     return {"message": f"Recipe {recipe.name} created", "recipe": recipes[recipe.name]}
+
+@app.post("/recipes/seed")
+def seed_recipes(payload: RecipeSeedRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_seed", "recipes_manage", x_api_key, x_user_token)
+    bundle = payload.bundle.lower().strip()
+    if bundle != "lamp":
+        raise HTTPException(status_code=400, detail="Unsupported bundle")
+    recipes = _load_recipe_store()
+    seeded: List[str] = []
+    skipped: List[str] = []
+    for name, definition in LAMP_RECIPE_BUNDLE.items():
+        if name in recipes and not payload.overwrite:
+            skipped.append(name)
+            continue
+        recipes[name] = dict(definition)
+        seeded.append(name)
+    save_recipes(RECIPES_DB, recipes)
+    audit_api("recipes_seed", details={"bundle": bundle, "seeded": seeded, "skipped": skipped})
+    return {"message": "Recipes seeded", "recipes": seeded, "skipped": skipped}
 
 @app.put("/recipes/{name}")
 def update_recipe(name: str, payload: RecipeUpdate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
@@ -1082,8 +1396,18 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
             "recipe": payload.recipe_name,
             "plan": plan,
             "parameters": sanitize_payload_fuzzy(overrides, SENSITIVE_KEYWORDS),
+            "dry_run": payload.dry_run,
         },
     )
+    if payload.dry_run:
+        return {
+            "message": "Recipe plan generated",
+            "recipe": payload.recipe_name,
+            "applied": [],
+            "container": payload.container_name,
+            "plan": _format_recipe_plan(steps),
+            "probe": {},
+        }
     manager = None
     index_updated = False
     installed_packages: set[str] = set()
@@ -1109,8 +1433,539 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
             else:
                 run_command(["sh", "-c", command])
         applied.append(recipe_name)
-    audit_api("recipes_apply_complete", target=payload.container_name or "host", details={"recipe": payload.recipe_name, "applied": applied})
-    return {"message": "Recipe applied", "recipe": payload.recipe_name, "applied": applied, "container": payload.container_name}
+    probe = {}
+    if payload.container_name and payload.probe_services:
+        from fortress.containers import probe_container_services
+
+        try:
+            probe = probe_container_services(payload.container_name)
+        except Exception as exc:
+            probe = {"error": str(exc)}
+    audit_api(
+        "recipes_apply_complete",
+        target=payload.container_name or "host",
+        details={"recipe": payload.recipe_name, "applied": applied, "probe": bool(probe)},
+    )
+    return {
+        "message": "Recipe applied",
+        "recipe": payload.recipe_name,
+        "applied": applied,
+        "container": payload.container_name,
+        "plan": _format_recipe_plan(steps),
+        "probe": probe,
+    }
+
+@app.post("/recipes/plan")
+def plan_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_plan", "recipes_apply", x_api_key, x_user_token, containers=payload.container_name)
+    recipes = _load_recipe_store()
+    if payload.recipe_name not in recipes:
+        audit_api("recipes_plan", target=payload.container_name or "host", details={"error": "recipe not found"}, status="error")
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    overrides = normalize_parameters(payload.parameters)
+    try:
+        plan, steps = build_recipe_execution(
+            payload.recipe_name,
+            recipes,
+            include_dependencies=payload.include_dependencies,
+            overrides=overrides,
+        )
+    except ValueError as exc:
+        audit_api("recipes_plan", target=payload.container_name or "host", details={"error": str(exc)}, status="error")
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit_api("recipes_plan", target=payload.container_name or "host", details={"recipe": payload.recipe_name, "plan": plan})
+    return {"recipe": payload.recipe_name, "container": payload.container_name, "plan": _format_recipe_plan(steps), "dependencies": plan}
+
+# --- WEBSITE MANAGEMENT ---
+
+def _load_site_store() -> Dict[str, Dict[str, Any]]:
+    return load_sites(SITES_DB)
+
+def _resolve_site_record(sites: Dict[str, Dict[str, Any]], site_id: str) -> Dict[str, Any]:
+    record = sites.get(site_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Site not found")
+    return record
+
+def _container_user_exists(container_name: str, username: str) -> bool:
+    try:
+        exec_in_container(container_name, ["id", "-u", username])
+        return True
+    except HTTPException:
+        return False
+
+def _resolve_runtime_identity(container_name: str, runtime: Dict[str, Any]) -> Tuple[str, str]:
+    user = runtime.get("user")
+    group = runtime.get("group")
+    if user and group:
+        return user, group
+    if _container_user_exists(container_name, "www-data"):
+        return "www-data", "www-data"
+    if _container_user_exists(container_name, "apache"):
+        return "apache", "apache"
+    return "root", "root"
+
+def _ensure_docroot(container_name: str, docroot: str, user: str, group: str) -> None:
+    docroot_q = shlex.quote(docroot)
+    exec_in_container(container_name, ["sh", "-c", f"mkdir -p {docroot_q} && chown -R {user}:{group} {docroot_q}"])
+
+def _apply_nginx_route(domain: str, domains: Optional[List[str]], payload: Dict[str, Any]) -> None:
+    validate_domain(domain)
+    normalize_domains(domain, domains or [])
+    validate_port(int(payload["container_port"]), "container_port")
+    validate_port(int(payload["listen_port"]), "listen_port")
+    tls_payload = payload.get("tls")
+    if tls_payload:
+        validate_port(int(tls_payload.get("listen_port", 443)), "tls.listen_port")
+        if int(tls_payload.get("listen_port", 443)) == int(payload["listen_port"]):
+            raise HTTPException(status_code=400, detail="TLS listen_port must differ from listen_port")
+        validate_tls_paths(tls_payload["cert_path"], tls_payload["key_path"], tls_payload.get("chain_path"))
+    ip = get_container_ip(payload["container_name"], payload["container_interface"])
+    config_content = build_nginx_proxy_config(
+        domain=domain,
+        domains=domains or [],
+        listen_address=payload["listen_address"],
+        listen_port=payload["listen_port"],
+        upstream_host=ip,
+        upstream_port=payload["container_port"],
+        tls=tls_payload,
+    )
+    config_path = os.path.join(NGINX_CONFIG_DIR, domain)
+    previous_config = None
+    if os.path.exists(config_path):
+        with open(config_path, "r") as fh:
+            previous_config = fh.read()
+    write_nginx_config(domain, config_content, NGINX_CONFIG_DIR)
+    try:
+        ensure_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+        test_nginx_config()
+        reload_nginx()
+    except Exception as exc:
+        if previous_config is not None:
+            write_nginx_config(domain, previous_config, NGINX_CONFIG_DIR)
+            ensure_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+        else:
+            remove_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+def _remove_nginx_route(domain: str) -> None:
+    config_path = os.path.join(NGINX_CONFIG_DIR, domain)
+    previous_config = None
+    if os.path.exists(config_path):
+        with open(config_path, "r") as fh:
+            previous_config = fh.read()
+    try:
+        remove_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+        test_nginx_config()
+        reload_nginx()
+    except Exception as exc:
+        if previous_config is not None:
+            write_nginx_config(domain, previous_config, NGINX_CONFIG_DIR)
+            ensure_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+def _apply_site_routing(site: Dict[str, Any], previous_domain: Optional[str] = None) -> None:
+    tls_config = site.get("tls") or {}
+    tls_payload = None
+    tls_mode = tls_config.get("mode", "manual")
+    if tls_mode == "manual" and tls_config.get("cert_path") and tls_config.get("key_path"):
+        tls_payload = {
+            "cert_path": tls_config.get("cert_path"),
+            "key_path": tls_config.get("key_path"),
+            "chain_path": tls_config.get("chain_path"),
+            "listen_port": tls_config.get("listen_port", 443),
+            "redirect_http": tls_config.get("redirect_http", True),
+        }
+    elif tls_mode == "disabled":
+        tls_payload = None
+    elif tls_mode == "letsencrypt":
+        raise HTTPException(status_code=400, detail="LetsEncrypt automation not implemented yet")
+    routing = site.get("routing") or {}
+    payload = {
+        "container_name": site["container_name"],
+        "container_port": routing.get("container_port", 80),
+        "container_interface": routing.get("container_interface", "eth0"),
+        "listen_address": routing.get("listen_address", "0.0.0.0"),
+        "listen_port": routing.get("listen_port", 80),
+        "tls": tls_payload,
+    }
+    _apply_nginx_route(site["primary_domain"], site.get("domains") or [], payload)
+    routes = load_routes()
+    if previous_domain and previous_domain != site["primary_domain"]:
+        routes.pop(previous_domain, None)
+    routes[site["primary_domain"]] = {
+        "domain": site["primary_domain"],
+        "domains": site.get("domains") or None,
+        "container_name": site["container_name"],
+        "container_port": payload["container_port"],
+        "container_interface": payload["container_interface"],
+        "listen_address": payload["listen_address"],
+        "listen_port": payload["listen_port"],
+        "tls": tls_payload,
+    }
+    save_routes(routes)
+    if previous_domain and previous_domain != site["primary_domain"]:
+        _remove_nginx_route(previous_domain)
+
+def _run_db_command(container_name: str, sql: str, database: Optional[str] = None, username: Optional[str] = None, password: Optional[str] = None) -> None:
+    user = username or "root"
+    db_flag = f" {shlex.quote(database)}" if database else ""
+    pwd_prefix = f"MYSQL_PWD={shlex.quote(password)} " if password else ""
+    command = f"{pwd_prefix}mysql -u {shlex.quote(user)}{db_flag} -e {shlex.quote(sql)}"
+    exec_in_container(container_name, ["sh", "-c", command])
+
+def _backup_site_files(container_name: str, docroot: str, backup_path: str, dump_path: Optional[str]) -> None:
+    docroot_q = shlex.quote(docroot)
+    archive_path = "/tmp/fortress-site-backup.tar.gz"
+    if dump_path:
+        dump_name = os.path.basename(dump_path)
+        cmd = f"tar -czf {archive_path} -C {docroot_q} . -C /tmp {shlex.quote(dump_name)}"
+    else:
+        cmd = f"tar -czf {archive_path} -C {docroot_q} ."
+    exec_in_container(container_name, ["sh", "-c", cmd])
+    run_command(["lxc", "file", "pull", f"{container_name}{archive_path}", backup_path])
+    exec_in_container(container_name, ["rm", "-f", archive_path])
+
+def _push_site_archive(container_name: str, archive_path: str) -> str:
+    target_path = "/tmp/fortress-site-restore.tar.gz"
+    run_command(["lxc", "file", "push", archive_path, f"{container_name}{target_path}"])
+    return target_path
+
+def _extract_site_archive(container_name: str, archive_path: str, docroot: str, strip_components: int = 0) -> None:
+    docroot_q = shlex.quote(docroot)
+    strip_flag = f"--strip-components={strip_components}" if strip_components else ""
+    cmd = f"mkdir -p {docroot_q} && rm -rf {docroot_q}/* && tar -xzf {shlex.quote(archive_path)} -C {docroot_q} {strip_flag}"
+    exec_in_container(container_name, ["sh", "-c", cmd])
+
+def _restore_site_db(container_name: str, database: Dict[str, Any], dump_path: str) -> None:
+    if not database.get("name") or not database.get("username"):
+        return
+    _run_db_command(
+        container_name,
+        f"CREATE DATABASE IF NOT EXISTS `{database['name']}`",
+        username=database.get("username"),
+        password=database.get("password"),
+    )
+    pwd_prefix = f"MYSQL_PWD={shlex.quote(database['password'])} " if database.get("password") else ""
+    cmd = f"{pwd_prefix}mysql -u {shlex.quote(database['username'])} {shlex.quote(database['name'])} < {dump_path}"
+    exec_in_container(container_name, ["sh", "-c", cmd])
+
+def _restart_site_services(container_name: str, runtime: Dict[str, Any], services: Optional[List[str]]) -> Dict[str, Any]:
+    service_sets = build_service_names(runtime)
+    targets = extract_service_targets(services)
+    restarted: List[str] = []
+    failed: List[str] = []
+    for target in targets:
+        candidates = service_sets.get(target, [target])
+        for service in candidates:
+            try:
+                exec_in_container(container_name, ["sh", "-c", f"systemctl restart {shlex.quote(service)} || service {shlex.quote(service)} restart || true"])
+                restarted.append(service)
+                break
+            except HTTPException:
+                continue
+        else:
+            failed.append(target)
+    return {"restarted": restarted, "failed": failed}
+
+@app.get("/sites")
+def list_sites(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_list", "sites_read", x_api_key, x_user_token)
+    sites = _load_site_store()
+    allowed = auth_context.get("allowed_containers")
+    response = []
+    for site in sites.values():
+        if allowed and site.get("container_name") not in allowed:
+            continue
+        response.append(build_site_summary(site))
+    audit_api("sites_list", details={"count": len(response)})
+    return {"sites": response}
+
+@app.post("/sites")
+def create_site(payload: SiteCreateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("sites_create", "sites_manage", x_api_key, x_user_token, containers=payload.container_name)
+    sites = _load_site_store()
+    record = create_site_record(payload, sites)
+    runtime = record.get("runtime") or {}
+    user, group = _resolve_runtime_identity(payload.container_name, runtime)
+    runtime.setdefault("user", user)
+    runtime.setdefault("group", group)
+    record["runtime"] = runtime
+    _ensure_docroot(payload.container_name, record["docroot"], user, group)
+    if record.get("database") and (payload.create_database or payload.create_user):
+        database = record["database"]
+        if not database.get("name") or not database.get("username"):
+            raise HTTPException(status_code=400, detail="database.name and database.username are required for provisioning")
+        if not database.get("password"):
+            raise HTTPException(status_code=400, detail="database.password is required for provisioning")
+        _run_db_command(
+            payload.container_name,
+            f"CREATE DATABASE IF NOT EXISTS `{database.get('name')}`",
+        )
+        _run_db_command(
+            payload.container_name,
+            f"CREATE USER IF NOT EXISTS '{database.get('username')}'@'%' IDENTIFIED BY '{database.get('password')}'",
+        )
+        _run_db_command(
+            payload.container_name,
+            f"GRANT ALL PRIVILEGES ON `{database.get('name')}`.* TO '{database.get('username')}'@'%'",
+        )
+        _run_db_command(payload.container_name, "FLUSH PRIVILEGES")
+    _apply_site_routing(record)
+    save_sites(SITES_DB, sites)
+    audit_api("sites_create", target=record["name"], details={"domain": record["primary_domain"]})
+    response = {"message": "Site created", "site": sanitize_site_record(record)}
+    return response
+
+@app.get("/sites/{site_id}")
+def get_site(site_id: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_get", "sites_read", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    if auth_context.get("allowed_containers"):
+        enforce_container_scope(auth_context, record["container_name"])
+    audit_api("sites_get", target=site_id)
+    return {"site": sanitize_site_record(record)}
+
+@app.put("/sites/{site_id}")
+def update_site(site_id: str, payload: SiteUpdateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_update", "sites_manage", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    enforce_container_scope(auth_context, record["container_name"])
+    previous_domain = record.get("primary_domain")
+    record = update_site_record(site_id, payload, sites)
+    if payload.docroot:
+        runtime = record.get("runtime") or {}
+        user, group = _resolve_runtime_identity(record["container_name"], runtime)
+        _ensure_docroot(record["container_name"], record["docroot"], user, group)
+    if payload.primary_domain or payload.domains or payload.routing or payload.tls:
+        _apply_site_routing(record, previous_domain=previous_domain)
+    save_sites(SITES_DB, sites)
+    audit_api("sites_update", target=record["name"], details={"fields": sorted(payload.dict(exclude_unset=True).keys())})
+    return {"message": "Site updated", "site": sanitize_site_record(record)}
+
+@app.delete("/sites/{site_id}")
+def delete_site(site_id: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_delete", "sites_manage", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    enforce_container_scope(auth_context, record["container_name"])
+    delete_site_record(site_id, sites)
+    save_sites(SITES_DB, sites)
+    _remove_nginx_route(record["primary_domain"])
+    routes = load_routes()
+    routes.pop(record["primary_domain"], None)
+    save_routes(routes)
+    audit_api("sites_delete", target=site_id, details={"domain": record.get("primary_domain")})
+    return {"message": "Site removed", "site": sanitize_site_record(record)}
+
+@app.post("/sites/{site_id}/deploy")
+def deploy_site(site_id: str, payload: SiteDeployRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_deploy", "sites_manage", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    enforce_container_scope(auth_context, record["container_name"])
+    docroot = record["docroot"]
+    if payload.source_type == "git":
+        tmp_dir = f"/tmp/fortress-{site_id}-src"
+        ref = payload.ref or "main"
+        clone_cmd = f"rm -rf {tmp_dir} && git clone {shlex.quote(payload.source)} {tmp_dir} && git -C {tmp_dir} checkout {shlex.quote(ref)}"
+        exec_in_container(record["container_name"], ["sh", "-c", clone_cmd])
+        src_path = tmp_dir
+        if payload.subdir:
+            src_path = f"{tmp_dir}/{payload.subdir}"
+        deploy_cmd = f"mkdir -p {shlex.quote(docroot)} && rm -rf {shlex.quote(docroot)}/* && cp -a {shlex.quote(src_path)}/. {shlex.quote(docroot)}/"
+        exec_in_container(record["container_name"], ["sh", "-c", deploy_cmd])
+        exec_in_container(record["container_name"], ["sh", "-c", f"rm -rf {tmp_dir}"])
+    elif payload.source_type == "archive":
+        archive_path = "/tmp/fortress-archive.tar.gz"
+        if payload.source.startswith("http://") or payload.source.startswith("https://"):
+            exec_in_container(record["container_name"], ["sh", "-c", f"curl -fsSL {shlex.quote(payload.source)} -o {archive_path}"])
+        else:
+            run_command(["lxc", "file", "push", payload.source, f"{record['container_name']}{archive_path}"])
+        _extract_site_archive(record["container_name"], archive_path, docroot, payload.strip_components)
+        exec_in_container(record["container_name"], ["rm", "-f", archive_path])
+    elif payload.source_type == "local":
+        exec_in_container(record["container_name"], ["sh", "-c", f"mkdir -p {shlex.quote(docroot)} && rm -rf {shlex.quote(docroot)}/*"])
+        run_command(["lxc", "file", "push", "-r", payload.source, f"{record['container_name']}{docroot}"])
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported source_type")
+    for command in payload.post_deploy_commands:
+        exec_in_container(record["container_name"], ["sh", "-c", command])
+    restart_result = {}
+    if payload.restart_services:
+        restart_result = _restart_site_services(record["container_name"], record.get("runtime") or {}, None)
+    audit_api("sites_deploy", target=site_id, details={"source_type": payload.source_type, "restart": payload.restart_services})
+    return {"message": "Site deployed", "restart": restart_result}
+
+@app.post("/sites/{site_id}/backup")
+def backup_site(site_id: str, payload: SiteBackupRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_backup", "sites_manage", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    enforce_container_scope(auth_context, record["container_name"])
+    backup_id = build_site_backup_id(site_id, payload.label)
+    os.makedirs(SITE_BACKUP_DIR, exist_ok=True)
+    backup_path = os.path.join(SITE_BACKUP_DIR, f"{backup_id}.tar.gz")
+    dump_path = None
+    database = record.get("database") or {}
+    if payload.include_database and database.get("name") and database.get("username"):
+        dump_name = f"{backup_id}.sql"
+        dump_path = f"/tmp/{dump_name}"
+        pwd_prefix = f"MYSQL_PWD={shlex.quote(database['password'])} " if database.get("password") else ""
+        dump_cmd = f"{pwd_prefix}mysqldump -u {shlex.quote(database['username'])} {shlex.quote(database['name'])} > {dump_path}"
+        exec_in_container(record["container_name"], ["sh", "-c", dump_cmd])
+    _backup_site_files(record["container_name"], record["docroot"], backup_path, dump_path)
+    if dump_path:
+        exec_in_container(record["container_name"], ["rm", "-f", dump_path])
+    meta_path = os.path.join(SITE_BACKUP_DIR, f"{backup_id}.json")
+    save_json(meta_path, {"backup_id": backup_id, "site_id": site_id, "include_database": bool(dump_path), "dump_path": dump_path, "created_at": datetime.utcnow().isoformat()})
+    audit_api("sites_backup", target=site_id, details={"backup_id": backup_id, "include_db": bool(dump_path)})
+    return {"message": "Backup created", "backup_id": backup_id, "path": backup_path}
+
+@app.post("/sites/{site_id}/rollback")
+def rollback_site(site_id: str, payload: SiteRollbackRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_rollback", "sites_manage", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    enforce_container_scope(auth_context, record["container_name"])
+    backup_path = os.path.join(SITE_BACKUP_DIR, f"{payload.backup_id}.tar.gz")
+    if not os.path.exists(backup_path):
+        raise HTTPException(status_code=404, detail="Backup not found")
+    archive_path = _push_site_archive(record["container_name"], backup_path)
+    _extract_site_archive(record["container_name"], archive_path, record["docroot"])
+    meta_path = os.path.join(SITE_BACKUP_DIR, f"{payload.backup_id}.json")
+    if os.path.exists(meta_path):
+        meta = load_json_dict(meta_path, label="Site backup metadata")
+        if meta.get("include_database") and record.get("database"):
+            dump_path = f"/tmp/{payload.backup_id}.sql"
+            exec_in_container(
+                record["container_name"],
+                ["sh", "-c", f"tar -xzf {shlex.quote(archive_path)} -C /tmp {shlex.quote(payload.backup_id)}.sql || true"],
+            )
+            _restore_site_db(record["container_name"], record["database"], dump_path)
+            exec_in_container(record["container_name"], ["rm", "-f", dump_path])
+    exec_in_container(record["container_name"], ["rm", "-f", archive_path])
+    restart_result = {}
+    if payload.restart_services:
+        restart_result = _restart_site_services(record["container_name"], record.get("runtime") or {}, None)
+    audit_api("sites_rollback", target=site_id, details={"backup_id": payload.backup_id})
+    return {"message": "Rollback complete", "restart": restart_result}
+
+@app.get("/sites/{site_id}/logs")
+def site_logs(
+    site_id: str,
+    service: Optional[str] = None,
+    lines: int = 200,
+    since: Optional[str] = None,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    auth_context = authorize("sites_logs", "sites_read", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    enforce_container_scope(auth_context, record["container_name"])
+    service_name = (service or "apache").lower()
+    log_candidates = {
+        "apache": ["/var/log/apache2/access.log", "/var/log/httpd/access_log"],
+        "nginx": ["/var/log/nginx/access.log"],
+        "php-fpm": ["/var/log/php-fpm/error.log", "/var/log/php8.2-fpm.log", "/var/log/php8.1-fpm.log"],
+        "app": [os.path.join(record["docroot"], "storage/logs/laravel.log")],
+    }
+    paths = log_candidates.get(service_name, [])
+    if not paths:
+        raise HTTPException(status_code=400, detail="Unknown log service")
+    for path in paths:
+        try:
+            output = exec_in_container(record["container_name"], ["sh", "-c", f"tail -n {int(lines)} {shlex.quote(path)}"])
+            audit_api("sites_logs", target=site_id, details={"service": service_name})
+            return {"logs": output, "truncated": False}
+        except HTTPException:
+            continue
+    raise HTTPException(status_code=404, detail="Log file not found")
+
+@app.get("/sites/{site_id}/health")
+def site_health(site_id: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_health", "sites_read", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    enforce_container_scope(auth_context, record["container_name"])
+    checks = []
+    try:
+        exec_in_container(record["container_name"], ["test", "-d", record["docroot"]])
+        checks.append({"check": "docroot", "status": "ok"})
+    except HTTPException as exc:
+        checks.append({"check": "docroot", "status": "error", "detail": str(exc.detail)})
+    runtime = record.get("runtime") or {}
+    services = build_service_names(runtime)
+    for label, candidates in services.items():
+        ok = False
+        for service in candidates:
+            try:
+                exec_in_container(record["container_name"], ["sh", "-c", f"systemctl is-active {shlex.quote(service)} >/dev/null 2>&1"])
+                ok = True
+                break
+            except HTTPException:
+                continue
+        checks.append({"check": label, "status": "ok" if ok else "error"})
+    status = "ok" if all(item["status"] == "ok" for item in checks) else "error"
+    audit_api("sites_health", target=site_id, details={"status": status})
+    return {"status": status, "checks": checks}
+
+@app.post("/sites/{site_id}/services/restart")
+def restart_site_services(
+    site_id: str,
+    payload: SiteServiceActionRequest,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    auth_context = authorize("sites_restart", "sites_manage", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    enforce_container_scope(auth_context, record["container_name"])
+    result = _restart_site_services(record["container_name"], record.get("runtime") or {}, payload.services)
+    audit_api("sites_restart", target=site_id, details={"restarted": result.get("restarted"), "failed": result.get("failed")})
+    return {"message": "Services restarted", **result}
+
+# --- MIGRATIONS ---
+
+@app.get("/migrations/status")
+def migration_status(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("migrations_status", "migration_admin", x_api_key, x_user_token)
+    status = MIGRATION_ENGINE.status()
+    audit_api("migrations_status", details={"pending": status.get("pending")})
+    return status
+
+@app.post("/migrations/plan")
+def migration_plan(payload: Optional[MigrationPlanRequest] = None, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("migrations_plan", "migration_admin", x_api_key, x_user_token)
+    resolved = payload or MigrationPlanRequest()
+    plan = MIGRATION_ENGINE.plan(stores=resolved.stores)
+    audit_api("migrations_plan", details={"count": len(plan), "stores": resolved.stores})
+    return {"dry_run": True, "plan": [entry.__dict__ for entry in plan]}
+
+@app.post("/migrations/apply")
+def migration_apply(payload: Optional[MigrationApplyRequest] = None, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("migrations_apply", "migration_admin", x_api_key, x_user_token)
+    resolved = payload or MigrationApplyRequest()
+    result = MIGRATION_ENGINE.apply(stores=resolved.stores, dry_run=resolved.dry_run, backup=resolved.backup)
+    audit_api("migrations_apply", details={"patch_id": result.get("patch_id"), "applied": result.get("applied")})
+    return result
+
+@app.post("/migrations/rollback")
+def migration_rollback(payload: MigrationRollbackRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("migrations_rollback", "migration_admin", x_api_key, x_user_token)
+    result = MIGRATION_ENGINE.rollback(payload.patch_id, dry_run=payload.dry_run)
+    audit_api("migrations_rollback", details={"patch_id": payload.patch_id, "restored": result.get("restored")})
+    return result
+
+@app.get("/migrations/ledger")
+def migration_ledger(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("migrations_ledger", "migration_admin", x_api_key, x_user_token)
+    entries = load_ledger_entries(MIGRATIONS_DIR)
+    audit_api("migrations_ledger", details={"count": len(entries)})
+    return {"entries": entries}
 
 # --- ENCRYPTED BACKUP SYSTEM ---
 

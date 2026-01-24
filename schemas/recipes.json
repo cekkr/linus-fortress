@@ -1,0 +1,23 @@
+{
+  "store": "recipes",
+  "schema_version": "1",
+  "record_type": "mapping",
+  "fields": [
+    "name",
+    "description",
+    "dependencies",
+    "packages",
+    "commands",
+    "parameters",
+    "required_parameters"
+  ],
+  "defaults": {
+    "dependencies": [],
+    "packages": [],
+    "commands": [],
+    "parameters": {},
+    "required_parameters": []
+  },
+  "aliases": {},
+  "prune_unknown": false
+}

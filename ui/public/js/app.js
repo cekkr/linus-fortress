@@ -11,6 +11,11 @@ const state = {
     mode: "none",
     session: false,
   },
+  admin: {
+    active: false,
+    username: null,
+    bootstrapRequired: false,
+  },
   events: [],
   probedContainers: new Set(),
   probeInFlight: false,
@@ -64,6 +69,11 @@ const elements = {
   authForm: document.getElementById("auth-form"),
   authToken: document.getElementById("auth-token"),
   authMessage: document.getElementById("auth-message"),
+  adminOverlay: document.getElementById("admin-overlay"),
+  adminForm: document.getElementById("admin-form"),
+  adminUsername: document.getElementById("admin-username"),
+  adminPassword: document.getElementById("admin-password"),
+  adminMessage: document.getElementById("admin-message"),
   logoutButton: document.getElementById("logout"),
 };
 
@@ -854,11 +864,46 @@ async function apiRequest(path, options = {}) {
     error.status = response.status;
     error.details = data;
     if (response.status === 401 || response.status === 403) {
-      showAuthOverlay("Session required. Enter a delegated token.");
+      const message = (data && data.error) || "";
+      if (message.toLowerCase().includes("admin")) {
+        showAdminOverlay(message || "Admin session required.");
+      } else {
+        showAuthOverlay("Session required. Enter a delegated token.");
+      }
     }
     throw error;
   }
   return data;
+}
+
+function setAdminState(payload) {
+  state.admin.active = Boolean(payload && payload.active);
+  state.admin.username = payload && payload.username ? payload.username : null;
+  state.admin.bootstrapRequired = Boolean(payload && payload.bootstrap_required);
+  updateAdminUI();
+}
+
+function updateAdminUI() {
+  const locked = !state.admin.active;
+  if (elements.adminOverlay) {
+    elements.adminOverlay.hidden = !locked;
+  }
+  if (!locked && elements.adminMessage) {
+    elements.adminMessage.textContent = "";
+  }
+  if (state.admin.bootstrapRequired && elements.adminMessage) {
+    elements.adminMessage.textContent = "Admin bootstrap required. Use the /api/admin/bootstrap endpoint.";
+  }
+}
+
+function showAdminOverlay(message) {
+  state.admin.active = false;
+  if (elements.adminOverlay) {
+    elements.adminOverlay.hidden = false;
+  }
+  if (elements.adminMessage) {
+    elements.adminMessage.textContent = message || "";
+  }
 }
 
 function setAuthState(payload) {
@@ -871,7 +916,7 @@ function setAuthState(payload) {
 function updateAuthUI() {
   const locked = state.auth.mode === "none";
   if (elements.authOverlay) {
-    elements.authOverlay.hidden = !locked;
+    elements.authOverlay.hidden = !locked || !state.admin.active;
   }
   if (elements.logoutButton) {
     elements.logoutButton.hidden = !state.auth.session;
@@ -886,7 +931,7 @@ function showAuthOverlay(message) {
   state.auth.mode = "none";
   state.auth.session = false;
   if (elements.authOverlay) {
-    elements.authOverlay.hidden = false;
+    elements.authOverlay.hidden = !state.admin.active;
   }
   if (elements.logoutButton) {
     elements.logoutButton.hidden = true;
@@ -896,10 +941,52 @@ function showAuthOverlay(message) {
   }
 }
 
+async function refreshAdminSession() {
+  const payload = await apiRequest("/api/admin/session", { method: "GET" });
+  setAdminState(payload);
+  return payload;
+}
+
 async function refreshSession() {
   const payload = await apiRequest("/api/session", { method: "GET" });
   setAuthState(payload);
   return payload;
+}
+
+async function handleAdminLogin(event) {
+  event.preventDefault();
+  if (!elements.adminUsername || !elements.adminPassword) {
+    return;
+  }
+  const username = elements.adminUsername.value.trim();
+  const password = elements.adminPassword.value;
+  if (!username || !password) {
+    if (elements.adminMessage) {
+      elements.adminMessage.textContent = "Username and password are required.";
+    }
+    return;
+  }
+  if (elements.adminMessage) {
+    elements.adminMessage.textContent = "Authenticating...";
+  }
+  try {
+    await apiRequest("/api/admin/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    elements.adminPassword.value = "";
+    await refreshAdminSession();
+    if (state.admin.active) {
+      await refreshSession();
+      if (state.auth.active) {
+        await loadGraph();
+      }
+    }
+  } catch (err) {
+    if (elements.adminMessage) {
+      elements.adminMessage.textContent = err.message || "Authentication failed.";
+    }
+  }
 }
 
 async function handleLogin(event) {
@@ -937,10 +1024,12 @@ async function handleLogin(event) {
 async function handleLogout() {
   try {
     await apiRequest("/api/session", { method: "DELETE" });
+    await apiRequest("/api/admin/logout", { method: "POST" });
   } catch (err) {
     logEvent("error", err.message || "Failed to sign out");
   }
   await refreshSession();
+  await refreshAdminSession();
   if (state.auth.mode === "none") {
     showAuthOverlay("Session cleared. Enter a delegated token.");
   }
@@ -1324,12 +1413,21 @@ window.addEventListener("DOMContentLoaded", () => {
   if (elements.authForm) {
     elements.authForm.addEventListener("submit", handleLogin);
   }
+  if (elements.adminForm) {
+    elements.adminForm.addEventListener("submit", handleAdminLogin);
+  }
   if (elements.logoutButton) {
     elements.logoutButton.addEventListener("click", handleLogout);
   }
-  refreshSession()
+  refreshAdminSession()
+    .then((payload) => {
+      if (payload && payload.active) {
+        return refreshSession();
+      }
+      return null;
+    })
     .then(() => {
-      if (state.auth.active) {
+      if (state.auth.active && state.admin.active) {
         return loadGraph();
       }
       return null;

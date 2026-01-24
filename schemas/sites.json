@@ -1,0 +1,28 @@
+{
+  "store": "sites",
+  "schema_version": "1",
+  "record_type": "mapping",
+  "fields": [
+    "id",
+    "name",
+    "primary_domain",
+    "domains",
+    "container_name",
+    "docroot",
+    "runtime",
+    "database",
+    "routing",
+    "tls",
+    "status",
+    "created_at",
+    "updated_at"
+  ],
+  "defaults": {
+    "domains": [],
+    "runtime": {},
+    "routing": {},
+    "status": "active"
+  },
+  "aliases": {},
+  "prune_unknown": false
+}
