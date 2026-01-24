@@ -92,6 +92,66 @@ paths:
             type: integer
             default: 5
           description: Absolute disk threshold (GB) used when no container quota is configured.
+        - in: query
+          name: history_limit
+          schema:
+            type: integer
+            default: 120
+          description: Number of snapshots to retain for baseline/anomaly detection (set to 0 to disable history retention).
+        - in: query
+          name: anomaly_baseline_samples
+          schema:
+            type: integer
+            default: 6
+          description: Number of recent samples used to build anomaly baselines.
+        - in: query
+          name: anomaly_host_cpu_multiplier
+          schema:
+            type: number
+            default: 2.5
+          description: Multiplier applied to the host CPU baseline before raising a spike alert.
+        - in: query
+          name: anomaly_host_cpu_min_percent
+          schema:
+            type: number
+            default: 75
+          description: Minimum host CPU percent to consider when evaluating spikes.
+        - in: query
+          name: anomaly_host_network_multiplier
+          schema:
+            type: number
+            default: 3
+          description: Multiplier applied to the host network baseline before raising a spike alert.
+        - in: query
+          name: anomaly_host_network_min_bytes_per_sec
+          schema:
+            type: integer
+            default: 5242880
+          description: Minimum host network throughput (bytes/sec) to consider when evaluating spikes.
+        - in: query
+          name: anomaly_container_cpu_multiplier
+          schema:
+            type: number
+            default: 2.5
+          description: Multiplier applied to the container CPU baseline before raising a spike alert.
+        - in: query
+          name: anomaly_container_cpu_min_cores
+          schema:
+            type: number
+            default: 0.5
+          description: Minimum container CPU usage (cores) to consider when evaluating spikes.
+        - in: query
+          name: anomaly_container_network_multiplier
+          schema:
+            type: number
+            default: 3
+          description: Multiplier applied to the container network baseline before raising a spike alert.
+        - in: query
+          name: anomaly_container_network_min_bytes_per_sec
+          schema:
+            type: integer
+            default: 5242880
+          description: Minimum container network throughput (bytes/sec) to consider when evaluating spikes.
       responses:
         "200":
           description: Resource snapshot including alerts
@@ -1518,6 +1578,37 @@ components:
           type: integer
         process_count:
           type: integer
+    MonitoringAnomalyThresholds:
+      type: object
+      properties:
+        host_cpu:
+          type: object
+          properties:
+            multiplier:
+              type: number
+            min_usage_percent:
+              type: number
+        host_network:
+          type: object
+          properties:
+            multiplier:
+              type: number
+            min_bytes_per_sec:
+              type: integer
+        container_cpu:
+          type: object
+          properties:
+            multiplier:
+              type: number
+            min_cores:
+              type: number
+        container_network:
+          type: object
+          properties:
+            multiplier:
+              type: number
+            min_bytes_per_sec:
+              type: integer
     MonitoringSnapshot:
       type: object
       properties:
@@ -1569,6 +1660,8 @@ components:
               $ref: "#/components/schemas/MonitoringThresholds"
             containers:
               $ref: "#/components/schemas/ContainerMonitoringThresholds"
+            anomalies:
+              $ref: "#/components/schemas/MonitoringAnomalyThresholds"
     MonitoringAnomaly:
       type: object
       required: [type, message]

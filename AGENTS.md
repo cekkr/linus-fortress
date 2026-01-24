@@ -56,9 +56,12 @@ This file contains the directives for AIs and must be kept current with the mini
 |           `-- containers.py
 |-- requirements.txt
 |-- scripts
-|   `-- provision
-|       |-- provision_fedora.sh
-|       `-- provision_ubuntu.sh
+|   |-- fortress-sudoers.template
+|   |-- setup-service-user.sh
+|   |-- provision
+|   |   |-- provision_fedora.sh
+|   |   `-- provision_ubuntu.sh
+|   `-- vm
 `-- tests
     |-- test_recipes.py
     `-- test_routing.py

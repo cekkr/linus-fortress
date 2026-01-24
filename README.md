@@ -19,7 +19,7 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 - Set `FORTRESS_BACKUP_PASSWORD` and store it outside the host; verify backup restores.
 - Keep host OS and LXD patched; apply security updates before provisioning new containers.
 - Restrict firewall rules and `POST /containers/expose` to known allowlists; prefer specific bind addresses.
-- Run the service under a dedicated user with a tight sudoers policy for the required system commands.
+- Run the service under a dedicated user with a tight sudoers policy for the required system commands (see Run Server Script).
 - Keep audit logs (`/var/lib/fortress/command_log.db`) and ship them off-host for retention.
 - Use SSH keys only for host/VM provisioning; disable password login for privileged accounts.
 
@@ -63,6 +63,19 @@ Optional service hints can be supplied with `user.lizard.services=apache,mysql,f
 The UI can probe service availability via `POST /containers/probe` (permission `manage_containers`) and update the LXD labels automatically.
 The file manager install uses Tiny File Manager under `/var/www/html/filemanager` and prompts for `fm_user`/`fm_password`.
 
+## Run Server Script
+
+`run-server.sh` bootstraps the host, writes `/etc/fortress/fortress.env`, and starts the API (and optional UI) in foreground, `screen`, or systemd service mode.
+
+Host assumptions:
+- Linux distro with `apt` or `dnf` (Ubuntu/Debian or AlmaLinux/RHEL-like).
+- `nginx` plus `ufw` (apt) or `firewalld` (dnf) for routing and firewall ops.
+- `lxc`/`lxd` for container APIs; the script can run `lxd init --auto` if LXD is installed.
+
+Least-privilege setup:
+- Use `scripts/setup-service-user.sh` (run as root) to create a service user and install a sudoers entry, or apply `scripts/fortress-sudoers.template` manually.
+- Ensure `run-server.sh` is root-owned and not group/other writable before granting sudo rights.
+
 ## API Reference
 
 A full OpenAPI description is provided in [`api-v1.yaml`](api-v1.yaml) (import it into Swagger UI, Postman, Insomnia, etc.). The summaries below highlight each route, the permissions enforced by `py/server.py`, and the body/parameter semantics that `fortress-cli.py` uses under the hood.
@@ -77,6 +90,7 @@ All endpoints require either `X-API-Key` or `X-User-Token`. Permissions listed b
 
 #### `GET /monitoring/resources` (permission `read_status`)
 - Optional query params to tune alerting thresholds: `host_memory_threshold` (default `90`), `host_disk_threshold` (`90`), `host_load_threshold` (`1.5` 1m load per CPU), `container_memory_threshold` (`85`), `container_disk_threshold` (`85`), `container_process_threshold` (`300`), `container_memory_absolute_mb` (`1024`), `container_disk_absolute_gb` (`5`).
+- Anomaly and history controls: `history_limit` (`120`, set `0` to disable history retention), `anomaly_baseline_samples` (`6`), `anomaly_host_cpu_multiplier` (`2.5`), `anomaly_host_cpu_min_percent` (`75`), `anomaly_host_network_multiplier` (`3`), `anomaly_host_network_min_bytes_per_sec` (`5242880`), `anomaly_container_cpu_multiplier` (`2.5`), `anomaly_container_cpu_min_cores` (`0.5`), `anomaly_container_network_multiplier` (`3`), `anomaly_container_network_min_bytes_per_sec` (`5242880`).
 - Returns structured host+container metrics with `alerts`, `anomalies`, and the thresholds applied (snapshots are persisted for baseline comparisons), e.g.:
 ```json
 {

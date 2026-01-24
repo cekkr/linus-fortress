@@ -56,7 +56,10 @@ from fortress.routing import (
     write_nginx_config,
 )
 from fortress.monitoring import (
+    DEFAULT_ANOMALY_THRESHOLDS,
+    DEFAULT_BASELINE_SAMPLES,
     DEFAULT_CONTAINER_THRESHOLDS,
+    DEFAULT_HISTORY_LIMIT,
     DEFAULT_HOST_THRESHOLDS,
     gather_resource_snapshot,
     record_resource_snapshot,
@@ -294,6 +297,16 @@ def monitoring_resources(
     container_process_threshold: int = DEFAULT_CONTAINER_THRESHOLDS["process_count"],
     container_memory_absolute_mb: int = int(DEFAULT_CONTAINER_THRESHOLDS["memory_absolute_bytes"] / (1024 * 1024)),
     container_disk_absolute_gb: int = int(DEFAULT_CONTAINER_THRESHOLDS["disk_absolute_bytes"] / (1024 * 1024 * 1024)),
+    history_limit: int = DEFAULT_HISTORY_LIMIT,
+    anomaly_baseline_samples: int = DEFAULT_BASELINE_SAMPLES,
+    anomaly_host_cpu_multiplier: float = DEFAULT_ANOMALY_THRESHOLDS["host_cpu"]["multiplier"],
+    anomaly_host_cpu_min_percent: float = DEFAULT_ANOMALY_THRESHOLDS["host_cpu"]["min_usage_percent"],
+    anomaly_host_network_multiplier: float = DEFAULT_ANOMALY_THRESHOLDS["host_network"]["multiplier"],
+    anomaly_host_network_min_bytes_per_sec: int = int(DEFAULT_ANOMALY_THRESHOLDS["host_network"]["min_bytes_per_sec"]),
+    anomaly_container_cpu_multiplier: float = DEFAULT_ANOMALY_THRESHOLDS["container_cpu"]["multiplier"],
+    anomaly_container_cpu_min_cores: float = DEFAULT_ANOMALY_THRESHOLDS["container_cpu"]["min_cores"],
+    anomaly_container_network_multiplier: float = DEFAULT_ANOMALY_THRESHOLDS["container_network"]["multiplier"],
+    anomaly_container_network_min_bytes_per_sec: int = int(DEFAULT_ANOMALY_THRESHOLDS["container_network"]["min_bytes_per_sec"]),
 ):
     authorize("monitoring_resources", "read_status", x_api_key, x_user_token)
     host_thresholds = {
@@ -308,8 +321,32 @@ def monitoring_resources(
         "memory_absolute_bytes": max(container_memory_absolute_mb, 0) * 1024 * 1024,
         "disk_absolute_bytes": max(container_disk_absolute_gb, 0) * 1024 * 1024 * 1024,
     }
+    anomaly_thresholds = {
+        "host_cpu": {
+            "multiplier": max(anomaly_host_cpu_multiplier, 0.0),
+            "min_usage_percent": max(anomaly_host_cpu_min_percent, 0.0),
+        },
+        "host_network": {
+            "multiplier": max(anomaly_host_network_multiplier, 0.0),
+            "min_bytes_per_sec": max(anomaly_host_network_min_bytes_per_sec, 0),
+        },
+        "container_cpu": {
+            "multiplier": max(anomaly_container_cpu_multiplier, 0.0),
+            "min_cores": max(anomaly_container_cpu_min_cores, 0.0),
+        },
+        "container_network": {
+            "multiplier": max(anomaly_container_network_multiplier, 0.0),
+            "min_bytes_per_sec": max(anomaly_container_network_min_bytes_per_sec, 0),
+        },
+    }
     snapshot = gather_resource_snapshot(host_thresholds, container_thresholds)
-    snapshot = record_resource_snapshot(snapshot, MONITORING_HISTORY_DB)
+    snapshot = record_resource_snapshot(
+        snapshot,
+        MONITORING_HISTORY_DB,
+        history_limit=max(history_limit, 0),
+        baseline_samples=max(anomaly_baseline_samples, 0),
+        anomaly_thresholds=anomaly_thresholds,
+    )
     alert_summary = {
         "host_alerts": len(snapshot.get("alerts", {}).get("host", [])),
         "containers": {name: len(alerts) for name, alerts in snapshot.get("alerts", {}).get("containers", {}).items()},

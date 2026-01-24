@@ -1,0 +1,10 @@
+# Fortress sudoers template
+# Replace __FORTRESS_USER__, __FORTRESS_ROOT__, and __SYSTEMCTL_BIN__ before installing.
+# Example install:
+#   sed \
+#     -e "s|__FORTRESS_USER__|fortress|g" \
+#     -e "s|__FORTRESS_ROOT__|/opt/linus-fortress|g" \
+#     -e "s|__SYSTEMCTL_BIN__|/bin/systemctl|g" \
+#     scripts/fortress-sudoers.template | sudo tee /etc/sudoers.d/fortress
+Defaults:__FORTRESS_USER__ env_keep += "FORTRESS_*"
+__FORTRESS_USER__ ALL=(root) NOPASSWD: __FORTRESS_ROOT__/run-server.sh, __SYSTEMCTL_BIN__ start fortress, __SYSTEMCTL_BIN__ stop fortress, __SYSTEMCTL_BIN__ restart fortress, __SYSTEMCTL_BIN__ status fortress, __SYSTEMCTL_BIN__ start fortress-ui, __SYSTEMCTL_BIN__ stop fortress-ui, __SYSTEMCTL_BIN__ restart fortress-ui, __SYSTEMCTL_BIN__ status fortress-ui, __SYSTEMCTL_BIN__ daemon-reload

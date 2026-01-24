@@ -10,7 +10,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 ## Path 2: Monitoring baseline and anomaly detection (short term)
 - Done: Persist historical resource snapshots for hosts and containers.
 - Done: Compare new samples against baselines to flag rate-based anomalies (CPU deltas, network spikes).
-- Next: Expose anomaly thresholds and history retention controls via API parameters or config.
+- Done: Expose anomaly thresholds and history retention controls via API parameters or config.
 
 ## Path 3: Audit and scope enforcement tests (short term)
 - Done: Add unit tests for container scope enforcement rules.
@@ -45,5 +45,5 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
 
 ## Path 9: Bootstrap and run tooling (short term)
-- Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).
-- Add a least-privilege sudoers template + service-user setup for running without full root.
+- Done: Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).
+- Done: Add a least-privilege sudoers template + service-user setup for running without full root.

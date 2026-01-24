@@ -66,6 +66,22 @@ def merge_thresholds(defaults: Dict[str, Any], overrides: Optional[Dict[str, Any
     return merged
 
 
+def merge_anomaly_thresholds(
+    overrides: Optional[Dict[str, Dict[str, float]]] = None,
+) -> Dict[str, Dict[str, float]]:
+    merged = {key: dict(value) for key, value in DEFAULT_ANOMALY_THRESHOLDS.items()}
+    if not overrides:
+        return merged
+    for scope, values in overrides.items():
+        if scope not in merged or not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            if value is None:
+                continue
+            merged[scope][key] = value
+    return merged
+
+
 def percent(value: Optional[float], total: Optional[float]) -> Optional[float]:
     if value is None or total in (None, 0):
         return None
@@ -672,18 +688,35 @@ def record_resource_snapshot(
     *,
     history_limit: int = DEFAULT_HISTORY_LIMIT,
     baseline_samples: int = DEFAULT_BASELINE_SAMPLES,
+    anomaly_thresholds: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Any]:
+    try:
+        history_limit = int(history_limit)
+    except (TypeError, ValueError):
+        history_limit = DEFAULT_HISTORY_LIMIT
+    try:
+        baseline_samples = int(baseline_samples)
+    except (TypeError, ValueError):
+        baseline_samples = DEFAULT_BASELINE_SAMPLES
+    baseline_samples = max(baseline_samples, 0)
+    if history_limit <= 0:
+        snapshot["anomalies"] = {"host": [], "containers": {}}
+        snapshot["history"] = {"count": 0, "limit": 0}
+        snapshot.setdefault("thresholds", {})["anomalies"] = merge_anomaly_thresholds(anomaly_thresholds)
+        return snapshot
+
     history = load_json(history_path, default=[], label="monitoring history")
     if not isinstance(history, list):
         history = []
-    anomalies = detect_rate_anomalies(snapshot, history, baseline_samples=baseline_samples)
+    merged_thresholds = merge_anomaly_thresholds(anomaly_thresholds)
+    anomalies = detect_rate_anomalies(snapshot, history, baseline_samples=baseline_samples, thresholds=merged_thresholds)
     history.append(_strip_alerts(snapshot))
-    if history_limit > 0:
-        history = history[-history_limit:]
+    history = history[-history_limit:]
     try:
         save_json(history_path, history)
     except OSError as exc:
         logging.error("Failed to write monitoring history: %s", exc)
     snapshot["anomalies"] = anomalies
     snapshot["history"] = {"count": len(history), "limit": history_limit}
+    snapshot.setdefault("thresholds", {})["anomalies"] = merged_thresholds
     return snapshot
