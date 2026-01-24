@@ -1402,6 +1402,22 @@ components:
           type: number
         cpu_count:
           type: integer
+        stat:
+          $ref: "#/components/schemas/HostCpuStat"
+    HostCpuStat:
+      type: object
+      properties:
+        total_ticks:
+          type: integer
+        idle_ticks:
+          type: integer
+    HostNetwork:
+      type: object
+      properties:
+        bytes_received:
+          type: integer
+        bytes_sent:
+          type: integer
     HostMetrics:
       type: object
       properties:
@@ -1413,6 +1429,8 @@ components:
           $ref: "#/components/schemas/DiskUsage"
         cpu:
           $ref: "#/components/schemas/HostCpuLoad"
+        network:
+          $ref: "#/components/schemas/HostNetwork"
         alerts:
           type: array
           items:
@@ -1524,6 +1542,26 @@ components:
                 type: array
                 items:
                   $ref: "#/components/schemas/MonitoringAlert"
+        anomalies:
+          type: object
+          properties:
+            host:
+              type: array
+              items:
+                $ref: "#/components/schemas/MonitoringAnomaly"
+            containers:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MonitoringAnomaly"
+        history:
+          type: object
+          properties:
+            count:
+              type: integer
+            limit:
+              type: integer
         thresholds:
           type: object
           properties:
@@ -1531,6 +1569,17 @@ components:
               $ref: "#/components/schemas/MonitoringThresholds"
             containers:
               $ref: "#/components/schemas/ContainerMonitoringThresholds"
+    MonitoringAnomaly:
+      type: object
+      required: [type, message]
+      properties:
+        type:
+          type: string
+        message:
+          type: string
+        interval_seconds:
+          type: number
+      additionalProperties: true
     ContainerCreate:
       type: object
       required: [name]

@@ -8,12 +8,13 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Keep `py/server.py` focused on route wiring and orchestration.
 
 ## Path 2: Monitoring baseline and anomaly detection (short term)
-- Persist historical resource snapshots for hosts and containers.
-- Compare new samples against baselines to flag rate-based anomalies (CPU deltas, network spikes).
+- Done: Persist historical resource snapshots for hosts and containers.
+- Done: Compare new samples against baselines to flag rate-based anomalies (CPU deltas, network spikes).
+- Next: Expose anomaly thresholds and history retention controls via API parameters or config.
 
 ## Path 3: Audit and scope enforcement tests (short term)
-- Add unit tests for container scope enforcement rules.
-- Add unit tests for audit logging behavior (mock LXC subprocess calls).
+- Done: Add unit tests for container scope enforcement rules.
+- Done: Add unit tests for audit logging behavior (mock LXC subprocess calls).
 
 ## Path 4: Integration tests and permission matrix (mid term)
 - Add integration tests for core API flows.

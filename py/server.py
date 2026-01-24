@@ -59,6 +59,7 @@ from fortress.monitoring import (
     DEFAULT_CONTAINER_THRESHOLDS,
     DEFAULT_HOST_THRESHOLDS,
     gather_resource_snapshot,
+    record_resource_snapshot,
 )
 from fortress.storage import load_json_dict, save_json
 from fortress.vms import (
@@ -118,6 +119,7 @@ COMMAND_LOG_DB = "/var/lib/fortress/command_log.db"
 VMS_DB = "/var/lib/fortress/vms.json"
 HOSTS_DB = "/var/lib/fortress/hosts.json"
 ROUTING_DB = "/var/lib/fortress/routes.json"
+MONITORING_HISTORY_DB = "/var/lib/fortress/monitoring_history.json"
 
 # Logging setup
 logging.basicConfig(filename='/var/log/fortress.log', level=logging.INFO, 
@@ -307,6 +309,7 @@ def monitoring_resources(
         "disk_absolute_bytes": max(container_disk_absolute_gb, 0) * 1024 * 1024 * 1024,
     }
     snapshot = gather_resource_snapshot(host_thresholds, container_thresholds)
+    snapshot = record_resource_snapshot(snapshot, MONITORING_HISTORY_DB)
     alert_summary = {
         "host_alerts": len(snapshot.get("alerts", {}).get("host", [])),
         "containers": {name: len(alerts) for name, alerts in snapshot.get("alerts", {}).get("containers", {}).items()},
