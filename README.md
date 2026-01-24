@@ -1,6 +1,6 @@
 # linus-fortress
 
-Linus' Fortress is a FastAPI service that centralizes automation for LXD-based deployments: container lifecycle, routing, encrypted backups, delegated API users, monitoring and audit trails, recipe automation, and firewall/package orchestration for Ubuntu (`apt`) and AlmaLinux (`dnf`) style hosts. It also supports SSH-based host provisioning and VM-based test environments.
+Linus' Fortress is a FastAPI service that centralizes automation for LXD-based deployments: container lifecycle, routing, encrypted backups, delegated API users, monitoring and audit trails, recipe automation, and firewall/package orchestration for Ubuntu/Debian (`apt`) and AlmaLinux/RHEL (`dnf`/`yum`) style hosts. It also supports SSH-based host provisioning and VM-based test environments.
 
 ## Security posture
 
@@ -63,7 +63,7 @@ Environment variables:
 
 For full LAMP automation and routing flows, the delegated token should include `manage_containers`, `manage_routing`, `recipes_manage`, `recipes_apply`, and `sites_manage`.
 
-The UI service enforces admin login (password policy + lockout + audit log + optional TOTP) before allowing delegated-token sessions. Admin sessions are stored in a UI-only cookie (`FORTRESS_UI_ADMIN_SESSION_COOKIE`).
+The UI service enforces admin login (password policy + lockout + audit log + optional TOTP) before allowing delegated-token sessions. If no admin exists yet, the UI presents a bootstrap form backed by `/api/admin/bootstrap`. Admin sessions are stored in a UI-only cookie (`FORTRESS_UI_ADMIN_SESSION_COOKIE`).
 
 LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` (or `user.fortress.stack=lamp`) via LXD config, or when the container name includes `lamp`.
 Optional service hints can be supplied with `user.lizard.services=apache,mysql,ftp` (comma-separated) to remove the install badge.
@@ -75,9 +75,10 @@ The file manager install uses Tiny File Manager under `/var/www/html/filemanager
 `run-server.sh` bootstraps the host, writes `/etc/fortress/fortress.env`, and starts the API (and optional UI) in foreground, `screen`, or systemd service mode.
 
 Host assumptions:
-- Linux distro with `apt` or `dnf` (Ubuntu/Debian or AlmaLinux/RHEL-like).
-- `nginx` plus `ufw` (apt) or `firewalld` (dnf) for routing and firewall ops.
+- Linux distro with `apt`, `dnf`, or `yum` (Ubuntu/Debian or AlmaLinux/RHEL-like).
+- `nginx` plus `ufw` (apt) or `firewalld` (dnf/yum) for routing and firewall ops.
 - `lxc`/`lxd` for container APIs; the script can run `lxd init --auto` if LXD is installed.
+- `certbot` for automated Let's Encrypt issuance/renewal (the script attempts to install it when possible).
 
 Least-privilege setup:
 - Use `scripts/setup-service-user.sh` (run as root) to create a service user and install a sudoers entry, or apply `scripts/fortress-sudoers.template` manually.
@@ -138,6 +139,7 @@ Body:
   "listen_address": "192.0.2.10",
   "listen_port": 8080,
   "tls": {
+    "mode": "manual",
     "cert_path": "/etc/letsencrypt/live/app.example.com/fullchain.pem",
     "key_path": "/etc/letsencrypt/live/app.example.com/privkey.pem",
     "chain_path": "/etc/letsencrypt/live/app.example.com/chain.pem",
@@ -153,12 +155,18 @@ Body:
 - `container_interface` (string, optional, default `eth0`) – which container NIC to resolve for upstream traffic.
 - `listen_address` / `listen_port` (optional, default `0.0.0.0:80`) – bind nginx to a specific host interface/port.
 - `tls` (object, optional) – enable HTTPS termination on the host.
-  - `cert_path` / `key_path` (string, required when `tls` set) – absolute paths to PEM files.
+  - `mode` (`manual|letsencrypt`, default `manual`).
+  - `cert_path` / `key_path` (string, required for `mode=manual`) – absolute paths to PEM files.
   - `chain_path` (string, optional) – additional trust chain.
   - `listen_port` (int, optional, default `443`) – HTTPS listen port (must differ from `listen_port`).
   - `redirect_http` (bool, optional, default `true`) – redirect HTTP to HTTPS instead of proxying plain HTTP.
+  - `email` (string, required for `mode=letsencrypt`) – notification email for certificate issuance.
+  - `staging` (bool, optional) – use the Let's Encrypt staging CA.
+  - `cert_name` (string, optional) – override the certbot certificate name (defaults to primary domain).
 - Creates an nginx vhost that proxies to the container IP+port and reloads nginx. Useful for dual-homed hosts or segmented container networks.
 - Routes are tracked in `/var/lib/fortress/routes.json` and written to `/etc/nginx/sites-available` with symlinks in `/etc/nginx/sites-enabled`.
+- Conflicting domains (including wildcard overlaps) return HTTP 409 with conflict details.
+- Let's Encrypt mode requires port 80 reachability and certbot installed on the host.
 
 #### `GET /routing` (permission `manage_routing`)
 - Returns stored routing entries plus an `enabled` flag for the nginx symlink.
@@ -169,6 +177,18 @@ Body:
 
 #### `DELETE /routing/{domain}` (permission `manage_routing`, container scoped)
 - Removes the nginx vhost for the given domain and reloads nginx.
+
+#### `POST /tls/renew` (permission `manage_routing`)
+Body:
+```json
+{
+  "domain": "app.example.com",
+  "dry_run": false
+}
+```
+- Renews Let's Encrypt certificates via certbot.
+- Provide `domain` to target a specific site/route; omit to renew all managed certs.
+- Optional `cert_name` overrides the certbot cert name when needed.
 
 ### Website Management
 
@@ -192,7 +212,7 @@ Body:
 - Creates the site record, configures routing/TLS, and provisions DB credentials when enabled (requires `database.password`).
 - `database.root_password` is optional and used to provision DB users/databases when root authentication requires a password.
 - When `runtime.php_ini_overrides` is provided, Fortress writes a per-site ini file inside the container and restarts PHP-FPM.
-- LetsEncrypt automation is not wired yet; use manual TLS paths for HTTPS today.
+- `tls.mode=letsencrypt` provisions certificates via certbot (HTTP-01) and populates `cert_path`/`key_path` automatically (requires port 80 reachability and certbot installed).
 
 #### `GET /sites/{site_id}` / `PUT /sites/{site_id}` / `DELETE /sites/{site_id}` (permission `sites_manage`)
 - Retrieve, update, or remove a website definition.
@@ -663,6 +683,19 @@ Body (optional):
 #### `GET /migrations/ledger`
 - Lists applied patches with timestamps and backup references.
 
+#### `POST /system/upgrade` (permission `migration_admin` + `package_manage`)
+Body:
+```json
+{
+  "update_packages": true,
+  "full_upgrade": false,
+  "apply_migrations": true,
+  "dry_run": false
+}
+```
+- Performs a host package update and then applies pending migrations in one call.
+- Set `dry_run=true` to preview the package command and migration plan without changes.
+
 ### Command Register & Auditing
 - Every API call records an immutable entry into `command_log.db` (see `COMMAND_LOG_DB`), capturing `actor`, endpoint, action, target, and sanitized payload details.
 - Internal behaviours such as `lxc exec` commands are also logged with command metadata (sensitive arguments are redacted) so operators can trace suspicious cross-container activity.
@@ -675,11 +708,14 @@ Body (optional):
 - Migration schemas default to `./schemas`; override with `FORTRESS_SCHEMA_DIR` if you relocate them.
 - Site backups default to `/var/lib/fortress/site_backups`; ensure the service user can read/write.
 - Configure secrets via env vars (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`) instead of hardcoding defaults.
-- Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), and package commands (`apt-get` or `dnf`).
+- ACME HTTP-01 challenges are served from `/var/lib/fortress/acme-challenges`; override via `FORTRESS_ACME_CHALLENGE_DIR`.
+- Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), manage nginx reloads, invoke `certbot`, and run package commands (`apt-get`, `dnf`, or `yum`).
 
 ## Client CLI (`fortress-cli.py`)
 
 `fortress-cli.py` is a companion script that securely stores API credentials, automates the HTTPS calls to the server, and handles encrypted backup archives.
+
+Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`, and `tls renew` for one-command maintenance flows.
 
 1. Run `python fortress-cli.py setup --server https://fortress.example.com:8443` to generate a 4096‑bit RSA keypair (protected by a passphrase) and enter the API master key, delegated user token, and/or backup password. Everything is saved under `~/.fortress-cli` (override via `FORTRESS_HOME`).
 2. Subsequent commands unlock the private key (either interactively or via `--passphrase`/`FORTRESS_PASSPHRASE`) and reuse the stored credentials:

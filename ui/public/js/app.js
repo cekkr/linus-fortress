@@ -41,12 +41,14 @@ const state = {
       container_interface: "eth0",
       listen_address: "0.0.0.0",
       listen_port: "80",
-      tls_enabled: true,
+      tls_mode: "manual",
       cert_path: "",
       key_path: "",
       chain_path: "",
       tls_port: "443",
       redirect_http: true,
+      tls_email: "",
+      tls_staging: false,
     },
     filemanager: {
       username: "",
@@ -70,10 +72,15 @@ const elements = {
   authToken: document.getElementById("auth-token"),
   authMessage: document.getElementById("auth-message"),
   adminOverlay: document.getElementById("admin-overlay"),
+  adminSubtitle: document.getElementById("admin-subtitle"),
   adminForm: document.getElementById("admin-form"),
   adminUsername: document.getElementById("admin-username"),
   adminPassword: document.getElementById("admin-password"),
   adminTotp: document.getElementById("admin-totp"),
+  adminBootstrapForm: document.getElementById("admin-bootstrap-form"),
+  adminBootstrapUsername: document.getElementById("admin-bootstrap-username"),
+  adminBootstrapPassword: document.getElementById("admin-bootstrap-password"),
+  adminBootstrapConfirm: document.getElementById("admin-bootstrap-confirm"),
   adminMessage: document.getElementById("admin-message"),
   logoutButton: document.getElementById("logout"),
 };
@@ -245,28 +252,28 @@ const RECIPE_CATALOG = {
     "lamp-apache",
     "Install Apache and PHP runtime.",
     [
-      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 apache2-utils libapache2-mod-php php php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now apache2 >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; fi",
+      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 apache2-utils libapache2-mod-php php php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now apache2 >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; elif command -v yum >/dev/null 2>&1; then yum makecache && yum install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; fi",
     ]
   ),
   "lamp-nginx": buildRecipeDefinition(
     "lamp-nginx",
     "Install Nginx with PHP-FPM.",
     [
-      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php-fpm php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; fi",
+      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php-fpm php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v yum >/dev/null 2>&1; then yum makecache && yum install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; fi",
     ]
   ),
   "lamp-mysql": buildRecipeDefinition(
     "lamp-mysql",
     "Install MariaDB or MySQL engine.",
     [
-      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client; systemctl enable --now mariadb >/dev/null 2>&1 || systemctl enable --now mysql >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; fi",
+      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client; systemctl enable --now mariadb >/dev/null 2>&1 || systemctl enable --now mysql >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; elif command -v yum >/dev/null 2>&1; then yum makecache && yum install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; fi",
     ]
   ),
   "lamp-ftp": buildRecipeDefinition(
     "lamp-ftp",
     "Install vsftpd for legacy FTP.",
     [
-      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; fi",
+      "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; elif command -v yum >/dev/null 2>&1; then yum makecache && yum install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; fi",
     ]
   ),
   "lamp-filemanager": buildRecipeDefinition(
@@ -376,12 +383,14 @@ function resetRoutingWizard(containerName) {
     container_interface: "eth0",
     listen_address: "0.0.0.0",
     listen_port: "80",
-    tls_enabled: true,
+    tls_mode: "manual",
     cert_path: "",
     key_path: "",
     chain_path: "",
     tls_port: "443",
     redirect_http: true,
+    tls_email: "",
+    tls_staging: false,
   };
   state.wizard.context.container = containerName || null;
 }
@@ -680,7 +689,7 @@ function renderWizard() {
     steps = ["Domain", "TLS", "Confirm"];
     if (wizard.step === 0) {
       bodyMarkup = `
-        <div>Route HTTPS for ${containerName}.</div>
+        <div>Route traffic for ${containerName}.</div>
         <div class="wizard-field">
           <label for="wiz-domain">Domain</label>
           <input id="wiz-domain" name="domain" data-wizard-group="routing" value="${routing.domain}" placeholder="app.example.com" />
@@ -703,23 +712,40 @@ function renderWizard() {
         </div>
       `;
     } else if (wizard.step === 1) {
-      const tlsDisabled = routing.tls_enabled ? "" : "disabled";
+      const tlsMode = routing.tls_mode || "manual";
+      const manualActive = tlsMode === "manual";
+      const letsencryptActive = tlsMode === "letsencrypt";
+      const tlsDisabled = tlsMode === "disabled" ? "disabled" : "";
+      const manualHidden = manualActive ? "" : "hidden";
+      const letsencryptHidden = letsencryptActive ? "" : "hidden";
       bodyMarkup = `
         <div class="wizard-field">
-          <label for="wiz-tls-enabled">Enable TLS</label>
-          <input id="wiz-tls-enabled" type="checkbox" name="tls_enabled" data-wizard-group="routing" ${routing.tls_enabled ? "checked" : ""} />
+          <label for="wiz-tls-mode">TLS mode</label>
+          <select id="wiz-tls-mode" name="tls_mode" data-wizard-group="routing">
+            <option value="manual" ${tlsMode === "manual" ? "selected" : ""}>Manual cert paths</option>
+            <option value="letsencrypt" ${tlsMode === "letsencrypt" ? "selected" : ""}>Let's Encrypt</option>
+            <option value="disabled" ${tlsMode === "disabled" ? "selected" : ""}>Disabled</option>
+          </select>
         </div>
-        <div class="wizard-field">
+        <div class="wizard-field" ${manualHidden}>
           <label for="wiz-cert-path">Cert path</label>
           <input id="wiz-cert-path" name="cert_path" data-wizard-group="routing" value="${routing.cert_path}" placeholder="/etc/letsencrypt/live/app/fullchain.pem" ${tlsDisabled} />
         </div>
-        <div class="wizard-field">
+        <div class="wizard-field" ${manualHidden}>
           <label for="wiz-key-path">Key path</label>
           <input id="wiz-key-path" name="key_path" data-wizard-group="routing" value="${routing.key_path}" placeholder="/etc/letsencrypt/live/app/privkey.pem" ${tlsDisabled} />
         </div>
-        <div class="wizard-field">
+        <div class="wizard-field" ${manualHidden}>
           <label for="wiz-chain-path">Chain path (optional)</label>
           <input id="wiz-chain-path" name="chain_path" data-wizard-group="routing" value="${routing.chain_path}" placeholder="/etc/letsencrypt/live/app/chain.pem" ${tlsDisabled} />
+        </div>
+        <div class="wizard-field" ${letsencryptHidden}>
+          <label for="wiz-tls-email">Let's Encrypt email</label>
+          <input id="wiz-tls-email" name="tls_email" data-wizard-group="routing" value="${routing.tls_email}" placeholder="admin@example.com" ${tlsDisabled} />
+        </div>
+        <div class="wizard-field" ${letsencryptHidden}>
+          <label for="wiz-tls-staging">Use Let's Encrypt staging</label>
+          <input id="wiz-tls-staging" type="checkbox" name="tls_staging" data-wizard-group="routing" ${routing.tls_staging ? "checked" : ""} ${tlsDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-tls-port">TLS listen port</label>
@@ -753,7 +779,7 @@ function renderWizard() {
           </div>
           <div>
             <strong>TLS</strong>
-            <span>${routing.tls_enabled ? "enabled" : "disabled"}</span>
+            <span>${routing.tls_mode || "disabled"}</span>
           </div>
           <div>
             <strong>TLS Port</strong>
@@ -886,14 +912,26 @@ function setAdminState(payload) {
 
 function updateAdminUI() {
   const locked = !state.admin.active;
+  const bootstrap = state.admin.bootstrapRequired;
   if (elements.adminOverlay) {
     elements.adminOverlay.hidden = !locked;
+  }
+  if (elements.adminForm) {
+    elements.adminForm.hidden = bootstrap;
+  }
+  if (elements.adminBootstrapForm) {
+    elements.adminBootstrapForm.hidden = !bootstrap;
+  }
+  if (elements.adminSubtitle) {
+    elements.adminSubtitle.textContent = bootstrap
+      ? "Create the first UI admin to continue."
+      : "Sign in with a UI admin account to continue.";
   }
   if (!locked && elements.adminMessage) {
     elements.adminMessage.textContent = "";
   }
-  if (state.admin.bootstrapRequired && elements.adminMessage) {
-    elements.adminMessage.textContent = "Admin bootstrap required. Use the /api/admin/bootstrap endpoint.";
+  if (bootstrap && elements.adminMessage) {
+    elements.adminMessage.textContent = "Admin bootstrap required.";
   }
 }
 
@@ -956,6 +994,12 @@ async function refreshSession() {
 
 async function handleAdminLogin(event) {
   event.preventDefault();
+  if (state.admin.bootstrapRequired) {
+    if (elements.adminMessage) {
+      elements.adminMessage.textContent = "Admin bootstrap required before login.";
+    }
+    return;
+  }
   if (!elements.adminUsername || !elements.adminPassword) {
     return;
   }
@@ -990,6 +1034,55 @@ async function handleAdminLogin(event) {
   } catch (err) {
     if (elements.adminMessage) {
       elements.adminMessage.textContent = err.message || "Authentication failed.";
+    }
+  }
+}
+
+async function handleAdminBootstrap(event) {
+  event.preventDefault();
+  if (!elements.adminBootstrapUsername || !elements.adminBootstrapPassword || !elements.adminBootstrapConfirm) {
+    return;
+  }
+  const username = elements.adminBootstrapUsername.value.trim();
+  const password = elements.adminBootstrapPassword.value;
+  const confirm = elements.adminBootstrapConfirm.value;
+  if (!username || !password) {
+    if (elements.adminMessage) {
+      elements.adminMessage.textContent = "Username and password are required.";
+    }
+    return;
+  }
+  if (password !== confirm) {
+    if (elements.adminMessage) {
+      elements.adminMessage.textContent = "Passwords do not match.";
+    }
+    return;
+  }
+  if (elements.adminMessage) {
+    elements.adminMessage.textContent = "Creating admin account...";
+  }
+  try {
+    await apiRequest("/api/admin/bootstrap", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    await apiRequest("/api/admin/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    elements.adminBootstrapUsername.value = "";
+    elements.adminBootstrapPassword.value = "";
+    elements.adminBootstrapConfirm.value = "";
+    await refreshAdminSession();
+    if (state.admin.active) {
+      await refreshSession();
+      if (state.auth.active) {
+        await loadGraph();
+      }
+    }
+  } catch (err) {
+    if (elements.adminMessage) {
+      elements.adminMessage.textContent = err.message || "Admin bootstrap failed.";
     }
   }
 }
@@ -1285,20 +1378,32 @@ async function handleWizardAction(action) {
           container_interface: routing.container_interface || "eth0",
           listen_address: routing.listen_address || "0.0.0.0",
           listen_port: Number.parseInt(routing.listen_port, 10) || 80,
-          tls: routing.tls_enabled
-            ? {
-                cert_path: routing.cert_path.trim(),
-                key_path: routing.key_path.trim(),
-                chain_path: routing.chain_path.trim() || undefined,
-                listen_port: Number.parseInt(routing.tls_port, 10) || 443,
-                redirect_http: Boolean(routing.redirect_http),
-              }
-            : null,
         };
-        if (payload.tls && (!payload.tls.cert_path || !payload.tls.key_path)) {
+        const tlsMode = routing.tls_mode || "manual";
+        let tlsPayload = null;
+        if (tlsMode !== "disabled") {
+          tlsPayload = {
+            mode: tlsMode,
+            listen_port: Number.parseInt(routing.tls_port, 10) || 443,
+            redirect_http: Boolean(routing.redirect_http),
+          };
+          if (tlsMode === "manual") {
+            tlsPayload.cert_path = routing.cert_path.trim();
+            tlsPayload.key_path = routing.key_path.trim();
+            tlsPayload.chain_path = routing.chain_path.trim() || undefined;
+          } else if (tlsMode === "letsencrypt") {
+            tlsPayload.email = routing.tls_email.trim();
+            tlsPayload.staging = Boolean(routing.tls_staging);
+          }
+        }
+        payload.tls = tlsPayload;
+        if (tlsMode === "manual" && tlsPayload && (!tlsPayload.cert_path || !tlsPayload.key_path)) {
           throw new Error("TLS cert and key paths are required");
         }
-        if (payload.tls && payload.tls.listen_port === payload.listen_port) {
+        if (tlsMode === "letsencrypt" && tlsPayload && !tlsPayload.email) {
+          throw new Error("Let's Encrypt email is required");
+        }
+        if (tlsPayload && tlsPayload.listen_port === payload.listen_port) {
           throw new Error("TLS listen port must differ from HTTP listen port");
         }
         await apiRequest("/api/routing", {
@@ -1402,7 +1507,7 @@ function bindEvents() {
     const value = target.type === "checkbox" ? target.checked : target.value;
     if (group === "routing") {
       state.wizard.routing[target.name] = value;
-      if (target.name === "tls_enabled") {
+      if (target.name === "tls_mode") {
         renderWizard();
       }
     } else if (group === "filemanager") {
@@ -1420,6 +1525,9 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   if (elements.adminForm) {
     elements.adminForm.addEventListener("submit", handleAdminLogin);
+  }
+  if (elements.adminBootstrapForm) {
+    elements.adminBootstrapForm.addEventListener("submit", handleAdminBootstrap);
   }
   if (elements.logoutButton) {
     elements.logoutButton.addEventListener("click", handleLogout);

@@ -2,6 +2,16 @@
 
 Security posture: assume capable attackers and prioritize least privilege, auditability, and safe rollback paths.
 
+## Production readiness checklist (current)
+- [x] WebUI admin bootstrap form with password policy enforcement and gated sessions.
+- [x] Package/firewall support for Ubuntu + AlmaLinux (apt/dnf/yum + ufw/firewalld).
+- [x] Let's Encrypt automation (HTTP-01 via certbot) for routes and sites, with ACME challenge location in nginx configs.
+- [x] Routing conflict detection across primary/alias/wildcard domains with 409 responses.
+- [x] System upgrade endpoint (package updates + migrations) with dry-run planning.
+- [ ] Scheduled TLS renewals (systemd timer/cron) with alerting on failures.
+- [ ] DNS-01 wildcard support for Let's Encrypt.
+- [ ] WebUI surfaces TLS renewal status/health.
+
 ## Path 1: Core auth and storage modularization (short term)
 - Done: Extract auth/token utilities into `py/fortress/auth.py`.
 - Done: Extract storage helpers into `py/fortress/storage.py`.
@@ -33,7 +43,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 ## Path 7: Shared hosting routing (short term)
 - Done: Support multi-domain routes and wildcard server names for routing entries.
 - Done: Add `/routing/refresh` to rebuild nginx configs when container IPs drift.
-- Next: Add automatic TLS issuance/renewal (Let's Encrypt) for routing entries.
+- Done: Add automatic TLS issuance/renewal (Let's Encrypt) for routing entries.
+- Next: Schedule automated certbot renewals and alert on failures.
 - Next: Automate upstream refresh on IP change (polling or LXD DNS-based upstreams).
 
 ## Path 8: Lizard UI (app-based web manager) (short term)
@@ -110,7 +121,8 @@ Acceptance criteria:
 - Logs (web + PHP-FPM) are retrievable via API with bounded output and permissions.
 - Routing, TLS, and service restarts are coordinated and rollback-safe.
 Next:
-- Add Let's Encrypt automation to site TLS workflows and surface TLS status.
+Done: Add Let's Encrypt automation to site TLS workflows.
+Next: Surface TLS status/renewal state in WebUI.
 Done:
 - Support php.ini override injection during site updates.
 Next:
@@ -127,6 +139,8 @@ Acceptance criteria:
 - Applying a migration creates a backup and writes a patch ledger entry with checksums and timestamps.
 - Rollback restores from the last known-good backup and replays integrity checks before unblocking the API.
 Next:
+Done: Add `/system/upgrade` API + CLI hook for package updates and migrations.
+Next: Add WebUI upgrade wizard with preflight checks and backup confirmation.
 Done:
 - Extend schema coverage to monitoring history.
 Next:

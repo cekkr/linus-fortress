@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
@@ -88,6 +88,24 @@ def _build_proxy_location(upstream_url: str) -> List[str]:
     return lines
 
 
+def _build_redirect_location() -> List[str]:
+    return [
+        "    location / {",
+        "        return 301 https://$host$request_uri;",
+        "    }",
+    ]
+
+
+def _build_acme_location(acme_challenge_dir: str) -> List[str]:
+    return [
+        "    location ^~ /.well-known/acme-challenge/ {",
+        f"        root {acme_challenge_dir};",
+        "        default_type text/plain;",
+        "        try_files $uri =404;",
+        "    }",
+    ]
+
+
 def _render_server_block(lines: List[str]) -> str:
     return "\n".join(["server {"] + lines + ["}"])
 
@@ -101,6 +119,7 @@ def build_nginx_proxy_config(
     tls: Optional[Dict[str, object]] = None,
     upstream_scheme: str = "http",
     domains: Optional[List[str]] = None,
+    acme_challenge_dir: Optional[str] = None,
 ) -> str:
     if upstream_scheme not in {"http", "https"}:
         raise HTTPException(status_code=400, detail="upstream_scheme must be http or https")
@@ -115,9 +134,16 @@ def build_nginx_proxy_config(
     redirect_http = False
     if tls:
         redirect_http = bool(tls.get("redirect_http", True))
+    acme_lines: List[str] = []
+    if acme_challenge_dir:
+        if not os.path.isabs(acme_challenge_dir):
+            raise HTTPException(status_code=400, detail="acme_challenge_dir must be an absolute path")
+        acme_lines = _build_acme_location(acme_challenge_dir)
     if redirect_http:
-        http_lines.append("    return 301 https://$host$request_uri;")
+        http_lines.extend(acme_lines)
+        http_lines.extend(_build_redirect_location())
     else:
+        http_lines.extend(acme_lines)
         http_lines.extend(_build_proxy_location(upstream_url))
     blocks = [_render_server_block(http_lines)]
 
@@ -136,6 +162,53 @@ def build_nginx_proxy_config(
         blocks.append(_render_server_block(tls_lines))
 
     return "\n\n".join(blocks).rstrip() + "\n"
+
+
+def _wildcard_suffix(domain: str) -> Optional[str]:
+    if domain.startswith("*.") and len(domain) > 2:
+        return domain[2:]
+    return None
+
+
+def domains_conflict(domain: str, other: str) -> bool:
+    if domain == other:
+        return True
+    wildcard = _wildcard_suffix(domain)
+    other_wildcard = _wildcard_suffix(other)
+    if wildcard and other_wildcard:
+        return (
+            wildcard == other_wildcard
+            or wildcard.endswith(f".{other_wildcard}")
+            or other_wildcard.endswith(f".{wildcard}")
+        )
+    if wildcard:
+        return other != wildcard and other.endswith(f".{wildcard}")
+    if other_wildcard:
+        return domain != other_wildcard and domain.endswith(f".{other_wildcard}")
+    return False
+
+
+def find_domain_conflicts(
+    domains: List[str],
+    routes: Dict[str, Dict[str, Any]],
+    ignore_domain: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    conflicts: List[Dict[str, str]] = []
+    for route_domain, record in routes.items():
+        if ignore_domain and route_domain == ignore_domain:
+            continue
+        existing_domains = normalize_domains(route_domain, record.get("domains") or [])
+        for candidate in domains:
+            for existing in existing_domains:
+                if domains_conflict(candidate, existing):
+                    conflicts.append(
+                        {
+                            "domain": candidate,
+                            "conflict_domain": existing,
+                            "route": route_domain,
+                        }
+                    )
+    return conflicts
 
 
 def write_nginx_config(domain: str, content: str, sites_available_dir: str) -> str:

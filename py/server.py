@@ -79,6 +79,8 @@ from fortress.system import run_command
 from fortress.routing import (
     build_nginx_proxy_config,
     ensure_nginx_site,
+    domains_conflict,
+    find_domain_conflicts,
     reload_nginx,
     remove_nginx_site,
     test_nginx_config,
@@ -86,6 +88,12 @@ from fortress.routing import (
     validate_domain,
     validate_tls_paths,
     write_nginx_config,
+)
+from fortress.tls import (
+    build_certificate_paths,
+    ensure_acme_challenge_dir,
+    issue_letsencrypt_certificate,
+    renew_letsencrypt,
 )
 from fortress.monitoring import (
     DEFAULT_ANOMALY_THRESHOLDS,
@@ -160,6 +168,7 @@ SITES_DB = "/var/lib/fortress/sites.json"
 SITE_BACKUP_DIR = "/var/lib/fortress/site_backups"
 MIGRATIONS_DIR = "/var/lib/fortress/migrations"
 SCHEMA_DIR = os.environ.get("FORTRESS_SCHEMA_DIR", os.path.join(BASE_DIR, "schemas"))
+ACME_CHALLENGE_DIR = os.environ.get("FORTRESS_ACME_CHALLENGE_DIR", "/var/lib/fortress/acme-challenges")
 FIREWALL_STATE_DIR = "/var/lib/fortress/firewall"
 FIREWALL_ROLLBACK_DIR = os.path.join(FIREWALL_STATE_DIR, "rollbacks")
 FIREWALL_DDOS_POLICY_PATH = os.path.join(FIREWALL_STATE_DIR, "ddos_policy.json")
@@ -253,6 +262,11 @@ def authorize(endpoint: str, required_permission: Optional[str], x_api_key: Opti
             enforce_container_scopes(auth_context, containers)
     return auth_context
 
+
+def has_permission(auth_context: Dict[str, Any], permission: str) -> bool:
+    permissions = auth_context.get("permissions") or []
+    return "*" in permissions or permission in permissions
+
 def load_api_users() -> Dict[str, Dict]:
     return load_json_dict(
         API_USERS_DB,
@@ -280,11 +294,15 @@ def ensure_packages_list(packages: List[str]):
 # --- DATA MODELS ---
 
 class DomainRouteTLS(BaseModel):
-    cert_path: str
-    key_path: str
+    mode: Literal["manual", "letsencrypt"] = "manual"
+    cert_path: Optional[str] = None
+    key_path: Optional[str] = None
     chain_path: Optional[str] = None
     listen_port: int = 443
     redirect_http: bool = True
+    email: Optional[str] = None
+    staging: bool = False
+    cert_name: Optional[str] = None
 
 class DomainRoute(BaseModel):
     domain: str
@@ -340,6 +358,17 @@ class DdosPolicyRequest(BaseModel):
     log_only: bool = False
     ports: Optional[List[int]] = None
     protocol: Optional[Literal["tcp", "udp"]] = "tcp"
+    dry_run: bool = False
+
+class SystemUpgradeRequest(BaseModel):
+    update_packages: bool = True
+    full_upgrade: bool = False
+    apply_migrations: bool = True
+    dry_run: bool = False
+
+class TLSRenewRequest(BaseModel):
+    domain: Optional[str] = None
+    cert_name: Optional[str] = None
     dry_run: bool = False
 
 class RecipeSeedRequest(BaseModel):
@@ -464,20 +493,70 @@ def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(def
     validate_domain(route.domain)
     normalized_domains = normalize_domains(route.domain, route.domains)
     domain_aliases = [name for name in normalized_domains if name != route.domain]
+    routes = load_routes()
+    conflicts = find_domain_conflicts(normalized_domains, routes, ignore_domain=route.domain)
+    if conflicts:
+        raise HTTPException(status_code=409, detail={"message": "Routing domain conflict detected", "conflicts": conflicts})
     validate_port(route.container_port, "container_port")
     validate_port(route.listen_port, "listen_port")
     tls_payload = None
+    tls_mode = None
+    ip = get_container_ip(route.container_name, route.container_interface)
+    previous_config = _read_nginx_config(route.domain)
     if route.tls:
+        tls_mode = route.tls.mode
         validate_port(route.tls.listen_port, "tls.listen_port")
         if route.tls.listen_port == route.listen_port:
             raise HTTPException(status_code=400, detail="TLS listen_port must differ from listen_port")
-        validate_tls_paths(route.tls.cert_path, route.tls.key_path, route.tls.chain_path)
-        tls_payload = route.tls.dict()
+        if route.tls.mode == "manual":
+            if not route.tls.cert_path or not route.tls.key_path:
+                raise HTTPException(status_code=400, detail="TLS cert_path and key_path are required")
+            validate_tls_paths(route.tls.cert_path, route.tls.key_path, route.tls.chain_path)
+            tls_payload = route.tls.dict()
+        elif route.tls.mode == "letsencrypt":
+            ensure_acme_challenge_dir(ACME_CHALLENGE_DIR)
+            cert_name = route.tls.cert_name or route.domain
+            cert_paths = build_certificate_paths(cert_name)
+            cert_ready = os.path.isfile(cert_paths["cert_path"]) and os.path.isfile(cert_paths["key_path"])
+            needs_bootstrap = (not cert_ready) or (previous_config is None) or ("/.well-known/acme-challenge/" not in previous_config)
+            if needs_bootstrap:
+                bootstrap_content = build_nginx_proxy_config(
+                    domain=route.domain,
+                    domains=domain_aliases,
+                    listen_address=route.listen_address,
+                    listen_port=route.listen_port,
+                    upstream_host=ip,
+                    upstream_port=route.container_port,
+                    tls=None,
+                    acme_challenge_dir=ACME_CHALLENGE_DIR,
+                )
+                _apply_nginx_config(route.domain, bootstrap_content, previous_config)
+            try:
+                cert_paths = issue_letsencrypt_certificate(
+                    normalized_domains,
+                    route.tls.email,
+                    ACME_CHALLENGE_DIR,
+                    staging=route.tls.staging,
+                    cert_name=cert_name,
+                )
+            except Exception:
+                if needs_bootstrap:
+                    _restore_nginx_config(route.domain, previous_config)
+                raise
+            tls_payload = {
+                "mode": "letsencrypt",
+                "email": route.tls.email,
+                "staging": route.tls.staging,
+                "cert_name": cert_name,
+                "cert_path": cert_paths["cert_path"],
+                "key_path": cert_paths["key_path"],
+                "chain_path": cert_paths.get("chain_path"),
+                "listen_port": route.tls.listen_port,
+                "redirect_http": route.tls.redirect_http,
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported TLS mode")
 
-    # 1. Get Container IP on the requested interface
-    ip = get_container_ip(route.container_name, route.container_interface)
-
-    # 2. Generate Nginx config restricted to the listen address/port.
     config_content = build_nginx_proxy_config(
         domain=route.domain,
         domains=domain_aliases,
@@ -486,26 +565,11 @@ def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(def
         upstream_host=ip,
         upstream_port=route.container_port,
         tls=tls_payload,
+        acme_challenge_dir=ACME_CHALLENGE_DIR,
     )
-    config_path = os.path.join(NGINX_CONFIG_DIR, route.domain)
-    previous_config = None
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            previous_config = f.read()
-
-    write_nginx_config(route.domain, config_content, NGINX_CONFIG_DIR)
-
-    # 3. Symlink, validate, and reload.
     try:
-        ensure_nginx_site(route.domain, config_path, NGINX_ENABLED_DIR)
-        test_nginx_config()
-        reload_nginx()
+        _apply_nginx_config(route.domain, config_content, previous_config)
     except Exception as exc:
-        if previous_config is not None:
-            write_nginx_config(route.domain, previous_config, NGINX_CONFIG_DIR)
-            ensure_nginx_site(route.domain, config_path, NGINX_ENABLED_DIR)
-        else:
-            remove_nginx_site(route.domain, config_path, NGINX_ENABLED_DIR)
         audit_api(
             "routing_add",
             target=route.domain,
@@ -513,17 +577,16 @@ def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(def
                 "container": route.container_name,
                 "listen": f"{route.listen_address}:{route.listen_port}",
                 "tls": bool(route.tls),
+                "tls_mode": tls_mode,
                 "error": str(exc),
             },
             status="error",
         )
-        if isinstance(exc, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise
 
-    routes = load_routes()
     route_payload = route.dict()
     route_payload["domains"] = domain_aliases or None
+    route_payload["tls"] = tls_payload
     routes[route.domain] = route_payload
     save_routes(routes)
 
@@ -535,7 +598,8 @@ def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(def
             "port": route.container_port,
             "listen": f"{route.listen_address}:{route.listen_port}",
             "interface": route.container_interface,
-            "tls": bool(route.tls),
+            "tls": bool(tls_payload),
+            "tls_mode": tls_mode,
             "tls_port": route.tls.listen_port if route.tls else None,
             "domains": domain_aliases or None,
         },
@@ -578,6 +642,7 @@ def refresh_domain_routing(
             upstream_host=ip,
             upstream_port=record.get("container_port", 80),
             tls=tls_payload,
+            acme_challenge_dir=ACME_CHALLENGE_DIR,
         )
         rendered.append(
             {
@@ -684,6 +749,45 @@ def remove_domain_routing(domain: str, x_api_key: Optional[str] = Header(default
     save_routes(routes)
     audit_api("routing_remove", target=domain, details={"container": record.get("container_name")})
     return {"message": f"Routing removed for {domain}"}
+
+
+@app.post("/tls/renew")
+def renew_tls(payload: TLSRenewRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("tls_renew", "manage_routing", x_api_key, x_user_token)
+    if payload.cert_name and not payload.domain:
+        output = renew_letsencrypt(payload.cert_name, dry_run=payload.dry_run)
+        audit_api("tls_renew", details={"cert_name": payload.cert_name, "dry_run": payload.dry_run})
+        return {"message": "TLS renewal complete", "cert_name": payload.cert_name, "output": output}
+    if payload.domain:
+        validate_domain(payload.domain)
+        routes = load_routes()
+        cert_name = None
+        for route_domain, record in routes.items():
+            route_domains = normalize_domains(route_domain, record.get("domains") or [])
+            if any(domains_conflict(payload.domain, candidate) for candidate in route_domains):
+                tls = record.get("tls") or {}
+                if tls.get("mode") != "letsencrypt":
+                    raise HTTPException(status_code=400, detail="Route TLS mode is not letsencrypt")
+                cert_name = tls.get("cert_name") or route_domain
+                break
+        if not cert_name:
+            sites = _load_site_store()
+            for site in sites.values():
+                site_domains = normalize_domains(site["primary_domain"], site.get("domains") or [])
+                if any(domains_conflict(payload.domain, candidate) for candidate in site_domains):
+                    tls = site.get("tls") or {}
+                    if tls.get("mode") != "letsencrypt":
+                        raise HTTPException(status_code=400, detail="Site TLS mode is not letsencrypt")
+                    cert_name = tls.get("cert_name") or site["primary_domain"]
+                    break
+        if not cert_name:
+            raise HTTPException(status_code=404, detail="Domain not found for TLS renewal")
+        output = renew_letsencrypt(cert_name, dry_run=payload.dry_run)
+        audit_api("tls_renew", details={"cert_name": cert_name, "domain": payload.domain, "dry_run": payload.dry_run})
+        return {"message": "TLS renewal complete", "cert_name": cert_name, "output": output}
+    output = renew_letsencrypt(dry_run=payload.dry_run)
+    audit_api("tls_renew", details={"dry_run": payload.dry_run})
+    return {"message": "TLS renewal complete", "output": output}
 
 # --- API USER MANAGEMENT ---
 
@@ -879,8 +983,10 @@ def install_packages(request: PackageInstallRequest, x_api_key: Optional[str] = 
         update_package_index(manager, request.container_name)
     if manager == "apt":
         cmd = ["apt-get", "install", "-y"] + request.packages
-    else:
+    elif manager == "dnf":
         cmd = ["dnf", "install", "-y"] + request.packages
+    else:
+        cmd = ["yum", "install", "-y"] + request.packages
     try:
         run_package_command(cmd, request.container_name)
         audit_api("packages_install", target=request.container_name or "host", details={"packages": request.packages, "manager": manager})
@@ -896,8 +1002,10 @@ def remove_packages(request: PackageRemoveRequest, x_api_key: Optional[str] = He
     manager = detect_package_manager(request.container_name)
     if manager == "apt":
         cmd = ["apt-get", "remove", "-y"] + request.packages
-    else:
+    elif manager == "dnf":
         cmd = ["dnf", "remove", "-y"] + request.packages
+    else:
+        cmd = ["yum", "remove", "-y"] + request.packages
     try:
         run_package_command(cmd, request.container_name)
         audit_api("packages_remove", target=request.container_name or "host", details={"packages": request.packages, "manager": manager})
@@ -913,8 +1021,10 @@ def update_packages(request: PackageUpdateRequest, x_api_key: Optional[str] = He
     update_package_index(manager, request.container_name)
     if manager == "apt":
         command = ["apt-get", "dist-upgrade" if request.full_upgrade else "upgrade", "-y"]
-    else:
+    elif manager == "dnf":
         command = ["dnf", "upgrade" if request.full_upgrade else "update", "-y"]
+    else:
+        command = ["yum", "upgrade" if request.full_upgrade else "update", "-y"]
     try:
         run_package_command(command, request.container_name)
         audit_api("packages_update", target=request.container_name or "host", details={"manager": manager, "full_upgrade": request.full_upgrade})
@@ -922,6 +1032,54 @@ def update_packages(request: PackageUpdateRequest, x_api_key: Optional[str] = He
         audit_api("packages_update", target=request.container_name or "host", details={"error": str(exc)}, status="error")
         raise
     return {"message": "Package update completed", "full_upgrade": request.full_upgrade}
+
+@app.post("/system/upgrade")
+def system_upgrade(payload: SystemUpgradeRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("system_upgrade", "migration_admin", x_api_key, x_user_token)
+    if payload.update_packages and not has_permission(auth_context, "package_manage"):
+        raise HTTPException(status_code=403, detail="package_manage permission required for package updates")
+    response: Dict[str, Any] = {
+        "dry_run": payload.dry_run,
+        "update_packages": payload.update_packages,
+        "apply_migrations": payload.apply_migrations,
+    }
+    package_result = None
+    if payload.update_packages:
+        manager = detect_package_manager(None)
+        command = None
+        if manager == "apt":
+            command = ["apt-get", "dist-upgrade" if payload.full_upgrade else "upgrade", "-y"]
+        elif manager == "dnf":
+            command = ["dnf", "upgrade" if payload.full_upgrade else "update", "-y"]
+        else:
+            command = ["yum", "upgrade" if payload.full_upgrade else "update", "-y"]
+        if payload.dry_run:
+            package_result = {"manager": manager, "command": command, "full_upgrade": payload.full_upgrade}
+        else:
+            update_package_index(manager, None)
+            run_package_command(command, None)
+            package_result = {"manager": manager, "command": command, "full_upgrade": payload.full_upgrade}
+    response["packages"] = package_result
+    if payload.apply_migrations:
+        if payload.dry_run:
+            plan = MIGRATION_ENGINE.plan()
+            response["migrations"] = [
+                {"store": entry.store, "from_schema": entry.from_schema, "to_schema": entry.to_schema, "actions": entry.actions}
+                for entry in plan
+            ]
+        else:
+            response["migrations"] = MIGRATION_ENGINE.apply()
+    else:
+        response["migrations"] = {"skipped": True}
+    audit_api(
+        "system_upgrade",
+        details={
+            "dry_run": payload.dry_run,
+            "packages": bool(payload.update_packages),
+            "migrations": bool(payload.apply_migrations),
+        },
+    )
+    return response
 
 # --- VM MANAGEMENT ---
 
@@ -1198,7 +1356,7 @@ LAMP_RECIPE_BUNDLE = {
         "dependencies": [],
         "packages": [],
         "commands": [
-            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 apache2-utils libapache2-mod-php php{{php_version}} php{{php_version}}-cli php{{php_version}}-mysql php{{php_version}}-curl php{{php_version}}-xml php{{php_version}}-zip php{{php_version}}-mbstring; systemctl enable --now apache2 >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; fi",
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 apache2-utils libapache2-mod-php php{{php_version}} php{{php_version}}-cli php{{php_version}}-mysql php{{php_version}}-curl php{{php_version}}-xml php{{php_version}}-zip php{{php_version}}-mbstring; systemctl enable --now apache2 >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; elif command -v yum >/dev/null 2>&1; then yum makecache && yum install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; fi",
         ],
         "parameters": {"php_version": ""},
         "required_parameters": [],
@@ -1209,7 +1367,7 @@ LAMP_RECIPE_BUNDLE = {
         "dependencies": [],
         "packages": [],
         "commands": [
-            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php{{php_version}}-fpm php{{php_version}}-cli php{{php_version}}-mysql php{{php_version}}-curl php{{php_version}}-xml php{{php_version}}-zip php{{php_version}}-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; fi",
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php{{php_version}}-fpm php{{php_version}}-cli php{{php_version}}-mysql php{{php_version}}-curl php{{php_version}}-xml php{{php_version}}-zip php{{php_version}}-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v yum >/dev/null 2>&1; then yum makecache && yum install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; fi",
         ],
         "parameters": {"php_version": ""},
         "required_parameters": [],
@@ -1220,7 +1378,7 @@ LAMP_RECIPE_BUNDLE = {
         "dependencies": [],
         "packages": [],
         "commands": [
-            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client; systemctl enable --now mariadb >/dev/null 2>&1 || systemctl enable --now mysql >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; fi; if command -v mysql >/dev/null 2>&1; then ROOT_PWD='{{db_root_password}}'; if [ -n \"$ROOT_PWD\" ]; then mysqladmin -u root status >/dev/null 2>&1 && mysqladmin -u root password \"$ROOT_PWD\" >/dev/null 2>&1 || true; export MYSQL_PWD=\"$ROOT_PWD\"; fi; if [ -n \"{{db_name}}\" ] && [ -n \"{{db_user}}\" ] && [ -n \"{{db_password}}\" ]; then mysql -u root -e \"CREATE DATABASE IF NOT EXISTS \\`{{db_name}}\\`\"; mysql -u root -e \"CREATE USER IF NOT EXISTS '{{db_user}}'@'%' IDENTIFIED BY '{{db_password}}'\"; mysql -u root -e \"GRANT ALL PRIVILEGES ON \\`{{db_name}}\\`.* TO '{{db_user}}'@'%'\"; mysql -u root -e \"FLUSH PRIVILEGES\"; fi; fi",
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client; systemctl enable --now mariadb >/dev/null 2>&1 || systemctl enable --now mysql >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; elif command -v yum >/dev/null 2>&1; then yum makecache && yum install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; fi; if command -v mysql >/dev/null 2>&1; then ROOT_PWD='{{db_root_password}}'; if [ -n \"$ROOT_PWD\" ]; then mysqladmin -u root status >/dev/null 2>&1 && mysqladmin -u root password \"$ROOT_PWD\" >/dev/null 2>&1 || true; export MYSQL_PWD=\"$ROOT_PWD\"; fi; if [ -n \"{{db_name}}\" ] && [ -n \"{{db_user}}\" ] && [ -n \"{{db_password}}\" ]; then mysql -u root -e \"CREATE DATABASE IF NOT EXISTS \\`{{db_name}}\\`\"; mysql -u root -e \"CREATE USER IF NOT EXISTS '{{db_user}}'@'%' IDENTIFIED BY '{{db_password}}'\"; mysql -u root -e \"GRANT ALL PRIVILEGES ON \\`{{db_name}}\\`.* TO '{{db_user}}'@'%'\"; mysql -u root -e \"FLUSH PRIVILEGES\"; fi; fi",
         ],
         "parameters": {"db_root_password": "", "db_name": "", "db_user": "", "db_password": ""},
         "required_parameters": [],
@@ -1231,7 +1389,7 @@ LAMP_RECIPE_BUNDLE = {
         "dependencies": [],
         "packages": [],
         "commands": [
-            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; fi",
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; elif command -v yum >/dev/null 2>&1; then yum makecache && yum install -y vsftpd; systemctl enable --now vsftpd >/dev/null 2>&1 || true; fi",
         ],
         "parameters": {},
         "required_parameters": [],
@@ -1428,8 +1586,10 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
                 index_updated = True
             if manager == "apt":
                 cmd = ["apt-get", "install", "-y"] + packages
-            else:
+            elif manager == "dnf":
                 cmd = ["dnf", "install", "-y"] + packages
+            else:
+                cmd = ["yum", "install", "-y"] + packages
             run_package_command(cmd, payload.container_name)
             installed_packages.update(packages)
         for command in step["commands"]:
@@ -1594,7 +1754,42 @@ def _apply_php_ini_overrides(container_name: str, site_id: str, runtime: Dict[st
     exec_in_container(container_name, ["sh", "-c", cmd])
     return {"path": ini_path, "applied": True, "removed": False}
 
-def _apply_nginx_route(domain: str, domains: Optional[List[str]], payload: Dict[str, Any]) -> None:
+def _read_nginx_config(domain: str) -> Optional[str]:
+    config_path = os.path.join(NGINX_CONFIG_DIR, domain)
+    if os.path.exists(config_path):
+        with open(config_path, "r") as fh:
+            return fh.read()
+    return None
+
+def _restore_nginx_config(domain: str, previous_config: Optional[str]) -> None:
+    config_path = os.path.join(NGINX_CONFIG_DIR, domain)
+    if previous_config is not None:
+        write_nginx_config(domain, previous_config, NGINX_CONFIG_DIR)
+        ensure_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+    else:
+        remove_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+    test_nginx_config()
+    reload_nginx()
+
+def _apply_nginx_config(domain: str, config_content: str, previous_config: Optional[str]) -> None:
+    config_path = os.path.join(NGINX_CONFIG_DIR, domain)
+    write_nginx_config(domain, config_content, NGINX_CONFIG_DIR)
+    try:
+        ensure_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
+        test_nginx_config()
+        reload_nginx()
+    except Exception as exc:
+        _restore_nginx_config(domain, previous_config)
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=str(exc))
+
+def _apply_nginx_route(
+    domain: str,
+    domains: Optional[List[str]],
+    payload: Dict[str, Any],
+    previous_config: Optional[str] = None,
+) -> None:
     validate_domain(domain)
     normalize_domains(domain, domains or [])
     validate_port(int(payload["container_port"]), "container_port")
@@ -1614,31 +1809,14 @@ def _apply_nginx_route(domain: str, domains: Optional[List[str]], payload: Dict[
         upstream_host=ip,
         upstream_port=payload["container_port"],
         tls=tls_payload,
+        acme_challenge_dir=ACME_CHALLENGE_DIR,
     )
-    config_path = os.path.join(NGINX_CONFIG_DIR, domain)
-    previous_config = None
-    if os.path.exists(config_path):
-        with open(config_path, "r") as fh:
-            previous_config = fh.read()
-    write_nginx_config(domain, config_content, NGINX_CONFIG_DIR)
-    try:
-        ensure_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
-        test_nginx_config()
-        reload_nginx()
-    except Exception as exc:
-        if previous_config is not None:
-            write_nginx_config(domain, previous_config, NGINX_CONFIG_DIR)
-            ensure_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
-        else:
-            remove_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
-        raise HTTPException(status_code=500, detail=str(exc))
+    rollback_config = previous_config if previous_config is not None else _read_nginx_config(domain)
+    _apply_nginx_config(domain, config_content, rollback_config)
 
 def _remove_nginx_route(domain: str) -> None:
     config_path = os.path.join(NGINX_CONFIG_DIR, domain)
-    previous_config = None
-    if os.path.exists(config_path):
-        with open(config_path, "r") as fh:
-            previous_config = fh.read()
+    previous_config = _read_nginx_config(domain)
     try:
         remove_nginx_site(domain, config_path, NGINX_ENABLED_DIR)
         test_nginx_config()
@@ -1653,8 +1831,26 @@ def _apply_site_routing(site: Dict[str, Any], previous_domain: Optional[str] = N
     tls_config = site.get("tls") or {}
     tls_payload = None
     tls_mode = tls_config.get("mode", "manual")
+    routing = site.get("routing") or {}
+    normalized_domains = normalize_domains(site["primary_domain"], site.get("domains") or [])
+    domain_aliases = [name for name in normalized_domains if name != site["primary_domain"]]
+    routes = load_routes()
+    ignore_domain = previous_domain or site["primary_domain"]
+    conflicts = find_domain_conflicts(normalized_domains, routes, ignore_domain=ignore_domain)
+    if conflicts:
+        raise HTTPException(status_code=409, detail={"message": "Routing domain conflict detected", "conflicts": conflicts})
+    payload = {
+        "container_name": site["container_name"],
+        "container_port": routing.get("container_port", 80),
+        "container_interface": routing.get("container_interface", "eth0"),
+        "listen_address": routing.get("listen_address", "0.0.0.0"),
+        "listen_port": routing.get("listen_port", 80),
+        "tls": None,
+    }
+    previous_config = _read_nginx_config(site["primary_domain"])
     if tls_mode == "manual" and tls_config.get("cert_path") and tls_config.get("key_path"):
         tls_payload = {
+            "mode": "manual",
             "cert_path": tls_config.get("cert_path"),
             "key_path": tls_config.get("key_path"),
             "chain_path": tls_config.get("chain_path"),
@@ -1664,23 +1860,46 @@ def _apply_site_routing(site: Dict[str, Any], previous_domain: Optional[str] = N
     elif tls_mode == "disabled":
         tls_payload = None
     elif tls_mode == "letsencrypt":
-        raise HTTPException(status_code=400, detail="LetsEncrypt automation not implemented yet")
-    routing = site.get("routing") or {}
-    payload = {
-        "container_name": site["container_name"],
-        "container_port": routing.get("container_port", 80),
-        "container_interface": routing.get("container_interface", "eth0"),
-        "listen_address": routing.get("listen_address", "0.0.0.0"),
-        "listen_port": routing.get("listen_port", 80),
-        "tls": tls_payload,
-    }
-    _apply_nginx_route(site["primary_domain"], site.get("domains") or [], payload)
-    routes = load_routes()
+        ensure_acme_challenge_dir(ACME_CHALLENGE_DIR)
+        cert_name = tls_config.get("cert_name") or site["primary_domain"]
+        cert_paths = build_certificate_paths(cert_name)
+        cert_ready = os.path.isfile(cert_paths["cert_path"]) and os.path.isfile(cert_paths["key_path"])
+        needs_bootstrap = (not cert_ready) or (previous_config is None) or ("/.well-known/acme-challenge/" not in previous_config)
+        if needs_bootstrap:
+            _apply_nginx_route(site["primary_domain"], domain_aliases, payload, previous_config=previous_config)
+        try:
+            cert_paths = issue_letsencrypt_certificate(
+                normalized_domains,
+                tls_config.get("email"),
+                ACME_CHALLENGE_DIR,
+                staging=bool(tls_config.get("staging")),
+                cert_name=cert_name,
+            )
+        except Exception:
+            if needs_bootstrap:
+                _restore_nginx_config(site["primary_domain"], previous_config)
+            raise
+        tls_payload = {
+            "mode": "letsencrypt",
+            "email": tls_config.get("email"),
+            "staging": bool(tls_config.get("staging")),
+            "cert_name": cert_name,
+            "cert_path": cert_paths["cert_path"],
+            "key_path": cert_paths["key_path"],
+            "chain_path": cert_paths.get("chain_path"),
+            "listen_port": tls_config.get("listen_port", 443),
+            "redirect_http": tls_config.get("redirect_http", True),
+        }
+        site["tls"] = tls_payload
+    elif tls_mode not in ("manual", "disabled"):
+        raise HTTPException(status_code=400, detail="Unsupported TLS mode")
+    payload["tls"] = tls_payload
+    _apply_nginx_route(site["primary_domain"], domain_aliases, payload, previous_config=previous_config)
     if previous_domain and previous_domain != site["primary_domain"]:
         routes.pop(previous_domain, None)
     routes[site["primary_domain"]] = {
         "domain": site["primary_domain"],
-        "domains": site.get("domains") or None,
+        "domains": domain_aliases or None,
         "container_name": site["container_name"],
         "container_port": payload["container_port"],
         "container_interface": payload["container_interface"],

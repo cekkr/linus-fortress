@@ -588,6 +588,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+  /tls/renew:
+    post:
+      summary: Renew Let's Encrypt certificates
+      tags: [TLS]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TLSRenewRequest"
+      responses:
+        "200":
+          description: Renewal result
+          content:
+            application/json:
+              schema:
+                type: object
   /sites:
     get:
       summary: List managed websites
@@ -1389,6 +1406,23 @@ paths:
                     type: string
                   full_upgrade:
                     type: boolean
+  /system/upgrade:
+    post:
+      summary: Update host packages and apply migrations
+      tags: [System]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SystemUpgradeRequest"
+      responses:
+        "200":
+          description: Upgrade results
+          content:
+            application/json:
+              schema:
+                type: object
   /recipes:
     get:
       summary: List available automation recipes
@@ -2206,20 +2240,35 @@ components:
           $ref: "#/components/schemas/DomainRouteTLS"
     DomainRouteTLS:
       type: object
-      required: [cert_path, key_path]
       properties:
+        mode:
+          type: string
+          enum: [manual, letsencrypt]
+          default: manual
         cert_path:
           type: string
+          nullable: true
         key_path:
           type: string
+          nullable: true
         chain_path:
           type: string
+          nullable: true
         listen_port:
           type: integer
           default: 443
         redirect_http:
           type: boolean
           default: true
+        email:
+          type: string
+          nullable: true
+        staging:
+          type: boolean
+          default: false
+        cert_name:
+          type: string
+          nullable: true
     RoutingEntry:
       allOf:
         - $ref: "#/components/schemas/DomainRoute"
@@ -2563,6 +2612,31 @@ components:
         container_name:
           type: string
         full_upgrade:
+          type: boolean
+          default: false
+    SystemUpgradeRequest:
+      type: object
+      properties:
+        update_packages:
+          type: boolean
+          default: true
+        full_upgrade:
+          type: boolean
+          default: false
+        apply_migrations:
+          type: boolean
+          default: true
+        dry_run:
+          type: boolean
+          default: false
+    TLSRenewRequest:
+      type: object
+      properties:
+        domain:
+          type: string
+        cert_name:
+          type: string
+        dry_run:
           type: boolean
           default: false
     RecipeDefinition:
@@ -3250,10 +3324,14 @@ components:
           type: string
         key_path:
           type: string
+        chain_path:
+          type: string
         email:
           type: string
         staging:
           type: boolean
+        cert_name:
+          type: string
         listen_port:
           type: integer
         redirect_http:

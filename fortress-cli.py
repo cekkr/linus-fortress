@@ -655,6 +655,9 @@ def sites_command(args: argparse.Namespace) -> None:
                     "key_path": args.tls_key,
                     "chain_path": args.tls_chain,
                     "listen_port": args.tls_port,
+                    "email": args.tls_email,
+                    "staging": args.tls_staging,
+                    "cert_name": args.tls_cert_name,
                 }
         result = client.request("POST", "/sites", json_body=payload, auth_override=auth_override)
         print(json.dumps(result, indent=2))
@@ -746,6 +749,39 @@ def migrations_command(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2))
         return
     raise FortressCLIError("Unsupported migrations subcommand")
+
+
+def system_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    auth_override = args.auth_mode
+    if args.subcommand == "upgrade":
+        payload = {
+            "update_packages": not args.skip_packages,
+            "full_upgrade": args.full_upgrade,
+            "apply_migrations": not args.skip_migrations,
+            "dry_run": args.dry_run,
+        }
+        result = client.request("POST", "/system/upgrade", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    raise FortressCLIError("Unsupported system subcommand")
+
+
+def tls_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    auth_override = args.auth_mode
+    if args.subcommand == "renew":
+        payload = {
+            "domain": args.domain,
+            "cert_name": args.cert_name,
+            "dry_run": args.dry_run,
+        }
+        result = client.request("POST", "/tls/renew", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    raise FortressCLIError("Unsupported tls subcommand")
 
 
 def vms_command(args: argparse.Namespace) -> None:
@@ -1263,6 +1299,9 @@ def build_parser() -> argparse.ArgumentParser:
     sites_create.add_argument("--tls-key")
     sites_create.add_argument("--tls-chain")
     sites_create.add_argument("--tls-port", type=int)
+    sites_create.add_argument("--tls-email")
+    sites_create.add_argument("--tls-staging", action="store_true")
+    sites_create.add_argument("--tls-cert-name")
     sites_create.add_argument("--json")
     sites_create.add_argument("--json-file")
     sites_create.set_defaults(func=sites_command)
@@ -1328,6 +1367,25 @@ def build_parser() -> argparse.ArgumentParser:
     migrations_rollback.set_defaults(func=migrations_command)
     migrations_ledger = migrations_sub.add_parser("ledger", help="List migration ledger entries")
     migrations_ledger.set_defaults(func=migrations_command)
+
+    system_parser = subparsers.add_parser("system", help="System maintenance tasks")
+    system_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    system_sub = system_parser.add_subparsers(dest="subcommand")
+    system_upgrade = system_sub.add_parser("upgrade", help="Update host packages and apply migrations")
+    system_upgrade.add_argument("--skip-packages", action="store_true", help="Skip package updates")
+    system_upgrade.add_argument("--full-upgrade", action="store_true", help="Use full upgrade (dist-upgrade)")
+    system_upgrade.add_argument("--skip-migrations", action="store_true", help="Skip migrations apply")
+    system_upgrade.add_argument("--dry-run", action="store_true", help="Preview commands without changes")
+    system_upgrade.set_defaults(func=system_command)
+
+    tls_parser = subparsers.add_parser("tls", help="TLS certificate maintenance")
+    tls_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    tls_sub = tls_parser.add_subparsers(dest="subcommand")
+    tls_renew = tls_sub.add_parser("renew", help="Renew Let's Encrypt certificates")
+    tls_renew.add_argument("--domain", help="Domain to renew (matches routes/sites)")
+    tls_renew.add_argument("--cert-name", help="Explicit certbot cert name")
+    tls_renew.add_argument("--dry-run", action="store_true", help="Run certbot renew in dry-run mode")
+    tls_renew.set_defaults(func=tls_command)
 
     vms_parser = subparsers.add_parser("vms", help="Manage VM testing environments")
     vms_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")

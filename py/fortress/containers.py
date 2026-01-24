@@ -150,7 +150,7 @@ def set_container_services_label(container_name: str, services: Dict[str, bool])
 
 
 def detect_package_manager(container_name: Optional[str] = None) -> str:
-    candidates = [("apt", "apt-get"), ("dnf", "dnf")]
+    candidates = [("apt", "apt-get"), ("dnf", "dnf"), ("yum", "yum")]
     for name, binary in candidates:
         if container_name:
             if container_has_binary(container_name, binary):
@@ -158,7 +158,7 @@ def detect_package_manager(container_name: Optional[str] = None) -> str:
         else:
             if shutil.which(binary):
                 return name
-    raise HTTPException(status_code=500, detail="No supported package manager (apt or dnf) detected")
+    raise HTTPException(status_code=500, detail="No supported package manager (apt, dnf, or yum) detected")
 
 
 def run_package_command(cmd: List[str], container_name: Optional[str]) -> None:
@@ -173,6 +173,8 @@ def update_package_index(manager: str, container_name: Optional[str]) -> None:
         run_package_command(["apt-get", "update"], container_name)
     elif manager == "dnf":
         run_package_command(["dnf", "makecache"], container_name)
+    elif manager == "yum":
+        run_package_command(["yum", "makecache"], container_name)
 
 
 def create_container(

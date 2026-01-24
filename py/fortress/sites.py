@@ -34,8 +34,10 @@ class SiteTls(BaseModel):
     mode: Literal["disabled", "manual", "letsencrypt"] = "manual"
     cert_path: Optional[str] = None
     key_path: Optional[str] = None
+    chain_path: Optional[str] = None
     email: Optional[str] = None
     staging: bool = False
+    cert_name: Optional[str] = None
     listen_port: Optional[int] = None
     redirect_http: bool = True
 

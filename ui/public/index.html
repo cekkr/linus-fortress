@@ -67,7 +67,7 @@
     <div class="auth-overlay" id="admin-overlay" hidden>
       <div class="auth-card">
         <div class="auth-title">Admin Access</div>
-        <div class="auth-sub">Sign in with a UI admin account to continue.</div>
+        <div class="auth-sub" id="admin-subtitle">Sign in with a UI admin account to continue.</div>
         <form class="auth-form" id="admin-form">
           <label class="auth-label" for="admin-username">Username</label>
           <input class="auth-input" id="admin-username" type="text" autocomplete="username" spellcheck="false" />
@@ -76,6 +76,15 @@
           <label class="auth-label" for="admin-totp">TOTP code (if enabled)</label>
           <input class="auth-input" id="admin-totp" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" />
           <button class="action" type="submit">Unlock</button>
+        </form>
+        <form class="auth-form" id="admin-bootstrap-form" hidden>
+          <label class="auth-label" for="admin-bootstrap-username">Admin username</label>
+          <input class="auth-input" id="admin-bootstrap-username" type="text" autocomplete="username" spellcheck="false" />
+          <label class="auth-label" for="admin-bootstrap-password">Admin password</label>
+          <input class="auth-input" id="admin-bootstrap-password" type="password" autocomplete="new-password" spellcheck="false" />
+          <label class="auth-label" for="admin-bootstrap-confirm">Confirm password</label>
+          <input class="auth-input" id="admin-bootstrap-confirm" type="password" autocomplete="new-password" spellcheck="false" />
+          <button class="action" type="submit">Create admin</button>
         </form>
         <div class="auth-message" id="admin-message"></div>
       </div>

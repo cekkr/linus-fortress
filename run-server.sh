@@ -9,6 +9,7 @@ LOG_FILE="/var/log/fortress.log"
 API_LOG="/var/log/fortress-api.log"
 UI_LOG="/var/log/fortress-ui.log"
 SELF_SIGNED_MARKER="${SSL_DIR}/self-signed"
+ACME_DIR="${STATE_DIR}/acme-challenges"
 VENV_DIR="${ROOT_DIR}/.venv"
 UI_DIR="${ROOT_DIR}/ui"
 
@@ -112,6 +113,10 @@ detect_package_manager() {
     echo "dnf"
     return 0
   fi
+  if command -v yum >/dev/null 2>&1; then
+    echo "yum"
+    return 0
+  fi
   return 1
 }
 
@@ -125,8 +130,10 @@ install_packages() {
   if [[ "$manager" == "apt" ]]; then
     apt-get update -y
     apt-get install -y "${packages[@]}"
-  else
+  elif [[ "$manager" == "dnf" ]]; then
     dnf -y install "${packages[@]}"
+  else
+    yum -y install "${packages[@]}"
   fi
 }
 
@@ -141,7 +148,7 @@ ensure_root() {
 }
 
 ensure_dirs() {
-  mkdir -p "${SSL_DIR}" "${STATE_DIR}" "${STATE_DIR}/backups" "${STATE_DIR}/shares"
+  mkdir -p "${SSL_DIR}" "${STATE_DIR}" "${STATE_DIR}/backups" "${STATE_DIR}/shares" "${ACME_DIR}"
   touch "${LOG_FILE}" "${API_LOG}" "${UI_LOG}"
 }
 
@@ -168,6 +175,29 @@ ensure_node_deps() {
     return 0
   fi
   (cd "${UI_DIR}" && npm install)
+}
+
+ensure_certbot() {
+  local manager=$1
+  if command -v certbot >/dev/null 2>&1; then
+    return 0
+  fi
+  log "Attempting to install certbot for Let's Encrypt."
+  set +e
+  if [[ "$manager" == "apt" ]]; then
+    apt-get update -y
+    apt-get install -y certbot
+  elif [[ "$manager" == "dnf" ]]; then
+    dnf -y install epel-release
+    dnf -y install certbot
+  else
+    yum -y install epel-release
+    yum -y install certbot
+  fi
+  set -e
+  if ! command -v certbot >/dev/null 2>&1; then
+    log "Warning: certbot install failed. Install certbot manually to enable Let's Encrypt."
+  fi
 }
 
 ensure_lxd_initialized() {
@@ -331,7 +361,7 @@ main() {
   fi
 
   local manager
-  manager=$(detect_package_manager) || fail "Unsupported OS (requires apt-get or dnf)."
+  manager=$(detect_package_manager) || fail "Unsupported OS (requires apt-get, dnf, or yum)."
 
   if [[ "${first_run}" == "1" ]]; then
     log "First run detected; installing OS and npm dependencies."
@@ -349,6 +379,7 @@ main() {
     ensure_tls
     ensure_python_env
     ensure_node_deps
+    ensure_certbot "$manager"
     ensure_lxd_initialized
 
     log "Collecting first-run configuration."
@@ -437,6 +468,7 @@ main() {
       write_env_line "FORTRESS_HOST_INTERFACE" "${host_interface}"
       write_env_line "FORTRESS_HOST_PORT" "${host_port}"
       write_env_line "FORTRESS_BACKUP_PASSWORD" "${backup_password}"
+      write_env_line "FORTRESS_ACME_CHALLENGE_DIR" "${ACME_DIR}"
       if [[ -n "${api_key}" ]]; then
         write_env_line "FORTRESS_API_KEY" "${api_key}"
       fi
