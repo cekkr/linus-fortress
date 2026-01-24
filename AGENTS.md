@@ -7,6 +7,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - py/fortress/monitoring.py centralizes host/container resource snapshots with alert thresholds
 - Container lifecycle/access/connectivity APIs are implemented in `py/fortress/api/containers.py` with LXC helpers in `py/fortress/containers.py`
 - `py/fortress/routing.py` centralizes nginx routing config rendering, domain validation, TLS path checks, and reload/testing helpers for HTTP(S) host routing
+- Routing entries support multi-domain server names (including wildcard domains) and can be refreshed via `POST /routing/refresh` to update upstream IPs
 - Routing entries persist in `/var/lib/fortress/routes.json` and generate nginx vhosts under `/etc/nginx/sites-available` (symlinked into `sites-enabled`)
 - `py/fortress/system.py` owns the shared `run_command` helper used by server and container management
 - py/server.py also manages host/container package operations (apt + dnf) and firewall rules (ufw + firewalld)
@@ -22,6 +23,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/vms.py` centralizes VM registry + QEMU/VirtualBox lifecycle, snapshots, and SSH probe/provision helpers; provisioning scripts live in `scripts/provision`
 - api-v1.yaml documents the HTTP contract (OpenAPI 3.0.3) and README.md lists request bodies/permissions for each endpoint
 - Domain routing and LXD proxy helpers now support choosing container interfaces and host listen ports/addresses for finer TCP/IP exposure control between containers and the host
+- Lizard UI supports server-side login sessions backed by delegated tokens (no tokens stored in the browser)
 - `POST /containers/expose` supports bulk interface/port exposure to a container with port ranges, protocol selection, per-interface upstream selection, and optional firewall allowlists (rolls back devices and firewall rules on failure)
 
 ## Project structure (tree)

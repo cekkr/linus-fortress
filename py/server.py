@@ -51,6 +51,7 @@ from fortress.routing import (
     reload_nginx,
     remove_nginx_site,
     test_nginx_config,
+    normalize_domains,
     validate_domain,
     validate_tls_paths,
     write_nginx_config,
@@ -235,6 +236,7 @@ class DomainRouteTLS(BaseModel):
 
 class DomainRoute(BaseModel):
     domain: str
+    domains: Optional[List[str]] = None
     container_name: str
     container_port: int = 80
     container_interface: str = "eth0"
@@ -359,6 +361,8 @@ def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(def
     authorize("routing_add", "manage_routing", x_api_key, x_user_token, containers=route.container_name)
 
     validate_domain(route.domain)
+    normalized_domains = normalize_domains(route.domain, route.domains)
+    domain_aliases = [name for name in normalized_domains if name != route.domain]
     validate_port(route.container_port, "container_port")
     validate_port(route.listen_port, "listen_port")
     tls_payload = None
@@ -375,6 +379,7 @@ def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(def
     # 2. Generate Nginx config restricted to the listen address/port.
     config_content = build_nginx_proxy_config(
         domain=route.domain,
+        domains=domain_aliases,
         listen_address=route.listen_address,
         listen_port=route.listen_port,
         upstream_host=ip,
@@ -416,7 +421,9 @@ def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(def
         raise HTTPException(status_code=500, detail=str(exc))
 
     routes = load_routes()
-    routes[route.domain] = route.dict()
+    route_payload = route.dict()
+    route_payload["domains"] = domain_aliases or None
+    routes[route.domain] = route_payload
     save_routes(routes)
 
     audit_api(
@@ -429,10 +436,94 @@ def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(def
             "interface": route.container_interface,
             "tls": bool(route.tls),
             "tls_port": route.tls.listen_port if route.tls else None,
+            "domains": domain_aliases or None,
         },
     )
     return {"message": f"Routing set for {route.domain} -> {ip}"}
 
+
+@app.post("/routing/refresh")
+def refresh_domain_routing(
+    domain: Optional[str] = None,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    auth_context = authorize("routing_refresh", "manage_routing", x_api_key, x_user_token)
+    if domain:
+        validate_domain(domain)
+    routes = load_routes()
+    targets = {domain: routes.get(domain)} if domain else dict(routes)
+    if domain and not targets.get(domain):
+        audit_api("routing_refresh", target=domain, details={"error": "not found"}, status="error")
+        raise HTTPException(status_code=404, detail="Route not found")
+    allowed_containers = auth_context.get("allowed_containers")
+    rendered = []
+    for route_domain, record in targets.items():
+        if not record:
+            continue
+        container_name = record.get("container_name")
+        if allowed_containers and container_name not in allowed_containers:
+            continue
+        if container_name:
+            enforce_container_scope(auth_context, container_name)
+        normalize_domains(route_domain, record.get("domains"))
+        ip = get_container_ip(container_name, record.get("container_interface", "eth0"))
+        tls_payload = record.get("tls")
+        config_content = build_nginx_proxy_config(
+            domain=route_domain,
+            domains=record.get("domains"),
+            listen_address=record.get("listen_address", "0.0.0.0"),
+            listen_port=record.get("listen_port", 80),
+            upstream_host=ip,
+            upstream_port=record.get("container_port", 80),
+            tls=tls_payload,
+        )
+        rendered.append(
+            {
+                "domain": route_domain,
+                "config": config_content,
+                "config_path": os.path.join(NGINX_CONFIG_DIR, route_domain),
+            }
+        )
+
+    if not rendered:
+        return {"message": "No routes eligible for refresh.", "refreshed": []}
+
+    backups = {}
+    try:
+        for item in rendered:
+            config_path = item["config_path"]
+            previous_config = None
+            if os.path.exists(config_path):
+                with open(config_path, "r") as fh:
+                    previous_config = fh.read()
+            backups[item["domain"]] = previous_config
+            write_nginx_config(item["domain"], item["config"], NGINX_CONFIG_DIR)
+            ensure_nginx_site(item["domain"], config_path, NGINX_ENABLED_DIR)
+        test_nginx_config()
+        reload_nginx()
+    except Exception as exc:
+        for item in rendered:
+            previous_config = backups.get(item["domain"])
+            config_path = item["config_path"]
+            if previous_config is not None:
+                write_nginx_config(item["domain"], previous_config, NGINX_CONFIG_DIR)
+                ensure_nginx_site(item["domain"], config_path, NGINX_ENABLED_DIR)
+            else:
+                remove_nginx_site(item["domain"], config_path, NGINX_ENABLED_DIR)
+        audit_api(
+            "routing_refresh",
+            target=domain,
+            details={"error": str(exc)},
+            status="error",
+        )
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    refreshed_domains = [item["domain"] for item in rendered]
+    audit_api("routing_refresh", target=domain, details={"refreshed": refreshed_domains})
+    return {"message": "Routing refreshed.", "refreshed": refreshed_domains}
 
 @app.get("/routing")
 def list_domain_routing(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):

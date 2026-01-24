@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -12,6 +13,11 @@ const API_URL = process.env.FORTRESS_API_URL || "https://127.0.0.1:8443";
 const API_KEY = process.env.FORTRESS_UI_API_KEY || "";
 const USER_TOKEN = process.env.FORTRESS_UI_USER_TOKEN || "";
 const INSECURE_TLS = /^(1|true|yes)$/i.test(process.env.FORTRESS_UI_INSECURE_TLS || "");
+const SESSION_TTL_SECONDS = Number.parseInt(process.env.FORTRESS_UI_SESSION_TTL || "43200", 10);
+const SESSION_COOKIE = process.env.FORTRESS_UI_SESSION_COOKIE || "fortress_session";
+const COOKIE_SECURE = /^(1|true|yes)$/i.test(process.env.FORTRESS_UI_COOKIE_SECURE || "");
+
+const sessions = new Map();
 
 const dispatcher = INSECURE_TLS
   ? new Agent({
@@ -30,7 +36,14 @@ function buildHeaders() {
   const headers = {
     Accept: "application/json",
   };
-  if (API_KEY) {
+  return headers;
+}
+
+function authHeaders(tokenOverride) {
+  const headers = buildHeaders();
+  if (tokenOverride) {
+    headers["X-User-Token"] = tokenOverride;
+  } else if (API_KEY) {
     headers["X-API-Key"] = API_KEY;
   } else if (USER_TOKEN) {
     headers["X-User-Token"] = USER_TOKEN;
@@ -38,9 +51,92 @@ function buildHeaders() {
   return headers;
 }
 
-async function fortressRequest(method, apiPath, body) {
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) {
+    return cookies;
+  }
+  const pairs = cookieHeader.split(";");
+  for (const pair of pairs) {
+    const [rawKey, ...rest] = pair.split("=");
+    const key = rawKey ? rawKey.trim() : "";
+    if (!key) {
+      continue;
+    }
+    cookies[key] = decodeURIComponent(rest.join("=").trim());
+  }
+  return cookies;
+}
+
+function createSession(token) {
+  const id = crypto.randomBytes(24).toString("hex");
+  const ttl = Number.isFinite(SESSION_TTL_SECONDS) && SESSION_TTL_SECONDS > 0 ? SESSION_TTL_SECONDS : 0;
+  const expiresAt = ttl ? Date.now() + ttl * 1000 : null;
+  sessions.set(id, { token, expiresAt });
+  return id;
+}
+
+function getSessionToken(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionId = cookies[SESSION_COOKIE];
+  if (!sessionId) {
+    return "";
+  }
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return "";
+  }
+  if (session.expiresAt && session.expiresAt <= Date.now()) {
+    sessions.delete(sessionId);
+    return "";
+  }
+  return session.token;
+}
+
+function clearSession(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionId = cookies[SESSION_COOKIE];
+  if (sessionId) {
+    sessions.delete(sessionId);
+  }
+}
+
+function setSessionCookie(res, sessionId) {
+  const ttl = Number.isFinite(SESSION_TTL_SECONDS) && SESSION_TTL_SECONDS > 0 ? SESSION_TTL_SECONDS : 0;
+  let cookie = `${SESSION_COOKIE}=${sessionId}; Path=/; HttpOnly; SameSite=Lax`;
+  if (ttl) {
+    cookie += `; Max-Age=${ttl}`;
+  }
+  if (COOKIE_SECURE) {
+    cookie += "; Secure";
+  }
+  res.setHeader("Set-Cookie", cookie);
+}
+
+function clearSessionCookie(res) {
+  let cookie = `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  if (COOKIE_SECURE) {
+    cookie += "; Secure";
+  }
+  res.setHeader("Set-Cookie", cookie);
+}
+
+function resolveAuthMode(req) {
+  if (getSessionToken(req)) {
+    return "session";
+  }
+  if (API_KEY) {
+    return "api_key";
+  }
+  if (USER_TOKEN) {
+    return "user_token";
+  }
+  return "none";
+}
+
+async function fortressRequest(method, apiPath, body, tokenOverride) {
   const url = new URL(apiPath, API_URL);
-  const headers = buildHeaders();
+  const headers = authHeaders(tokenOverride);
   if (body) {
     headers["Content-Type"] = "application/json";
   }
@@ -149,8 +245,8 @@ function normalizeContainer(raw) {
   };
 }
 
-async function getContainers() {
-  const payload = await fortressRequest("GET", "/status");
+async function getContainers(tokenOverride) {
+  const payload = await fortressRequest("GET", "/status", null, tokenOverride);
   let containers = [];
   if (payload && Array.isArray(payload.containers)) {
     containers = payload.containers;
@@ -163,6 +259,11 @@ async function getContainers() {
     }
   }
   return containers.map(normalizeContainer).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function fortressRequestFor(req, method, apiPath, body) {
+  const token = getSessionToken(req);
+  return fortressRequest(method, apiPath, body, token);
 }
 
 async function findAppFiles(dir, collected = []) {
@@ -314,9 +415,48 @@ app.get(
       fortress: {
         api_url: API_URL,
         insecure_tls: INSECURE_TLS,
-        auth_mode: API_KEY ? "api_key" : USER_TOKEN ? "user_token" : "none",
+        auth_mode: resolveAuthMode(req),
       },
     });
+  })
+);
+
+app.get(
+  "/api/session",
+  asyncHandler(async (req, res) => {
+    const mode = resolveAuthMode(req);
+    res.json({
+      active: mode !== "none",
+      mode,
+      session: Boolean(getSessionToken(req)),
+    });
+  })
+);
+
+app.post(
+  "/api/session",
+  asyncHandler(async (req, res) => {
+    const token = req.body && typeof req.body.token === "string" ? req.body.token.trim() : "";
+    const userToken =
+      req.body && typeof req.body.user_token === "string" ? req.body.user_token.trim() : "";
+    const resolvedToken = userToken || token;
+    if (!resolvedToken) {
+      res.status(400).json({ error: "Missing delegated token." });
+      return;
+    }
+    await fortressRequest("GET", "/status", null, resolvedToken);
+    const sessionId = createSession(resolvedToken);
+    setSessionCookie(res, sessionId);
+    res.json({ message: "Session established." });
+  })
+);
+
+app.delete(
+  "/api/session",
+  asyncHandler(async (req, res) => {
+    clearSession(req);
+    clearSessionCookie(res);
+    res.json({ message: "Session cleared." });
   })
 );
 
@@ -328,7 +468,7 @@ app.get(
     let fortressStatus = "ok";
     let fortressError = null;
     try {
-      containers = await getContainers();
+      containers = await getContainers(getSessionToken(req));
     } catch (err) {
       fortressStatus = "error";
       fortressError = err.message;
@@ -350,7 +490,7 @@ app.get(
 app.get(
   "/api/containers",
   asyncHandler(async (req, res) => {
-    const containers = await getContainers();
+    const containers = await getContainers(getSessionToken(req));
     res.json({ containers });
   })
 );
@@ -358,7 +498,7 @@ app.get(
 app.post(
   "/api/containers",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("POST", "/container/create", req.body || {});
+    const payload = await fortressRequestFor(req, "POST", "/container/create", req.body || {});
     res.json(payload);
   })
 );
@@ -366,7 +506,7 @@ app.post(
 app.delete(
   "/api/containers/:name",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("DELETE", `/container/${req.params.name}`);
+    const payload = await fortressRequestFor(req, "DELETE", `/container/${req.params.name}`);
     res.json(payload);
   })
 );
@@ -374,7 +514,7 @@ app.delete(
 app.post(
   "/api/containers/:name/access",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("POST", "/access/external/open", {
+    const payload = await fortressRequestFor(req, "POST", "/access/external/open", {
       container_name: req.params.name,
       service: req.body && req.body.service ? req.body.service : "ssh",
       host_port: req.body && req.body.host_port ? req.body.host_port : undefined,
@@ -390,7 +530,7 @@ app.post(
 app.post(
   "/api/containers/:name/backup",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("POST", `/backup/${req.params.name}`);
+    const payload = await fortressRequestFor(req, "POST", `/backup/${req.params.name}`);
     res.json(payload);
   })
 );
@@ -398,7 +538,7 @@ app.post(
 app.post(
   "/api/containers/:name/probe",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("POST", "/containers/probe", {
+    const payload = await fortressRequestFor(req, "POST", "/containers/probe", {
       container_name: req.params.name,
       services: req.body && req.body.services ? req.body.services : undefined,
       update_labels: Boolean(req.body && req.body.update_labels),
@@ -410,7 +550,7 @@ app.post(
 app.post(
   "/api/packages/install",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("POST", "/packages/install", req.body || {});
+    const payload = await fortressRequestFor(req, "POST", "/packages/install", req.body || {});
     res.json(payload);
   })
 );
@@ -418,7 +558,7 @@ app.post(
 app.get(
   "/api/recipes",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("GET", "/recipes");
+    const payload = await fortressRequestFor(req, "GET", "/recipes");
     res.json(payload);
   })
 );
@@ -426,7 +566,7 @@ app.get(
 app.get(
   "/api/recipes/:name",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("GET", `/recipes/${req.params.name}`);
+    const payload = await fortressRequestFor(req, "GET", `/recipes/${req.params.name}`);
     res.json(payload);
   })
 );
@@ -434,7 +574,7 @@ app.get(
 app.post(
   "/api/recipes",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("POST", "/recipes", req.body || {});
+    const payload = await fortressRequestFor(req, "POST", "/recipes", req.body || {});
     res.json(payload);
   })
 );
@@ -442,7 +582,7 @@ app.post(
 app.post(
   "/api/recipes/apply",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("POST", "/recipes/apply", req.body || {});
+    const payload = await fortressRequestFor(req, "POST", "/recipes/apply", req.body || {});
     res.json(payload);
   })
 );
@@ -450,7 +590,7 @@ app.post(
 app.post(
   "/api/routing",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequest("POST", "/routing/add", req.body || {});
+    const payload = await fortressRequestFor(req, "POST", "/routing/add", req.body || {});
     res.json(payload);
   })
 );

@@ -31,12 +31,13 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Provide rollback and cleanup steps for partially applied migrations.
 
 ## Path 7: Shared hosting routing (short term)
-- Add automatic TLS issuance/renewal (Let's Encrypt) for routing entries.
-- Support multi-domain routes and wildcard certificates.
-- Refresh nginx upstreams when container IPs change (or add LXD DNS-based upstreams).
+- Done: Support multi-domain routes and wildcard server names for routing entries.
+- Done: Add `/routing/refresh` to rebuild nginx configs when container IPs drift.
+- Next: Add automatic TLS issuance/renewal (Let's Encrypt) for routing entries.
+- Next: Automate upstream refresh on IP change (polling or LXD DNS-based upstreams).
 
 ## Path 8: Lizard UI (app-based web manager) (short term)
-- Add UI auth flow with server-side sessions backed by delegated tokens (no tokens in the browser).
+- Done: Add UI auth flow with server-side sessions backed by delegated tokens (no tokens in the browser).
 - Expand container actions: start/stop/restart, snapshots, exec, user/group management, and port exposure flows.
 - Implement step-by-step wizards for container creation, routing, recipe apply, and backup/restore.
 - Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.

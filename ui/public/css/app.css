@@ -501,6 +501,76 @@ body {
   background: rgba(216, 107, 92, 0.12);
 }
 
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(20, 26, 18, 0.45);
+  backdrop-filter: blur(10px);
+}
+
+.auth-card {
+  width: min(420px, 100%);
+  border-radius: 18px;
+  padding: 22px;
+  background: linear-gradient(160deg, rgba(35, 45, 30, 0.98), rgba(19, 25, 17, 0.96));
+  color: #e8f3d1;
+  border: 1px solid rgba(140, 207, 85, 0.25);
+  box-shadow: 0 18px 40px rgba(9, 12, 8, 0.45);
+}
+
+.auth-title {
+  font-family: "Teko", sans-serif;
+  font-size: 32px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.auth-sub {
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(232, 243, 209, 0.8);
+  margin: 6px 0 18px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(232, 243, 209, 0.85);
+}
+
+.auth-input {
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(140, 207, 85, 0.35);
+  background: rgba(7, 10, 6, 0.55);
+  color: #f6fae6;
+  font-size: 13px;
+}
+
+.auth-input:focus {
+  outline: none;
+  border-color: rgba(242, 192, 107, 0.6);
+  box-shadow: 0 0 0 3px rgba(242, 192, 107, 0.2);
+}
+
+.auth-message {
+  min-height: 18px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: rgba(242, 192, 107, 0.95);
+}
+
 @keyframes liftIn {
   from {
     opacity: 0;

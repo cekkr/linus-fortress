@@ -18,7 +18,7 @@ PROXY_HEADERS = [
 ]
 
 
-def validate_domain(domain: str) -> None:
+def _validate_domain_name(domain: str) -> None:
     if not domain or not DOMAIN_PATTERN.fullmatch(domain):
         raise HTTPException(status_code=400, detail="Invalid domain format")
     if domain.startswith(("-", ".")) or domain.endswith(("-", ".")) or ".." in domain:
@@ -29,6 +29,37 @@ def validate_domain(domain: str) -> None:
     for label in labels:
         if not label or len(label) > MAX_LABEL_LENGTH:
             raise HTTPException(status_code=400, detail="Invalid domain format")
+
+
+def validate_domain(domain: str) -> None:
+    if len(domain) > MAX_DOMAIN_LENGTH:
+        raise HTTPException(status_code=400, detail="Invalid domain format")
+    if domain.startswith("*."):
+        suffix = domain[2:]
+        if not suffix or "." not in suffix:
+            raise HTTPException(status_code=400, detail="Invalid domain format")
+        _validate_domain_name(suffix)
+        return
+    _validate_domain_name(domain)
+
+
+def normalize_domains(primary: str, aliases: Optional[List[str]] = None) -> List[str]:
+    domains: List[str] = []
+    seen = set()
+
+    def add(value: str) -> None:
+        if not value:
+            return
+        validate_domain(value)
+        if value not in seen:
+            seen.add(value)
+            domains.append(value)
+
+    add(primary)
+    if aliases:
+        for alias in aliases:
+            add(alias)
+    return domains
 
 
 def _validate_path(label: str, path: str) -> None:
@@ -69,12 +100,14 @@ def build_nginx_proxy_config(
     upstream_port: int,
     tls: Optional[Dict[str, object]] = None,
     upstream_scheme: str = "http",
+    domains: Optional[List[str]] = None,
 ) -> str:
     if upstream_scheme not in {"http", "https"}:
         raise HTTPException(status_code=400, detail="upstream_scheme must be http or https")
 
     upstream_url = f"{upstream_scheme}://{upstream_host}:{upstream_port}"
-    server_name = f"    server_name {domain};"
+    server_names = normalize_domains(domain, domains)
+    server_name = f"    server_name {' '.join(server_names)};"
     http_lines: List[str] = [
         f"    listen {listen_address}:{listen_port};",
         server_name,

@@ -6,6 +6,11 @@ const state = {
   containers: [],
   containerIndex: new Map(),
   fortress: { status: "unknown" },
+  auth: {
+    active: false,
+    mode: "none",
+    session: false,
+  },
   events: [],
   probedContainers: new Set(),
   probeInFlight: false,
@@ -55,6 +60,11 @@ const elements = {
   breadcrumb: document.getElementById("breadcrumb"),
   statusLine: document.getElementById("status-line"),
   fortressStatus: document.getElementById("fortress-status"),
+  authOverlay: document.getElementById("auth-overlay"),
+  authForm: document.getElementById("auth-form"),
+  authToken: document.getElementById("auth-token"),
+  authMessage: document.getElementById("auth-message"),
+  logoutButton: document.getElementById("logout"),
 };
 
 const iconMap = {
@@ -410,7 +420,8 @@ function renderTree() {
 function renderStatusLine() {
   const count = state.containers.length;
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  elements.statusLine.textContent = `Containers: ${count} | Last sync: ${time}`;
+  const authLabel = state.auth.mode === "none" ? "Auth: locked" : `Auth: ${state.auth.mode}`;
+  elements.statusLine.textContent = `Containers: ${count} | ${authLabel} | Last sync: ${time}`;
   if (state.fortress.status === "error") {
     elements.fortressStatus.textContent = `Fortress: offline`;
     elements.fortressStatus.classList.add("error");
@@ -842,9 +853,97 @@ async function apiRequest(path, options = {}) {
     const error = new Error((data && data.error) || "Request failed");
     error.status = response.status;
     error.details = data;
+    if (response.status === 401 || response.status === 403) {
+      showAuthOverlay("Session required. Enter a delegated token.");
+    }
     throw error;
   }
   return data;
+}
+
+function setAuthState(payload) {
+  state.auth.active = Boolean(payload && payload.active);
+  state.auth.mode = payload && payload.mode ? payload.mode : "none";
+  state.auth.session = Boolean(payload && payload.session);
+  updateAuthUI();
+}
+
+function updateAuthUI() {
+  const locked = state.auth.mode === "none";
+  if (elements.authOverlay) {
+    elements.authOverlay.hidden = !locked;
+  }
+  if (elements.logoutButton) {
+    elements.logoutButton.hidden = !state.auth.session;
+  }
+  if (!locked && elements.authMessage) {
+    elements.authMessage.textContent = "";
+  }
+}
+
+function showAuthOverlay(message) {
+  state.auth.active = false;
+  state.auth.mode = "none";
+  state.auth.session = false;
+  if (elements.authOverlay) {
+    elements.authOverlay.hidden = false;
+  }
+  if (elements.logoutButton) {
+    elements.logoutButton.hidden = true;
+  }
+  if (elements.authMessage) {
+    elements.authMessage.textContent = message || "";
+  }
+}
+
+async function refreshSession() {
+  const payload = await apiRequest("/api/session", { method: "GET" });
+  setAuthState(payload);
+  return payload;
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  if (!elements.authToken) {
+    return;
+  }
+  const token = elements.authToken.value.trim();
+  if (!token) {
+    if (elements.authMessage) {
+      elements.authMessage.textContent = "Token is required.";
+    }
+    return;
+  }
+  if (elements.authMessage) {
+    elements.authMessage.textContent = "Authenticating...";
+  }
+  try {
+    await apiRequest("/api/session", {
+      method: "POST",
+      body: JSON.stringify({ user_token: token }),
+    });
+    elements.authToken.value = "";
+    await refreshSession();
+    if (state.auth.active) {
+      await loadGraph();
+    }
+  } catch (err) {
+    if (elements.authMessage) {
+      elements.authMessage.textContent = err.message || "Authentication failed.";
+    }
+  }
+}
+
+async function handleLogout() {
+  try {
+    await apiRequest("/api/session", { method: "DELETE" });
+  } catch (err) {
+    logEvent("error", err.message || "Failed to sign out");
+  }
+  await refreshSession();
+  if (state.auth.mode === "none") {
+    showAuthOverlay("Session cleared. Enter a delegated token.");
+  }
 }
 
 async function ensureRecipe(recipe) {
@@ -1146,6 +1245,10 @@ async function handleWizardAction(action) {
 }
 
 async function loadGraph(options = {}) {
+  if (!state.auth.active) {
+    showAuthOverlay("Session required. Enter a delegated token.");
+    return;
+  }
   const response = await apiRequest("/api/apps", { method: "GET" });
   state.nodes = response.nodes || [];
   state.rootId = response.rootId || "home";
@@ -1218,7 +1321,20 @@ function bindEvents() {
 
 window.addEventListener("DOMContentLoaded", () => {
   bindEvents();
-  loadGraph().catch((err) => {
-    logEvent("error", err.message || "Failed to load apps");
-  });
+  if (elements.authForm) {
+    elements.authForm.addEventListener("submit", handleLogin);
+  }
+  if (elements.logoutButton) {
+    elements.logoutButton.addEventListener("click", handleLogout);
+  }
+  refreshSession()
+    .then(() => {
+      if (state.auth.active) {
+        return loadGraph();
+      }
+      return null;
+    })
+    .catch((err) => {
+      logEvent("error", err.message || "Failed to load apps");
+    });
 });

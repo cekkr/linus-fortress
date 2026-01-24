@@ -50,11 +50,15 @@ Quick start:
 - `npm install`
 - `FORTRESS_UI_API_KEY=... FORTRESS_API_URL=https://127.0.0.1:8443 npm start`
 
+When no UI credentials are set via environment, the UI prompts for a delegated token and stores it server-side in a session cookie (tokens never persist in the browser).
+
 Environment variables:
 - `FORTRESS_UI_HOST` (default `127.0.0.1`) and `FORTRESS_UI_PORT` (default `8090`).
 - `FORTRESS_API_URL` (default `https://127.0.0.1:8443`).
 - `FORTRESS_UI_API_KEY` or `FORTRESS_UI_USER_TOKEN` for authentication.
 - `FORTRESS_UI_INSECURE_TLS=1` to allow self-signed TLS when proxying to the API.
+- `FORTRESS_UI_SESSION_TTL` (seconds, default `43200`) and `FORTRESS_UI_SESSION_COOKIE` to tune UI session lifetimes.
+- `FORTRESS_UI_COOKIE_SECURE=1` to set Secure on the UI session cookie when served via HTTPS.
 
 For full LAMP automation and routing flows, the delegated token should include `manage_containers`, `manage_routing`, `recipes_manage`, and `recipes_apply`.
 
@@ -124,6 +128,7 @@ Body:
 ```json
 {
   "domain": "app.example.com",
+  "domains": ["www.app.example.com", "*.app.example.com"],
   "container_name": "web01",
   "container_port": 8080,
   "container_interface": "eth0",
@@ -139,6 +144,7 @@ Body:
 }
 ```
 - `domain` (string, required)
+- `domains` (string array, optional) – additional server names; supports wildcard entries like `*.example.com`.
 - `container_name` (string, required)
 - `container_port` (int, optional, default `80`) – target port inside the container.
 - `container_interface` (string, optional, default `eth0`) – which container NIC to resolve for upstream traffic.
@@ -153,6 +159,10 @@ Body:
 
 #### `GET /routing` (permission `manage_routing`)
 - Returns stored routing entries plus an `enabled` flag for the nginx symlink.
+
+#### `POST /routing/refresh` (permission `manage_routing`, container scoped)
+- Rebuilds nginx configs from stored routing entries to pick up updated container IPs.
+- Optional query param `domain` to refresh a single routing entry (primary domain only).
 
 #### `DELETE /routing/{domain}` (permission `manage_routing`, container scoped)
 - Removes the nginx vhost for the given domain and reloads nginx.

@@ -24,6 +24,7 @@
       <div class="mast-actions">
         <div class="fortress-indicator" id="fortress-status">Fortress: ...</div>
         <button class="action ghost" data-action-id="refresh">Sync</button>
+        <button class="action ghost" id="logout" hidden>Sign out</button>
       </div>
     </header>
 
@@ -62,6 +63,19 @@
         </div>
       </aside>
     </main>
+
+    <div class="auth-overlay" id="auth-overlay" hidden>
+      <div class="auth-card">
+        <div class="auth-title">Unlock the Deck</div>
+        <div class="auth-sub">Enter a delegated Fortress token to open the control surface.</div>
+        <form class="auth-form" id="auth-form">
+          <label class="auth-label" for="auth-token">Delegated token</label>
+          <input class="auth-input" id="auth-token" type="password" autocomplete="off" spellcheck="false" />
+          <button class="action" type="submit">Authenticate</button>
+        </form>
+        <div class="auth-message" id="auth-message"></div>
+      </div>
+    </div>
 
     <script src="js/app.js"></script>
   </body>

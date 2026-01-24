@@ -536,6 +536,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+  /routing/refresh:
+    post:
+      summary: Refresh nginx configs for stored routing entries
+      tags: [Routing]
+      parameters:
+        - in: query
+          name: domain
+          schema:
+            type: string
+          description: Optional primary domain to refresh; omit to refresh all routes.
+      responses:
+        "200":
+          description: Refresh result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  refreshed:
+                    type: array
+                    items:
+                      type: string
   /routing:
     get:
       summary: List configured nginx routing entries
@@ -1697,6 +1721,10 @@ components:
       properties:
         domain:
           type: string
+        domains:
+          type: array
+          items:
+            type: string
         container_name:
           type: string
         container_port:
