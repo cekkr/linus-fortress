@@ -256,6 +256,11 @@ class MigrationEngine:
     def _schemas(self) -> Dict[str, Dict[str, Any]]:
         return load_schema_registry(self.schema_dir)
 
+    def _default_payload(self, schema: Dict[str, Any]) -> Any:
+        if schema.get("record_type") == "list":
+            return []
+        return {}
+
     def status(self) -> Dict[str, Any]:
         schemas = self._schemas()
         versions = _load_versions(self.migrations_dir)
@@ -299,7 +304,7 @@ class MigrationEngine:
             current_schema = versions.get(store)
             if current_schema == target_schema:
                 continue
-            payload = load_json(self.store_paths.get(store, ""), {}, label=store)
+            payload = load_json(self.store_paths.get(store, ""), self._default_payload(schema), label=store)
             migrated, actions, changed_records = migrate_store_payload(payload, schema)
             summary = _summarize_actions(actions, changed_records)
             if migrated == payload and not summary:
@@ -334,7 +339,7 @@ class MigrationEngine:
                 if current_schema == target_schema:
                     continue
                 path = self.store_paths.get(store)
-                payload = load_json(path or "", {}, label=store)
+                payload = load_json(path or "", self._default_payload(schema), label=store)
                 migrated, actions, changed_records = migrate_store_payload(payload, schema)
                 summary = _summarize_actions(actions, changed_records)
                 backup_path = None

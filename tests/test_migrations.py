@@ -38,6 +38,19 @@ class MigrationRecordTests(unittest.TestCase):
         self.assertEqual(changed, 1)
         self.assertEqual(migrated["alpha"], {"name": "alpha"})
 
+    def test_migrate_store_payload_list(self) -> None:
+        schema = {
+            "fields": ["name", "status"],
+            "defaults": {"status": "ok"},
+            "aliases": {},
+            "prune_unknown": False,
+            "record_type": "list",
+        }
+        payload = [{"name": "alpha"}]
+        migrated, actions, changed = migrate_store_payload(payload, schema)
+        self.assertEqual(changed, 1)
+        self.assertEqual(migrated[0]["status"], "ok")
+
 
 class MigrationEngineTests(unittest.TestCase):
     def test_apply_updates_versions_even_when_no_changes(self) -> None:

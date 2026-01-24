@@ -24,6 +24,10 @@ const ADMIN_ENABLED = !/^(0|false|no)$/i.test(process.env.FORTRESS_UI_ADMIN_ENAB
 const ADMIN_LOCKOUT_THRESHOLD = Number.parseInt(process.env.FORTRESS_UI_LOCKOUT_THRESHOLD || "5", 10);
 const ADMIN_LOCKOUT_MINUTES = Number.parseInt(process.env.FORTRESS_UI_LOCKOUT_MINUTES || "15", 10);
 const PASSWORD_MIN_LENGTH = Number.parseInt(process.env.FORTRESS_UI_PASSWORD_MIN_LENGTH || "12", 10);
+const TOTP_ISSUER = process.env.FORTRESS_UI_TOTP_ISSUER || "Fortress UI";
+const TOTP_WINDOW = Number.parseInt(process.env.FORTRESS_UI_TOTP_WINDOW || "1", 10);
+const TOTP_STEP_SECONDS = 30;
+const TOTP_DIGITS = 6;
 
 const sessions = new Map();
 const adminSessions = new Map();
@@ -94,6 +98,99 @@ function parseCookies(cookieHeader) {
     cookies[key] = decodeURIComponent(rest.join("=").trim());
   }
   return cookies;
+}
+
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+function base32Encode(buffer) {
+  let bits = 0;
+  let value = 0;
+  let output = "";
+  for (const byte of buffer) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += BASE32_ALPHABET[(value >> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) {
+    output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  }
+  return output;
+}
+
+function base32Decode(text) {
+  if (!text) {
+    return Buffer.alloc(0);
+  }
+  const cleaned = text.toUpperCase().replace(/=+$/g, "").replace(/[^A-Z2-7]/g, "");
+  let bits = 0;
+  let value = 0;
+  const bytes = [];
+  for (const char of cleaned) {
+    const index = BASE32_ALPHABET.indexOf(char);
+    if (index === -1) {
+      continue;
+    }
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+function generateTotpSecret() {
+  return base32Encode(crypto.randomBytes(20));
+}
+
+function totpForCounter(secret, counter) {
+  const key = base32Decode(secret);
+  const buffer = Buffer.alloc(8);
+  const high = Math.floor(counter / 0x100000000);
+  const low = counter >>> 0;
+  buffer.writeUInt32BE(high, 0);
+  buffer.writeUInt32BE(low, 4);
+  const hmac = crypto.createHmac("sha1", key).update(buffer).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const code = (hmac.readUInt32BE(offset) & 0x7fffffff) % 10 ** TOTP_DIGITS;
+  return code.toString().padStart(TOTP_DIGITS, "0");
+}
+
+function verifyTotp(code, secret, lastStep) {
+  if (!secret) {
+    return { ok: false, error: "TOTP not initialized." };
+  }
+  const trimmed = (code || "").replace(/\s+/g, "");
+  if (!trimmed) {
+    return { ok: false, error: "TOTP required." };
+  }
+  const window = Number.isFinite(TOTP_WINDOW) ? TOTP_WINDOW : 1;
+  const now = Date.now();
+  const counter = Math.floor(now / 1000 / TOTP_STEP_SECONDS);
+  for (let offset = -window; offset <= window; offset += 1) {
+    const step = counter + offset;
+    if (step < 0) {
+      continue;
+    }
+    const candidate = totpForCounter(secret, step);
+    if (candidate === trimmed) {
+      if (Number.isFinite(lastStep) && step <= lastStep) {
+        return { ok: false, error: "TOTP code already used." };
+      }
+      return { ok: true, step };
+    }
+  }
+  return { ok: false, error: "Invalid TOTP code." };
+}
+
+function buildOtpAuthUrl(username, secret) {
+  const label = encodeURIComponent(`${TOTP_ISSUER}:${username}`);
+  const issuer = encodeURIComponent(TOTP_ISSUER);
+  return `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&digits=${TOTP_DIGITS}&period=${TOTP_STEP_SECONDS}`;
 }
 
 function createSession(token) {
@@ -179,6 +276,13 @@ async function logAdminEvent(event) {
   const dir = path.dirname(ADMIN_AUDIT_LOG);
   await fs.mkdir(dir, { recursive: true });
   await fs.appendFile(ADMIN_AUDIT_LOG, `${JSON.stringify(entry)}\n`);
+}
+
+function buildAdminAuditContext(req) {
+  return {
+    ip: req.ip,
+    user_agent: req.headers["user-agent"] || null,
+  };
 }
 
 function passwordPolicyErrors(password) {
@@ -582,6 +686,8 @@ function sanitizeAdminUser(user) {
     enabled: user.enabled !== false,
     locked_until: user.locked_until || null,
     last_login: user.last_login || null,
+    totp_enabled: user.totp_enabled === true,
+    totp_pending: Boolean(user.totp_pending),
     created_at: user.created_at || null,
     updated_at: user.updated_at || null,
   };
@@ -627,12 +733,16 @@ app.post(
       enabled: true,
       failed_attempts: 0,
       locked_until: null,
+      totp_enabled: false,
+      totp_secret: null,
+      totp_pending: null,
+      totp_last_step: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
     users[username] = record;
     await saveAdminStore({ users });
-    await logAdminEvent({ action: "bootstrap", username, ip: req.ip, status: "success" });
+    await logAdminEvent({ action: "bootstrap", username, status: "success", ...buildAdminAuditContext(req) });
     res.json({ message: "Admin bootstrap complete", user: sanitizeAdminUser(record) });
   })
 );
@@ -642,11 +752,12 @@ app.post(
   asyncHandler(async (req, res) => {
     const username = req.body && typeof req.body.username === "string" ? req.body.username.trim() : "";
     const password = req.body && typeof req.body.password === "string" ? req.body.password : "";
+    const totp = req.body && typeof req.body.totp === "string" ? req.body.totp.trim() : "";
     const store = await loadAdminStore();
     const users = store.users || {};
     const record = users[username];
     if (!record || record.enabled === false) {
-      await logAdminEvent({ action: "login", username, ip: req.ip, status: "error" });
+      await logAdminEvent({ action: "login", username, status: "error", ...buildAdminAuditContext(req) });
       res.status(403).json({ error: "Invalid credentials." });
       return;
     }
@@ -664,9 +775,32 @@ app.post(
       }
       record.updated_at = new Date().toISOString();
       await saveAdminStore({ users });
-      await logAdminEvent({ action: "login", username, ip: req.ip, status: "error" });
+      await logAdminEvent({ action: "login", username, status: "error", ...buildAdminAuditContext(req) });
       res.status(403).json({ error: "Invalid credentials." });
       return;
+    }
+    if (record.totp_enabled) {
+      const result = verifyTotp(totp, record.totp_secret, record.totp_last_step);
+      if (!result.ok) {
+        record.failed_attempts = (record.failed_attempts || 0) + 1;
+        if (record.failed_attempts >= ADMIN_LOCKOUT_THRESHOLD) {
+          const lockedUntil = new Date(Date.now() + ADMIN_LOCKOUT_MINUTES * 60000);
+          record.locked_until = lockedUntil.toISOString();
+          record.failed_attempts = 0;
+        }
+        record.updated_at = new Date().toISOString();
+        await saveAdminStore({ users });
+        await logAdminEvent({
+          action: "login",
+          username,
+          status: "error",
+          error: result.error,
+          ...buildAdminAuditContext(req),
+        });
+        res.status(403).json({ error: result.error });
+        return;
+      }
+      record.totp_last_step = result.step;
     }
     record.failed_attempts = 0;
     record.locked_until = null;
@@ -675,7 +809,13 @@ app.post(
     await saveAdminStore({ users });
     const sessionId = createAdminSession(username);
     setAdminSessionCookie(res, sessionId);
-    await logAdminEvent({ action: "login", username, ip: req.ip, status: "success" });
+    await logAdminEvent({
+      action: "login",
+      username,
+      status: "success",
+      mfa: record.totp_enabled === true,
+      ...buildAdminAuditContext(req),
+    });
     res.json({ message: "Admin session established.", username });
   })
 );
@@ -686,6 +826,144 @@ app.post(
     clearAdminSession(req);
     clearAdminSessionCookie(res);
     res.json({ message: "Admin session cleared." });
+  })
+);
+
+app.post(
+  "/api/admin/totp/enroll",
+  asyncHandler(async (req, res) => {
+    const authorized = await ensureAdminAuthorized(req, res);
+    if (!authorized) {
+      return;
+    }
+    const session = getAdminSession(req);
+    if (!session) {
+      res.status(401).json({ error: "Admin session required." });
+      return;
+    }
+    const requested = req.body && typeof req.body.username === "string" ? req.body.username.trim() : "";
+    const username = requested || session.username;
+    if (username !== session.username) {
+      res.status(403).json({ error: "TOTP enrollment is limited to your own account." });
+      return;
+    }
+    const store = await loadAdminStore();
+    const users = store.users || {};
+    const record = users[username];
+    if (!record) {
+      res.status(404).json({ error: "Admin not found." });
+      return;
+    }
+    if (record.totp_enabled) {
+      res.status(409).json({ error: "TOTP already enabled." });
+      return;
+    }
+    const secret = generateTotpSecret();
+    record.totp_pending = secret;
+    record.updated_at = new Date().toISOString();
+    await saveAdminStore({ users });
+    await logAdminEvent({ action: "totp_enroll", username, status: "success", ...buildAdminAuditContext(req) });
+    res.json({
+      message: "TOTP enrollment started.",
+      secret,
+      otpauth_url: buildOtpAuthUrl(username, secret),
+    });
+  })
+);
+
+app.post(
+  "/api/admin/totp/verify",
+  asyncHandler(async (req, res) => {
+    const authorized = await ensureAdminAuthorized(req, res);
+    if (!authorized) {
+      return;
+    }
+    const session = getAdminSession(req);
+    if (!session) {
+      res.status(401).json({ error: "Admin session required." });
+      return;
+    }
+    const username = session.username;
+    const code = req.body && typeof req.body.code === "string" ? req.body.code.trim() : "";
+    const store = await loadAdminStore();
+    const users = store.users || {};
+    const record = users[username];
+    if (!record) {
+      res.status(404).json({ error: "Admin not found." });
+      return;
+    }
+    if (!record.totp_pending) {
+      res.status(409).json({ error: "No pending TOTP enrollment." });
+      return;
+    }
+    const result = verifyTotp(code, record.totp_pending, record.totp_last_step);
+    if (!result.ok) {
+      await logAdminEvent({
+        action: "totp_verify",
+        username,
+        status: "error",
+        error: result.error,
+        ...buildAdminAuditContext(req),
+      });
+      res.status(403).json({ error: result.error });
+      return;
+    }
+    record.totp_secret = record.totp_pending;
+    record.totp_pending = null;
+    record.totp_enabled = true;
+    record.totp_last_step = result.step;
+    record.updated_at = new Date().toISOString();
+    await saveAdminStore({ users });
+    await logAdminEvent({ action: "totp_verify", username, status: "success", ...buildAdminAuditContext(req) });
+    res.json({ message: "TOTP enabled.", user: sanitizeAdminUser(record) });
+  })
+);
+
+app.post(
+  "/api/admin/totp/disable",
+  asyncHandler(async (req, res) => {
+    const authorized = await ensureAdminAuthorized(req, res);
+    if (!authorized) {
+      return;
+    }
+    const session = getAdminSession(req);
+    if (!session) {
+      res.status(401).json({ error: "Admin session required." });
+      return;
+    }
+    const username = session.username;
+    const code = req.body && typeof req.body.code === "string" ? req.body.code.trim() : "";
+    const store = await loadAdminStore();
+    const users = store.users || {};
+    const record = users[username];
+    if (!record) {
+      res.status(404).json({ error: "Admin not found." });
+      return;
+    }
+    if (!record.totp_enabled || !record.totp_secret) {
+      res.status(409).json({ error: "TOTP not enabled." });
+      return;
+    }
+    const result = verifyTotp(code, record.totp_secret, record.totp_last_step);
+    if (!result.ok) {
+      await logAdminEvent({
+        action: "totp_disable",
+        username,
+        status: "error",
+        error: result.error,
+        ...buildAdminAuditContext(req),
+      });
+      res.status(403).json({ error: result.error });
+      return;
+    }
+    record.totp_enabled = false;
+    record.totp_secret = null;
+    record.totp_pending = null;
+    record.totp_last_step = null;
+    record.updated_at = new Date().toISOString();
+    await saveAdminStore({ users });
+    await logAdminEvent({ action: "totp_disable", username, status: "success", ...buildAdminAuditContext(req) });
+    res.json({ message: "TOTP disabled.", user: sanitizeAdminUser(record) });
   })
 );
 
@@ -732,12 +1010,16 @@ app.post(
       enabled: true,
       failed_attempts: 0,
       locked_until: null,
+      totp_enabled: false,
+      totp_secret: null,
+      totp_pending: null,
+      totp_last_step: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
     users[username] = record;
     await saveAdminStore({ users });
-    await logAdminEvent({ action: "create_user", username, ip: req.ip, status: "success" });
+    await logAdminEvent({ action: "create_user", username, status: "success", ...buildAdminAuditContext(req) });
     res.json({ message: "Admin user created", user: sanitizeAdminUser(record) });
   })
 );
@@ -774,7 +1056,12 @@ app.put(
     }
     record.updated_at = new Date().toISOString();
     await saveAdminStore({ users });
-    await logAdminEvent({ action: "update_user", username: record.username, ip: req.ip, status: "success" });
+    await logAdminEvent({
+      action: "update_user",
+      username: record.username,
+      status: "success",
+      ...buildAdminAuditContext(req),
+    });
     res.json({ message: "Admin updated", user: sanitizeAdminUser(record) });
   })
 );
@@ -794,7 +1081,12 @@ app.delete(
     }
     delete users[req.params.username];
     await saveAdminStore({ users });
-    await logAdminEvent({ action: "delete_user", username: req.params.username, ip: req.ip, status: "success" });
+    await logAdminEvent({
+      action: "delete_user",
+      username: req.params.username,
+      status: "success",
+      ...buildAdminAuditContext(req),
+    });
     res.json({ message: "Admin removed." });
   })
 );

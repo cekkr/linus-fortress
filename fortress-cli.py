@@ -619,12 +619,14 @@ def sites_command(args: argparse.Namespace) -> None:
                 "container_name": args.container,
                 "docroot": args.docroot,
             }
-            if args.php_version or args.runtime_user or args.runtime_group:
+            if args.php_version or args.runtime_user or args.runtime_group or args.php_ini:
                 payload["runtime"] = {
                     "php_version": args.php_version,
                     "user": args.runtime_user,
                     "group": args.runtime_group,
                 }
+                if args.php_ini:
+                    payload["runtime"]["php_ini_overrides"] = parse_kv_pairs(args.php_ini)
             if args.db_name or args.db_user or args.db_password:
                 payload["database"] = {
                     "engine": args.db_engine,
@@ -1241,6 +1243,7 @@ def build_parser() -> argparse.ArgumentParser:
     sites_create.add_argument("--php-version")
     sites_create.add_argument("--runtime-user")
     sites_create.add_argument("--runtime-group")
+    sites_create.add_argument("--php-ini", action="append", help="php.ini override key=value")
     sites_create.add_argument("--db-engine", choices=["mysql", "mariadb"])
     sites_create.add_argument("--db-name")
     sites_create.add_argument("--db-user")

@@ -73,6 +73,8 @@
           <input class="auth-input" id="admin-username" type="text" autocomplete="username" spellcheck="false" />
           <label class="auth-label" for="admin-password">Password</label>
           <input class="auth-input" id="admin-password" type="password" autocomplete="current-password" spellcheck="false" />
+          <label class="auth-label" for="admin-totp">TOTP code (if enabled)</label>
+          <input class="auth-input" id="admin-totp" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" />
           <button class="action" type="submit">Unlock</button>
         </form>
         <div class="auth-message" id="admin-message"></div>

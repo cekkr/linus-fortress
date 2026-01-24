@@ -17,6 +17,47 @@ def detect_firewall_backend() -> str:
         return "firewalld"
     raise HTTPException(status_code=500, detail="No supported firewall backend detected (ufw or firewalld)")
 
+def _iptables_available() -> bool:
+    return shutil.which("iptables") is not None
+
+def _connlimit_rule_args(protocol: str, port: int, limit: int) -> List[str]:
+    return [
+        "-p",
+        protocol,
+        "--dport",
+        str(port),
+        "-m",
+        "connlimit",
+        "--connlimit-above",
+        str(limit),
+        "--connlimit-saddr",
+        "--connlimit-mask",
+        "32",
+        "-j",
+        "REJECT",
+        "--reject-with",
+        "tcp-reset",
+    ]
+
+def _iptables_rule_exists(rule_args: List[str]) -> bool:
+    try:
+        run_command(["iptables", "-C", "INPUT"] + rule_args)
+        return True
+    except HTTPException:
+        return False
+
+def _apply_connlimit_rule(port: int, limit: int) -> None:
+    rule_args = _connlimit_rule_args("tcp", port, limit)
+    if _iptables_rule_exists(rule_args):
+        return
+    run_command(["iptables", "-I", "INPUT"] + rule_args)
+
+def _remove_connlimit_rule(port: int, limit: int) -> None:
+    rule_args = _connlimit_rule_args("tcp", port, limit)
+    if not _iptables_rule_exists(rule_args):
+        return
+    run_command(["iptables", "-D", "INPUT"] + rule_args)
+
 
 def _build_firewalld_rich_rule(source: Optional[str], protocol: str, port: int, allow: bool, limit: Optional[str] = None) -> str:
     action = "accept" if allow else "drop"
@@ -384,8 +425,18 @@ def apply_ddos_policy(policy: Dict[str, Any]) -> Tuple[List[str], List[str]]:
                 run_command(["firewall-cmd", "--permanent", "--add-rich-rule", rich_rule])
                 run_command(["firewall-cmd", "--reload"])
                 effective_rules.append(f"limit {port}/{protocol} {limit_value}")
-    if policy.get("conn_limit"):
-        warnings.append("conn_limit not supported by backend helper")
+    conn_limit = policy.get("conn_limit")
+    if conn_limit:
+        if protocol != "tcp":
+            warnings.append("conn_limit only supported for tcp")
+        elif not _iptables_available():
+            warnings.append("conn_limit requires iptables")
+        else:
+            if allowlist:
+                warnings.append("conn_limit ignores allowlist ordering")
+            for port in ports:
+                _apply_connlimit_rule(int(port), int(conn_limit))
+                effective_rules.append(f"connlimit {port}/{protocol} {conn_limit}")
     return effective_rules, warnings
 
 
@@ -425,4 +476,9 @@ def remove_ddos_policy(policy: Dict[str, Any]) -> List[str]:
                 run_command(["firewall-cmd", "--permanent", "--remove-rich-rule", rich_rule])
                 run_command(["firewall-cmd", "--reload"])
                 removed.append(f"limit {port}/{protocol} {limit_value}")
+    conn_limit = policy.get("conn_limit")
+    if conn_limit and protocol == "tcp" and _iptables_available():
+        for port in ports:
+            _remove_connlimit_rule(int(port), int(conn_limit))
+            removed.append(f"connlimit {port}/{protocol} {conn_limit}")
     return removed

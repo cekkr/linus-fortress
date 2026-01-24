@@ -59,11 +59,11 @@ Environment variables:
 - `FORTRESS_UI_INSECURE_TLS=1` to allow self-signed TLS when proxying to the API.
 - `FORTRESS_UI_SESSION_TTL` (seconds, default `43200`) and `FORTRESS_UI_SESSION_COOKIE` to tune UI session lifetimes.
 - `FORTRESS_UI_COOKIE_SECURE=1` to set Secure on the UI session cookie when served via HTTPS.
-- Admin security: `FORTRESS_UI_ADMIN_DB`, `FORTRESS_UI_ADMIN_AUDIT_LOG`, `FORTRESS_UI_ADMIN_SESSION_COOKIE`, `FORTRESS_UI_ADMIN_SESSION_TTL`, `FORTRESS_UI_PASSWORD_MIN_LENGTH`, `FORTRESS_UI_LOCKOUT_THRESHOLD`, `FORTRESS_UI_LOCKOUT_MINUTES`, `FORTRESS_UI_ADMIN_ENABLED=0` to disable enforcement (not recommended).
+- Admin security: `FORTRESS_UI_ADMIN_DB`, `FORTRESS_UI_ADMIN_AUDIT_LOG`, `FORTRESS_UI_ADMIN_SESSION_COOKIE`, `FORTRESS_UI_ADMIN_SESSION_TTL`, `FORTRESS_UI_PASSWORD_MIN_LENGTH`, `FORTRESS_UI_LOCKOUT_THRESHOLD`, `FORTRESS_UI_LOCKOUT_MINUTES`, `FORTRESS_UI_TOTP_ISSUER`, `FORTRESS_UI_TOTP_WINDOW`, `FORTRESS_UI_ADMIN_ENABLED=0` to disable enforcement (not recommended).
 
 For full LAMP automation and routing flows, the delegated token should include `manage_containers`, `manage_routing`, `recipes_manage`, `recipes_apply`, and `sites_manage`.
 
-The UI service enforces admin login (password policy + lockout + audit log) before allowing delegated-token sessions. Admin sessions are stored in a UI-only cookie (`FORTRESS_UI_ADMIN_SESSION_COOKIE`).
+The UI service enforces admin login (password policy + lockout + audit log + optional TOTP) before allowing delegated-token sessions. Admin sessions are stored in a UI-only cookie (`FORTRESS_UI_ADMIN_SESSION_COOKIE`).
 
 LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` (or `user.fortress.stack=lamp`) via LXD config, or when the container name includes `lamp`.
 Optional service hints can be supplied with `user.lizard.services=apache,mysql,ftp` (comma-separated) to remove the install badge.
@@ -184,16 +184,18 @@ Body:
   "domains": ["www.app.example.com"],
   "container_name": "web01",
   "docroot": "/var/www/app",
-  "runtime": {"php_version": "8.2"},
+  "runtime": {"php_version": "8.2", "php_ini_overrides": {"memory_limit": "256M"}},
   "database": {"engine": "mariadb", "name": "app_db", "username": "app_user", "password": "strong-secret"},
   "tls": {"mode": "manual", "cert_path": "/etc/ssl/certs/app.pem", "key_path": "/etc/ssl/private/app.key"}
 }
 ```
 - Creates the site record, configures routing/TLS, and provisions DB credentials when enabled (requires `database.password`).
+- When `runtime.php_ini_overrides` is provided, Fortress writes a per-site ini file inside the container and restarts PHP-FPM.
 - LetsEncrypt automation is not wired yet; use manual TLS paths for HTTPS today.
 
 #### `GET /sites/{site_id}` / `PUT /sites/{site_id}` / `DELETE /sites/{site_id}` (permission `sites_manage`)
 - Retrieve, update, or remove a website definition.
+- Updating `runtime.php_ini_overrides` rewrites the site ini override file and restarts PHP-FPM.
 
 #### `POST /sites/{site_id}/deploy` (permission `sites_manage`)
 Body:
@@ -374,7 +376,8 @@ The UI runs its own admin session cookie (see `FORTRESS_UI_ADMIN_SESSION_COOKIE`
 - Bootstraps the first UI admin account (only when no admins exist).
 
 #### `POST /api/admin/login`
-- Validates credentials and returns session metadata (cookie-based auth).
+- Validates credentials (and optional TOTP) and returns session metadata (cookie-based auth).
+- When TOTP is enabled for the admin, include `totp` in the request body.
 
 #### `POST /api/admin/logout`
 - Destroys the current UI admin session.
@@ -387,6 +390,15 @@ The UI runs its own admin session cookie (see `FORTRESS_UI_ADMIN_SESSION_COOKIE`
 
 #### `PUT /api/admin/users/{username}` / `DELETE /api/admin/users/{username}`
 - Updates or removes a UI admin account (session required).
+
+#### `POST /api/admin/totp/enroll`
+- Starts TOTP enrollment for the signed-in admin and returns the secret + otpauth URL.
+
+#### `POST /api/admin/totp/verify`
+- Verifies a TOTP code to enable MFA for the signed-in admin.
+
+#### `POST /api/admin/totp/disable`
+- Disables TOTP for the signed-in admin (requires a valid code).
 
 ### External Access
 
@@ -538,7 +550,7 @@ Body:
 - Body: `{"rollback_id": "fw-20240301-120000"}`.
 
 #### `GET /firewall/ddos` and `PUT /firewall/ddos`
-- Manage anti-DDoS profiles (rate/connection limits, ban lists, allowlists) with safe rollback and observability.
+- Manage anti-DDoS profiles (rate limits, connection caps, ban lists, allowlists) with safe rollback and observability. `conn_limit` uses iptables when available.
 
 ### Package Management (permission `package_manage`, scoped if `container_name` set)
 

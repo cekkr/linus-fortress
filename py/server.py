@@ -2,6 +2,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
 from pydantic import BaseModel
 import os
+import re
 import shlex
 import shutil
 import secrets
@@ -184,6 +185,7 @@ MIGRATION_ENGINE = MigrationEngine(
         "vms": VMS_DB,
         "routes": ROUTING_DB,
         "sites": SITES_DB,
+        "monitoring_history": MONITORING_HISTORY_DB,
     },
 )
 
@@ -850,7 +852,10 @@ def firewall_ddos_update(
     warnings: List[str] = []
     if dry_run:
         if policy.get("conn_limit"):
-            warnings.append("conn_limit not supported by backend helper")
+            if policy.get("protocol", "tcp") != "tcp":
+                warnings.append("conn_limit only supported for tcp")
+            elif not shutil.which("iptables"):
+                warnings.append("conn_limit requires iptables")
         if policy.get("rate_limit_per_sec"):
             effective_rules.append("rate_limit enabled")
     else:
@@ -1509,6 +1514,86 @@ def _ensure_docroot(container_name: str, docroot: str, user: str, group: str) ->
     docroot_q = shlex.quote(docroot)
     exec_in_container(container_name, ["sh", "-c", f"mkdir -p {docroot_q} && chown -R {user}:{group} {docroot_q}"])
 
+PHP_VERSION_PATTERN = re.compile(r"^\d+\.\d+$")
+
+def _container_dir_exists(container_name: str, path: str) -> bool:
+    try:
+        exec_in_container(container_name, ["sh", "-c", f"test -d {shlex.quote(path)}"])
+        return True
+    except HTTPException:
+        return False
+
+def _detect_php_version(container_name: str) -> Optional[str]:
+    try:
+        output = exec_in_container(
+            container_name,
+            ["sh", "-c", "php -r 'echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;'"],
+        )
+        version = output.strip()
+        if PHP_VERSION_PATTERN.match(version):
+            return version
+    except HTTPException:
+        pass
+    output = exec_in_container(container_name, ["sh", "-c", "ls -1 /etc/php 2>/dev/null || true"])
+    candidates = []
+    for line in output.splitlines():
+        line = line.strip()
+        if PHP_VERSION_PATTERN.match(line):
+            candidates.append(line)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda value: tuple(int(part) for part in value.split(".")))
+    return candidates[-1]
+
+def _resolve_php_ini_dir(container_name: str, php_version: Optional[str]) -> Optional[str]:
+    candidates: List[str] = []
+    resolved_version = php_version or _detect_php_version(container_name)
+    if resolved_version:
+        candidates.append(f"/etc/php/{resolved_version}/fpm/conf.d")
+        candidates.append(f"/etc/php/{resolved_version}/cli/conf.d")
+    candidates.append("/etc/php.d")
+    candidates.append("/etc/php/conf.d")
+    for path in candidates:
+        if _container_dir_exists(container_name, path):
+            return path
+    return None
+
+def _apply_php_ini_overrides(container_name: str, site_id: str, runtime: Dict[str, Any]) -> Dict[str, Any]:
+    overrides = runtime.get("php_ini_overrides") or {}
+    if overrides is None:
+        overrides = {}
+    if not isinstance(overrides, dict):
+        raise HTTPException(status_code=400, detail="php_ini_overrides must be an object map")
+    php_version = runtime.get("php_version")
+    ini_dir = _resolve_php_ini_dir(container_name, php_version)
+    if not ini_dir:
+        if overrides:
+            raise HTTPException(status_code=400, detail="Unable to locate PHP ini directory inside container")
+        return {"path": None, "applied": False, "removed": False}
+    ini_path = os.path.join(ini_dir, f"99-fortress-{site_id}.ini")
+    if not overrides:
+        exec_in_container(container_name, ["sh", "-c", f"rm -f {shlex.quote(ini_path)}"])
+        return {"path": ini_path, "applied": False, "removed": True}
+    lines = [
+        f"; Fortress overrides for site {site_id}",
+        f"; Generated {datetime.utcnow().isoformat()}Z",
+    ]
+    for key in sorted(overrides.keys()):
+        key_str = str(key).strip()
+        value_str = str(overrides[key]).strip()
+        if not key_str:
+            continue
+        if "\n" in key_str or "\n" in value_str:
+            raise HTTPException(status_code=400, detail="php_ini_overrides entries cannot contain newlines")
+        lines.append(f"{key_str} = {value_str}")
+    content = "\n".join(lines) + "\n"
+    delimiter = "__FORTRESS_INI__"
+    if delimiter in content:
+        raise HTTPException(status_code=400, detail="php_ini_overrides contains an unsupported delimiter value")
+    cmd = f"mkdir -p {shlex.quote(ini_dir)} && cat <<'{delimiter}' > {shlex.quote(ini_path)}\n{content}{delimiter}\n"
+    exec_in_container(container_name, ["sh", "-c", cmd])
+    return {"path": ini_path, "applied": True, "removed": False}
+
 def _apply_nginx_route(domain: str, domains: Optional[List[str]], payload: Dict[str, Any]) -> None:
     validate_domain(domain)
     normalize_domains(domain, domains or [])
@@ -1692,6 +1777,10 @@ def create_site(payload: SiteCreateRequest, x_api_key: Optional[str] = Header(de
     runtime.setdefault("group", group)
     record["runtime"] = runtime
     _ensure_docroot(payload.container_name, record["docroot"], user, group)
+    if payload.runtime is not None:
+        ini_result = _apply_php_ini_overrides(payload.container_name, record["name"], runtime)
+        if ini_result.get("applied") or ini_result.get("removed"):
+            _restart_site_services(payload.container_name, runtime, ["php-fpm"])
     if record.get("database") and (payload.create_database or payload.create_user):
         database = record["database"]
         if not database.get("name") or not database.get("username"):
@@ -1739,6 +1828,11 @@ def update_site(site_id: str, payload: SiteUpdateRequest, x_api_key: Optional[st
         runtime = record.get("runtime") or {}
         user, group = _resolve_runtime_identity(record["container_name"], runtime)
         _ensure_docroot(record["container_name"], record["docroot"], user, group)
+    if payload.runtime is not None:
+        runtime = record.get("runtime") or {}
+        ini_result = _apply_php_ini_overrides(record["container_name"], record["name"], runtime)
+        if ini_result.get("applied") or ini_result.get("removed"):
+            _restart_site_services(record["container_name"], runtime, ["php-fpm"])
     if payload.primary_domain or payload.domains or payload.routing or payload.tls:
         _apply_site_routing(record, previous_domain=previous_domain)
     save_sites(SITES_DB, sites)

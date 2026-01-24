@@ -73,6 +73,7 @@ const elements = {
   adminForm: document.getElementById("admin-form"),
   adminUsername: document.getElementById("admin-username"),
   adminPassword: document.getElementById("admin-password"),
+  adminTotp: document.getElementById("admin-totp"),
   adminMessage: document.getElementById("admin-message"),
   logoutButton: document.getElementById("logout"),
 };
@@ -960,6 +961,7 @@ async function handleAdminLogin(event) {
   }
   const username = elements.adminUsername.value.trim();
   const password = elements.adminPassword.value;
+  const totp = elements.adminTotp ? elements.adminTotp.value.trim() : "";
   if (!username || !password) {
     if (elements.adminMessage) {
       elements.adminMessage.textContent = "Username and password are required.";
@@ -972,9 +974,12 @@ async function handleAdminLogin(event) {
   try {
     await apiRequest("/api/admin/login", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(totp ? { username, password, totp } : { username, password }),
     });
     elements.adminPassword.value = "";
+    if (elements.adminTotp) {
+      elements.adminTotp.value = "";
+    }
     await refreshAdminSession();
     if (state.admin.active) {
       await refreshSession();

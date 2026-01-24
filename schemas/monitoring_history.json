@@ -1,0 +1,9 @@
+{
+  "store": "monitoring_history",
+  "schema_version": "1",
+  "record_type": "list",
+  "fields": [],
+  "defaults": {},
+  "aliases": {},
+  "prune_unknown": false
+}
