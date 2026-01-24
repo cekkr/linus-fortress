@@ -1198,9 +1198,9 @@ LAMP_RECIPE_BUNDLE = {
         "dependencies": [],
         "packages": [],
         "commands": [
-            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 apache2-utils libapache2-mod-php php php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now apache2 >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; fi",
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 apache2-utils libapache2-mod-php php{{php_version}} php{{php_version}}-cli php{{php_version}}-mysql php{{php_version}}-curl php{{php_version}}-xml php{{php_version}}-zip php{{php_version}}-mbstring; systemctl enable --now apache2 >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y httpd httpd-tools php php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now httpd >/dev/null 2>&1 || true; fi",
         ],
-        "parameters": {},
+        "parameters": {"php_version": ""},
         "required_parameters": [],
     },
     "lamp-nginx": {
@@ -1209,9 +1209,9 @@ LAMP_RECIPE_BUNDLE = {
         "dependencies": [],
         "packages": [],
         "commands": [
-            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php-fpm php-cli php-mysql php-curl php-xml php-zip php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; fi",
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php{{php_version}}-fpm php{{php_version}}-cli php{{php_version}}-mysql php{{php_version}}-curl php{{php_version}}-xml php{{php_version}}-zip php{{php_version}}-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y nginx php-fpm php-cli php-mysqlnd php-xml php-gd php-mbstring; systemctl enable --now nginx php-fpm >/dev/null 2>&1 || true; fi",
         ],
-        "parameters": {},
+        "parameters": {"php_version": ""},
         "required_parameters": [],
     },
     "lamp-mysql": {
@@ -1220,9 +1220,9 @@ LAMP_RECIPE_BUNDLE = {
         "dependencies": [],
         "packages": [],
         "commands": [
-            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client; systemctl enable --now mariadb >/dev/null 2>&1 || systemctl enable --now mysql >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; fi",
+            "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client; systemctl enable --now mariadb >/dev/null 2>&1 || systemctl enable --now mysql >/dev/null 2>&1 || true; elif command -v dnf >/dev/null 2>&1; then dnf makecache && dnf install -y mariadb-server mariadb; systemctl enable --now mariadb >/dev/null 2>&1 || true; fi; if command -v mysql >/dev/null 2>&1; then ROOT_PWD='{{db_root_password}}'; if [ -n \"$ROOT_PWD\" ]; then mysqladmin -u root status >/dev/null 2>&1 && mysqladmin -u root password \"$ROOT_PWD\" >/dev/null 2>&1 || true; export MYSQL_PWD=\"$ROOT_PWD\"; fi; if [ -n \"{{db_name}}\" ] && [ -n \"{{db_user}}\" ] && [ -n \"{{db_password}}\" ]; then mysql -u root -e \"CREATE DATABASE IF NOT EXISTS \\`{{db_name}}\\`\"; mysql -u root -e \"CREATE USER IF NOT EXISTS '{{db_user}}'@'%' IDENTIFIED BY '{{db_password}}'\"; mysql -u root -e \"GRANT ALL PRIVILEGES ON \\`{{db_name}}\\`.* TO '{{db_user}}'@'%'\"; mysql -u root -e \"FLUSH PRIVILEGES\"; fi; fi",
         ],
-        "parameters": {},
+        "parameters": {"db_root_password": "", "db_name": "", "db_user": "", "db_password": ""},
         "required_parameters": [],
     },
     "lamp-ftp": {
@@ -1725,14 +1725,25 @@ def _extract_site_archive(container_name: str, archive_path: str, docroot: str, 
 def _restore_site_db(container_name: str, database: Dict[str, Any], dump_path: str) -> None:
     if not database.get("name") or not database.get("username"):
         return
-    _run_db_command(
-        container_name,
-        f"CREATE DATABASE IF NOT EXISTS `{database['name']}`",
-        username=database.get("username"),
-        password=database.get("password"),
-    )
-    pwd_prefix = f"MYSQL_PWD={shlex.quote(database['password'])} " if database.get("password") else ""
-    cmd = f"{pwd_prefix}mysql -u {shlex.quote(database['username'])} {shlex.quote(database['name'])} < {dump_path}"
+    root_password = database.get("root_password")
+    if root_password:
+        _run_db_command(
+            container_name,
+            f"CREATE DATABASE IF NOT EXISTS `{database['name']}`",
+            username="root",
+            password=root_password,
+        )
+    else:
+        _run_db_command(
+            container_name,
+            f"CREATE DATABASE IF NOT EXISTS `{database['name']}`",
+            username=database.get("username"),
+            password=database.get("password"),
+        )
+    import_user = database.get("username") or "root"
+    import_password = database.get("password") if database.get("password") else root_password
+    pwd_prefix = f"MYSQL_PWD={shlex.quote(import_password)} " if import_password else ""
+    cmd = f"{pwd_prefix}mysql -u {shlex.quote(import_user)} {shlex.quote(database['name'])} < {dump_path}"
     exec_in_container(container_name, ["sh", "-c", cmd])
 
 def _restart_site_services(container_name: str, runtime: Dict[str, Any], services: Optional[List[str]]) -> Dict[str, Any]:
@@ -1787,19 +1798,31 @@ def create_site(payload: SiteCreateRequest, x_api_key: Optional[str] = Header(de
             raise HTTPException(status_code=400, detail="database.name and database.username are required for provisioning")
         if not database.get("password"):
             raise HTTPException(status_code=400, detail="database.password is required for provisioning")
+        root_password = database.get("root_password")
         _run_db_command(
             payload.container_name,
             f"CREATE DATABASE IF NOT EXISTS `{database.get('name')}`",
+            username="root" if root_password else None,
+            password=root_password,
         )
         _run_db_command(
             payload.container_name,
             f"CREATE USER IF NOT EXISTS '{database.get('username')}'@'%' IDENTIFIED BY '{database.get('password')}'",
+            username="root" if root_password else None,
+            password=root_password,
         )
         _run_db_command(
             payload.container_name,
             f"GRANT ALL PRIVILEGES ON `{database.get('name')}`.* TO '{database.get('username')}'@'%'",
+            username="root" if root_password else None,
+            password=root_password,
         )
-        _run_db_command(payload.container_name, "FLUSH PRIVILEGES")
+        _run_db_command(
+            payload.container_name,
+            "FLUSH PRIVILEGES",
+            username="root" if root_password else None,
+            password=root_password,
+        )
     _apply_site_routing(record)
     save_sites(SITES_DB, sites)
     audit_api("sites_create", target=record["name"], details={"domain": record["primary_domain"]})

@@ -77,6 +77,10 @@ Acceptance criteria:
 - Reapplying recipes is safe (no duplicate users/config, services remain stable).
 - Recipe parameters support PHP version selection, DB root password bootstrap, and optional app user creation.
 - Success/failure returns a deterministic plan and a post-apply service probe report.
+Done:
+- LAMP recipes accept `php_version`, `db_root_password`, `db_name`, `db_user`, and `db_password` parameters for PHP/DB bootstrapping.
+Next:
+- Add recipe health checks (service status + port probes) and config validation for LAMP applies.
 
 ### Path 10.3: WebUI admin authentication hardening
 Milestones:

@@ -4,7 +4,7 @@ import unittest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "py")))
 
-from fortress.sites import SiteCreateRequest, SiteUpdateRequest, create_site_record, update_site_record, validate_site_name
+from fortress.sites import SiteCreateRequest, SiteUpdateRequest, create_site_record, sanitize_site_record, update_site_record, validate_site_name
 
 
 class SiteValidationTests(unittest.TestCase):
@@ -65,6 +65,22 @@ class SiteRecordTests(unittest.TestCase):
         update_payload = SiteUpdateRequest(name="blog")
         with self.assertRaises(Exception):
             update_site_record("app", update_payload, sites)
+
+    def test_sanitize_masks_passwords(self) -> None:
+        sites = {}
+        payload = SiteCreateRequest(
+            name="app",
+            primary_domain="app.example.com",
+            container_name="web01",
+            docroot="/var/www/app",
+            database={"engine": "mariadb", "name": "app_db", "username": "app_user", "password": "secret", "root_password": "root"},
+        )
+        record = create_site_record(payload, sites)
+        sanitized = sanitize_site_record(record)
+        db = sanitized.get("database", {})
+        self.assertEqual(db.get("password"), "***")
+        self.assertEqual(db.get("root_password"), "***")
+        self.assertTrue(db.get("has_password"))
 
 
 if __name__ == "__main__":

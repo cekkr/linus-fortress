@@ -25,6 +25,7 @@ class SiteDatabase(BaseModel):
     name: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    root_password: Optional[str] = None
     host: Optional[str] = None
     port: Optional[int] = None
 
@@ -140,11 +141,16 @@ def save_sites(path: str, sites: Dict[str, Dict[str, Any]]) -> None:
 def sanitize_site_record(record: Dict[str, Any]) -> Dict[str, Any]:
     sanitized = dict(record)
     database = sanitized.get("database")
-    if isinstance(database, dict) and database.get("password"):
+    if isinstance(database, dict):
         masked = dict(database)
-        masked["password"] = "***"
-        masked["has_password"] = True
-        sanitized["database"] = masked
+        masked_any = False
+        for key, value in list(masked.items()):
+            if "password" in key and value:
+                masked[key] = "***"
+                masked_any = True
+        if masked_any:
+            masked["has_password"] = True
+            sanitized["database"] = masked
     return sanitized
 
 

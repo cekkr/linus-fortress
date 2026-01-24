@@ -185,11 +185,12 @@ Body:
   "container_name": "web01",
   "docroot": "/var/www/app",
   "runtime": {"php_version": "8.2", "php_ini_overrides": {"memory_limit": "256M"}},
-  "database": {"engine": "mariadb", "name": "app_db", "username": "app_user", "password": "strong-secret"},
+  "database": {"engine": "mariadb", "name": "app_db", "username": "app_user", "password": "strong-secret", "root_password": "db-root"},
   "tls": {"mode": "manual", "cert_path": "/etc/ssl/certs/app.pem", "key_path": "/etc/ssl/private/app.key"}
 }
 ```
 - Creates the site record, configures routing/TLS, and provisions DB credentials when enabled (requires `database.password`).
+- `database.root_password` is optional and used to provision DB users/databases when root authentication requires a password.
 - When `runtime.php_ini_overrides` is provided, Fortress writes a per-site ini file inside the container and restarts PHP-FPM.
 - LetsEncrypt automation is not wired yet; use manual TLS paths for HTTPS today.
 
@@ -697,6 +698,8 @@ Recipe CLI examples:
 - Create a recipe: `python fortress-cli.py recipes create --name base-python --package python3 --package python3-pip`
 - Apply to a container: `python fortress-cli.py recipes apply base-python --container web01`
 - Seed LAMP bundle: `python fortress-cli.py recipes seed lamp`
+- LAMP PHP version: `python fortress-cli.py recipes apply lamp-apache --container web01 --param php_version=8.2`
+- LAMP params: `python fortress-cli.py recipes apply lamp-mysql --container web01 --param db_name=app_db --param db_user=app_user --param db_password=strong-pass --param db_root_password=admin-pass`
 - Dry-run plan: `python fortress-cli.py recipes plan app-bootstrap --container web01`
 
 By default TLS certificates are verified; pass `--insecure` during `setup` only if you are pointing at a self-signed lab server. Use the CLI’s `info` command to inspect the stored metadata without revealing secrets.

@@ -627,12 +627,13 @@ def sites_command(args: argparse.Namespace) -> None:
                 }
                 if args.php_ini:
                     payload["runtime"]["php_ini_overrides"] = parse_kv_pairs(args.php_ini)
-            if args.db_name or args.db_user or args.db_password:
+            if args.db_name or args.db_user or args.db_password or args.db_root_password:
                 payload["database"] = {
                     "engine": args.db_engine,
                     "name": args.db_name,
                     "username": args.db_user,
                     "password": args.db_password,
+                    "root_password": args.db_root_password,
                     "host": args.db_host,
                     "port": args.db_port,
                 }
@@ -1248,6 +1249,7 @@ def build_parser() -> argparse.ArgumentParser:
     sites_create.add_argument("--db-name")
     sites_create.add_argument("--db-user")
     sites_create.add_argument("--db-password")
+    sites_create.add_argument("--db-root-password")
     sites_create.add_argument("--db-host")
     sites_create.add_argument("--db-port", type=int)
     sites_create.add_argument("--no-db-create", action="store_true")

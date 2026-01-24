@@ -3233,6 +3233,8 @@ components:
           type: string
         password:
           type: string
+        root_password:
+          type: string
         host:
           type: string
         port:
