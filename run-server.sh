@@ -157,11 +157,48 @@ install_packages() {
   fi
   if [[ "$manager" == "apt" ]]; then
     apt-get update -y
+    local rc=0
+    set +e
     apt-get install -y "${packages[@]}"
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+      fail "apt-get install failed. Try 'apt-get -y --fix-broken install' and re-run."
+    fi
   elif [[ "$manager" == "dnf" ]]; then
+    local rc=0
+    set +e
     dnf -y install "${packages[@]}"
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+      log "dnf install failed; retrying with --nobest."
+      dnf -y --nobest install "${packages[@]}"
+      rc=$?
+    fi
+    if [[ $rc -ne 0 ]]; then
+      log "dnf install failed; retrying with --skip-broken."
+      dnf -y --skip-broken install "${packages[@]}"
+      rc=$?
+    fi
+    set -e
+    return $rc
   else
+    local rc=0
+    set +e
     yum -y install "${packages[@]}"
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+      log "yum install failed; retrying with --nobest."
+      yum -y --nobest install "${packages[@]}"
+      rc=$?
+    fi
+    if [[ $rc -ne 0 ]]; then
+      log "yum install failed; retrying with --skip-broken."
+      yum -y --skip-broken install "${packages[@]}"
+      rc=$?
+    fi
+    set -e
+    return $rc
   fi
 }
 
@@ -189,6 +226,15 @@ ensure_packages_installed() {
   if [[ ${#missing[@]} -gt 0 ]]; then
     log "Installing missing packages: ${missing[*]}"
     install_packages "$manager" "${missing[@]}"
+    local still_missing=()
+    for package in "${missing[@]}"; do
+      if ! package_installed "$manager" "$package"; then
+        still_missing+=("$package")
+      fi
+    done
+    if [[ ${#still_missing[@]} -gt 0 ]]; then
+      fail "Unable to install required packages: ${still_missing[*]}"
+    fi
   fi
 }
 
@@ -606,9 +652,9 @@ main() {
 
   local base_packages=()
   if [[ "$manager" == "apt" ]]; then
-    base_packages=(python3 python3-venv python3-pip openssl git curl nginx ufw nodejs npm lxd lxc)
+    base_packages=(python3 python3-pip openssl git curl nginx ufw nodejs npm lxd lxc)
   else
-    base_packages=(python3 python3-pip python3-virtualenv openssl git curl nginx firewalld nodejs npm)
+    base_packages=(python3 python3-pip openssl git curl nginx firewalld nodejs npm)
     if [[ "${is_almalinux}" != "1" ]]; then
       base_packages+=(lxd lxc)
     fi
