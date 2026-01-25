@@ -77,8 +77,13 @@ The file manager install uses Tiny File Manager under `/var/www/html/filemanager
 Host assumptions:
 - Linux distro with `apt`, `dnf`, or `yum` (Ubuntu/Debian or AlmaLinux/RHEL-like).
 - `nginx` plus `ufw` (apt) or `firewalld` (dnf/yum) for routing and firewall ops.
-- `lxc`/`lxd` for container APIs; the script can run `lxd init --auto` if LXD is installed.
+- `lxc`/`lxd` for container APIs; on AlmaLinux the script installs LXD via snap (snapd) when missing and ensures `/snap/bin` is reachable for service/screen runs. It can run `lxd init --auto` if LXD is installed.
 - `certbot` for automated Let's Encrypt issuance/renewal (the script attempts to install it when possible).
+- The script checks for missing OS packages on each run and installs them when possible.
+
+AlmaLinux hardening (first-run prompt):
+- Optional SSH hardening can create a sudo admin user, generate a 24-32 character A-Z0-9 password by default, and disable root SSH login (plus optional password authentication disable).
+- Always test SSH access as the new user before ending the root session.
 
 Least-privilege setup:
 - Use `scripts/setup-service-user.sh` (run as root) to create a service user and install a sudoers entry, or apply `scripts/fortress-sudoers.template` manually.
