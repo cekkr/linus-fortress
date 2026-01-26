@@ -17,6 +17,7 @@ RUN_MODE_ARG=""
 UI_ENABLED_ARG=""
 FORCE_SETUP=""
 RESET_SETTINGS=""
+ORIG_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -139,6 +140,56 @@ restorecon_path() {
   if selinux_enforcing && command -v restorecon >/dev/null 2>&1; then
     restorecon -Rv "${path}" >/dev/null 2>&1 || true
   fi
+}
+
+path_has_noexec() {
+  if command -v findmnt >/dev/null 2>&1; then
+    if findmnt -no OPTIONS -T "${ROOT_DIR}" 2>/dev/null | grep -qw noexec; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+should_relocate_repo() {
+  if [[ "${ROOT_DIR}" == /opt/* ]]; then
+    return 1
+  fi
+  if [[ "${ROOT_DIR}" == /root/* || "${ROOT_DIR}" == /home/* ]]; then
+    return 0
+  fi
+  if selinux_enforcing; then
+    return 0
+  fi
+  if path_has_noexec; then
+    return 0
+  fi
+  return 1
+}
+
+relocate_repo_for_service() {
+  if [[ -n "${FORTRESS_RELOCATED:-}" ]]; then
+    return 0
+  fi
+  if ! should_relocate_repo; then
+    return 0
+  fi
+  local target="/opt/linus-fortress"
+  log "Service mode from ${ROOT_DIR} may be blocked by SELinux or noexec mounts."
+  if ! prompt_yes_no "Relocate Fortress repo to ${target} for systemd compatibility?" "Y"; then
+    log "Continuing without relocating; systemd may fail to execute ${ROOT_DIR}/.venv/bin/python."
+    return 0
+  fi
+  mkdir -p "${target}"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "${ROOT_DIR}/" "${target}/"
+  else
+    rm -rf "${target:?}/"*
+    cp -a "${ROOT_DIR}/." "${target}/"
+  fi
+  restorecon_path "${target}"
+  log "Re-running from ${target}."
+  exec env FORTRESS_RELOCATED=1 "${target}/run-server.sh" "${ORIG_ARGS[@]}"
 }
 
 detect_os_id() {
@@ -803,6 +854,7 @@ parse_args() {
 }
 
 main() {
+  ORIG_ARGS=("$@")
   parse_args "$@"
   ensure_root "$@"
   maybe_add_snap_path
@@ -993,6 +1045,9 @@ main() {
   local run_mode="${RUN_MODE_ARG:-${FORTRESS_RUN_MODE:-foreground}}"
   if [[ "$run_mode" != "foreground" && "$run_mode" != "screen" && "$run_mode" != "service" ]]; then
     fail "Invalid run mode: ${run_mode}"
+  fi
+  if [[ "${run_mode}" == "service" ]]; then
+    relocate_repo_for_service
   fi
   warn_selinux_service_path "${run_mode}"
 
