@@ -96,11 +96,11 @@ generate_password() {
   local password=""
   while true; do
     if command -v openssl >/dev/null 2>&1; then
-      password=$(openssl rand -base64 64 | tr -dc 'A-Z0-9' | head -c "${length}")
+      password=$(openssl rand -base64 64 | tr -dc 'A-Za-z0-9' | head -c "${length}")
     else
-      password=$(tr -dc 'A-Z0-9' < /dev/urandom | head -c "${length}")
+      password=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "${length}")
     fi
-    if [[ ${#password} -ge ${length} && "$password" =~ [A-Z] && "$password" =~ [0-9] ]]; then
+    if [[ ${#password} -ge ${length} && "$password" =~ [A-Z] && "$password" =~ [a-z] && "$password" =~ [0-9] ]]; then
       break
     fi
   done
@@ -397,6 +397,51 @@ ensure_lxd_initialized() {
   else
     log "Skipping LXD init. Container APIs will fail until LXD is initialized."
   fi
+}
+
+is_loopback_host() {
+  local host=$1
+  case "${host}" in
+    127.0.0.1|localhost|::1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_firewalld_port_open() {
+  local port=$1
+  local zone=$2
+  if firewall-cmd --zone="${zone}" --query-port="${port}/tcp" >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! prompt_yes_no "Open firewall port ${port}/tcp in firewalld zone ${zone}?" "Y"; then
+    log "Skipping firewalld port ${port}/tcp."
+    return 0
+  fi
+  set +e
+  firewall-cmd --zone="${zone}" --add-port="${port}/tcp"
+  firewall-cmd --zone="${zone}" --permanent --add-port="${port}/tcp"
+  firewall-cmd --reload
+  set -e
+}
+
+maybe_open_ui_firewall() {
+  local ui_host=$1
+  local ui_port=$2
+  if ! command -v firewall-cmd >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! firewall-cmd --state >/dev/null 2>&1; then
+    return 0
+  fi
+  if is_loopback_host "${ui_host}"; then
+    return 0
+  fi
+  local zone
+  zone=$(firewall-cmd --get-default-zone 2>/dev/null || true)
+  if [[ -z "${zone}" ]]; then
+    zone="public"
+  fi
+  ensure_firewalld_port_open "${ui_port}" "${zone}"
 }
 
 ensure_sshd_setting() {
@@ -809,6 +854,11 @@ main() {
 
   local ui_enabled="${UI_ENABLED_ARG:-${FORTRESS_UI_ENABLED:-1}}"
   export FORTRESS_UI_ENABLED="${ui_enabled}"
+  if [[ "${ui_enabled}" == "1" ]]; then
+    local ui_host_value="${FORTRESS_UI_HOST:-127.0.0.1}"
+    local ui_port_value="${FORTRESS_UI_PORT:-8090}"
+    maybe_open_ui_firewall "${ui_host_value}" "${ui_port_value}"
+  fi
 
   if [[ "${run_mode}" == "screen" ]]; then
     if ! command -v screen >/dev/null 2>&1; then

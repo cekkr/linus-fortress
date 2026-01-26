@@ -1,6 +1,6 @@
 Securing your AlmaLinux 9 server by disabling direct root login and switching to a dedicated user is one of the most effective ways to prevent brute-force attacks.
 
-Note: When using `run-server.sh` on AlmaLinux, the first-run prompt can automate the steps below. It can create a sudo admin user with an auto-generated 24-32 character A-Z0-9 password (or a manual override), optionally disable root SSH login, and install LXD via snap when missing. Always verify SSH access before ending the root session.
+Note: When using `run-server.sh` on AlmaLinux, the first-run prompt can automate the steps below. It can create a sudo admin user with an auto-generated 24-32 character A-Z/a-z/0-9 password (or a manual override), optionally disable root SSH login, and install LXD via snap when missing. Always verify SSH access before ending the root session.
 
 ---
 

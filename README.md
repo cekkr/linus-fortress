@@ -82,8 +82,9 @@ Host assumptions:
 - The script checks for missing OS packages on each run and installs them when possible.
 
 AlmaLinux hardening (first-run prompt):
-- Optional SSH hardening can create a sudo admin user, generate a 24-32 character A-Z0-9 password by default, and disable root SSH login (plus optional password authentication disable).
+- Optional SSH hardening can create a sudo admin user, generate a 24-32 character A-Z/a-z/0-9 password by default, and disable root SSH login (plus optional password authentication disable).
 - Always test SSH access as the new user before ending the root session.
+- When the UI is bound to a non-loopback address on AlmaLinux, the script can prompt to open the UI port in firewalld.
 
 Least-privilege setup:
 - Use `scripts/setup-service-user.sh` (run as root) to create a service user and install a sudoers entry, or apply `scripts/fortress-sudoers.template` manually.
