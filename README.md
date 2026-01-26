@@ -81,6 +81,7 @@ Host assumptions:
 - `lxc`/`lxd` for container APIs; on AlmaLinux the script installs LXD via snap (snapd) when missing and ensures `/snap/bin` is reachable for service/screen runs. It can run `lxd init --auto` if LXD is installed.
 - `certbot` for automated Let's Encrypt issuance/renewal (the script attempts to install it when possible).
 - The script checks for missing OS packages on each run and installs them when possible.
+- On SELinux-enforcing hosts (AlmaLinux/RHEL), systemd may need proper file contexts; if you run as a service from `/root` or `/home`, consider moving the repo to `/opt/linus-fortress` or relabeling it.
 
 AlmaLinux hardening (first-run prompt):
 - Optional SSH hardening can create a sudo admin user, generate a 24-32 character A-Z/a-z/0-9 password by default, and disable root SSH login (plus optional password authentication disable).

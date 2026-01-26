@@ -122,6 +122,25 @@ write_env_line() {
   printf '%s="%s"\n' "$key" "$(escape_env_value "$value")"
 }
 
+selinux_enforcing() {
+  if command -v getenforce >/dev/null 2>&1; then
+    [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]]
+    return
+  fi
+  if [[ -f /sys/fs/selinux/enforce ]]; then
+    [[ "$(cat /sys/fs/selinux/enforce 2>/dev/null)" == "1" ]]
+    return
+  fi
+  return 1
+}
+
+restorecon_path() {
+  local path=$1
+  if selinux_enforcing && command -v restorecon >/dev/null 2>&1; then
+    restorecon -Rv "${path}" >/dev/null 2>&1 || true
+  fi
+}
+
 detect_os_id() {
   if [[ -f /etc/os-release ]]; then
     ( . /etc/os-release && printf '%s' "${ID:-}" )
@@ -466,6 +485,20 @@ stop_existing_instances() {
     local ui_pids=""
     ui_pids=$(pgrep -f "${UI_DIR}/server.js" || true)
     kill_pids "${ui_pids}"
+  fi
+}
+
+warn_selinux_service_path() {
+  local run_mode=$1
+  if [[ "${run_mode}" != "service" ]]; then
+    return 0
+  fi
+  if ! selinux_enforcing; then
+    return 0
+  fi
+  if [[ "${ROOT_DIR}" == /root/* || "${ROOT_DIR}" == /home/* ]]; then
+    log "Warning: SELinux can block systemd from executing files under ${ROOT_DIR}."
+    log "Consider moving the repo to /opt/linus-fortress, or run: chcon -R -t bin_t ${ROOT_DIR}"
   fi
 }
 
@@ -915,15 +948,19 @@ main() {
     } > "${tmp_env}"
 
     chmod 640 "${tmp_env}"
+    chown root:root "${tmp_env}" >/dev/null 2>&1 || true
     mv "${tmp_env}" "${ENV_FILE}"
+    restorecon_path "$(dirname "${ENV_FILE}")"
     log "Saved configuration to ${ENV_FILE}."
   fi
 
   ensure_dirs
+  restorecon_path "$(dirname "${ENV_FILE}")"
 
   if [[ ! -f "${ENV_FILE}" ]]; then
     fail "Missing ${ENV_FILE}; run with --configure to create it."
   fi
+  restorecon_path "${ENV_FILE}"
 
   set -a
   # shellcheck disable=SC1090
@@ -934,6 +971,7 @@ main() {
   if [[ "$run_mode" != "foreground" && "$run_mode" != "screen" && "$run_mode" != "service" ]]; then
     fail "Invalid run mode: ${run_mode}"
   fi
+  warn_selinux_service_path "${run_mode}"
 
   local ui_enabled="${UI_ENABLED_ARG:-${FORTRESS_UI_ENABLED:-1}}"
   export FORTRESS_UI_ENABLED="${ui_enabled}"
