@@ -516,10 +516,6 @@ ensure_firewalld_port_open() {
   if firewall-cmd --zone="${zone}" --query-port="${port}/tcp" >/dev/null 2>&1; then
     return 0
   fi
-  if ! prompt_yes_no "Open firewall port ${port}/tcp in firewalld zone ${zone}?" "Y"; then
-    log "Skipping firewalld port ${port}/tcp."
-    return 0
-  fi
   set +e
   firewall-cmd --zone="${zone}" --add-port="${port}/tcp"
   firewall-cmd --zone="${zone}" --permanent --add-port="${port}/tcp"
@@ -527,24 +523,51 @@ ensure_firewalld_port_open() {
   set -e
 }
 
-maybe_open_ui_firewall() {
-  local ui_host=$1
-  local ui_port=$2
-  if ! command -v firewall-cmd >/dev/null 2>&1; then
+ensure_ufw_port_open() {
+  local port=$1
+  if ! command -v ufw >/dev/null 2>&1; then
     return 0
   fi
-  if ! firewall-cmd --state >/dev/null 2>&1; then
+  if ! ufw status >/dev/null 2>&1; then
     return 0
   fi
-  if is_loopback_host "${ui_host}"; then
+  if ufw status | grep -q "Status: inactive"; then
     return 0
   fi
-  local zone
-  zone=$(firewall-cmd --get-default-zone 2>/dev/null || true)
-  if [[ -z "${zone}" ]]; then
-    zone="public"
+  if ufw status | grep -qE "\\b${port}/tcp\\b"; then
+    return 0
   fi
-  ensure_firewalld_port_open "${ui_port}" "${zone}"
+  ufw allow "${port}/tcp" >/dev/null 2>&1 || true
+}
+
+ensure_firewall_port_open() {
+  local host=$1
+  local port=$2
+  if is_loopback_host "${host}"; then
+    return 0
+  fi
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    local zone
+    zone=$(firewall-cmd --get-default-zone 2>/dev/null || true)
+    if [[ -z "${zone}" ]]; then
+      zone="public"
+    fi
+    ensure_firewalld_port_open "${port}" "${zone}"
+    return 0
+  fi
+  ensure_ufw_port_open "${port}"
+}
+
+maybe_open_firewall_ports() {
+  local api_host=$1
+  local api_port=$2
+  local ui_enabled=$3
+  local ui_host=$4
+  local ui_port=$5
+  ensure_firewall_port_open "${api_host}" "${api_port}"
+  if [[ "${ui_enabled}" == "1" ]]; then
+    ensure_firewall_port_open "${ui_host}" "${ui_port}"
+  fi
 }
 
 ensure_sshd_setting() {
@@ -975,11 +998,11 @@ main() {
 
   local ui_enabled="${UI_ENABLED_ARG:-${FORTRESS_UI_ENABLED:-1}}"
   export FORTRESS_UI_ENABLED="${ui_enabled}"
-  if [[ "${ui_enabled}" == "1" ]]; then
-    local ui_host_value="${FORTRESS_UI_HOST:-127.0.0.1}"
-    local ui_port_value="${FORTRESS_UI_PORT:-8090}"
-    maybe_open_ui_firewall "${ui_host_value}" "${ui_port_value}"
-  fi
+  local api_host_value="${FORTRESS_HOST_INTERFACE:-0.0.0.0}"
+  local api_port_value="${FORTRESS_HOST_PORT:-8443}"
+  local ui_host_value="${FORTRESS_UI_HOST:-127.0.0.1}"
+  local ui_port_value="${FORTRESS_UI_PORT:-8090}"
+  maybe_open_firewall_ports "${api_host_value}" "${api_port_value}" "${ui_enabled}" "${ui_host_value}" "${ui_port_value}"
 
   if [[ "${run_mode}" == "screen" ]]; then
     if ! command -v screen >/dev/null 2>&1; then

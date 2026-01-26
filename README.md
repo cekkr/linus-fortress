@@ -74,6 +74,7 @@ The file manager install uses Tiny File Manager under `/var/www/html/filemanager
 
 `run-server.sh` bootstraps the host, writes `/etc/fortress/fortress.env`, and starts the API (and optional UI) in foreground, `screen`, or systemd service mode.
 Use `--reset` to delete the saved env file and re-run the first-run configuration prompts. If an existing Fortress process or service is detected, the script will prompt to stop it before starting.
+When the API/UI bind to a non-loopback address, the script opens the corresponding ports via firewalld (RHEL/AlmaLinux) or ufw (Ubuntu) if the firewall is active.
 
 Host assumptions:
 - Linux distro with `apt`, `dnf`, or `yum` (Ubuntu/Debian or AlmaLinux/RHEL-like).
