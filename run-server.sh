@@ -16,6 +16,7 @@ UI_DIR="${ROOT_DIR}/ui"
 RUN_MODE_ARG=""
 UI_ENABLED_ARG=""
 FORCE_SETUP=""
+RESET_SETTINGS=""
 
 usage() {
   cat <<'EOF'
@@ -29,6 +30,7 @@ Options:
   --skip-ui                         Do not start the admin UI server.
   --enable-ui                       Force-start the admin UI server.
   --configure                       Re-run first-run prompts.
+  --reset                           Reset saved settings (removes fortress.env).
   -h, --help                        Show this help.
 EOF
 }
@@ -399,6 +401,74 @@ ensure_lxd_initialized() {
   fi
 }
 
+has_running_instances() {
+  local found="0"
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet fortress.service; then
+      found="1"
+    fi
+    if systemctl is-active --quiet fortress-ui.service; then
+      found="1"
+    fi
+  fi
+  if command -v screen >/dev/null 2>&1; then
+    if screen -list | grep -q "fortress-api"; then
+      found="1"
+    fi
+    if screen -list | grep -q "fortress-ui"; then
+      found="1"
+    fi
+  fi
+  if pgrep -f "${ROOT_DIR}/py/server.py" >/dev/null 2>&1; then
+    found="1"
+  fi
+  if [[ -d "${UI_DIR}" ]] && pgrep -f "${UI_DIR}/server.js" >/dev/null 2>&1; then
+    found="1"
+  fi
+  [[ "${found}" == "1" ]]
+}
+
+kill_pids() {
+  local pids=$1
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+  kill -TERM ${pids} >/dev/null 2>&1 || true
+  for _ in {1..10}; do
+    if ! kill -0 ${pids} >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  kill -KILL ${pids} >/dev/null 2>&1 || true
+}
+
+stop_existing_instances() {
+  if ! has_running_instances; then
+    return 0
+  fi
+  if ! prompt_yes_no "Detected running Fortress processes/services. Stop them now?" "Y"; then
+    log "Continuing without stopping existing Fortress processes."
+    return 0
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop fortress.service >/dev/null 2>&1 || true
+    systemctl stop fortress-ui.service >/dev/null 2>&1 || true
+  fi
+  if command -v screen >/dev/null 2>&1; then
+    screen -S fortress-api -X quit >/dev/null 2>&1 || true
+    screen -S fortress-ui -X quit >/dev/null 2>&1 || true
+  fi
+  local api_pids=""
+  api_pids=$(pgrep -f "${ROOT_DIR}/py/server.py" || true)
+  kill_pids "${api_pids}"
+  if [[ -d "${UI_DIR}" ]]; then
+    local ui_pids=""
+    ui_pids=$(pgrep -f "${UI_DIR}/server.js" || true)
+    kill_pids "${ui_pids}"
+  fi
+}
+
 is_loopback_host() {
   local host=$1
   case "${host}" in
@@ -661,6 +731,10 @@ parse_args() {
         FORCE_SETUP="1"
         shift
         ;;
+      --reset)
+        RESET_SETTINGS="1"
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -676,6 +750,14 @@ main() {
   parse_args "$@"
   ensure_root "$@"
   maybe_add_snap_path
+
+  if [[ -n "${RESET_SETTINGS}" ]]; then
+    if prompt_yes_no "Reset saved settings in ${ENV_FILE}?" "Y"; then
+      rm -f "${ENV_FILE}"
+      FORCE_SETUP="1"
+      log "Settings reset; configuration will be collected again."
+    fi
+  fi
 
   local first_run="0"
   if [[ -n "${FORCE_SETUP}" || ! -f "${ENV_FILE}" ]]; then
@@ -712,6 +794,7 @@ main() {
       ensure_snap_lxd
     fi
   fi
+  stop_existing_instances
 
   if [[ "${first_run}" == "1" ]]; then
     log "First run detected; preparing Fortress configuration."
