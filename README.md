@@ -65,6 +65,10 @@ For full LAMP automation and routing flows, the delegated token should include `
 
 The UI service enforces admin login (password policy + lockout + audit log + optional TOTP) before allowing delegated-token sessions. If no admin exists yet, the UI presents a bootstrap form backed by `/api/admin/bootstrap`. Admin sessions are stored in a UI-only cookie (`FORTRESS_UI_ADMIN_SESSION_COOKIE`).
 
+First run (UI admin bootstrap):
+- Open the WebUI and use the “Create admin” form shown on first load, or
+- `POST /api/admin/bootstrap` with `{ "username": "...", "password": "..." }` to create the first UI admin.
+
 LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` (or `user.fortress.stack=lamp`) via LXD config, or when the container name includes `lamp`.
 Optional service hints can be supplied with `user.lizard.services=apache,mysql,ftp` (comma-separated) to remove the install badge.
 The UI can probe service availability via `POST /containers/probe` (permission `manage_containers`) and update the LXD labels automatically.

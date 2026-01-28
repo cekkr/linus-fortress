@@ -387,7 +387,9 @@ async function ensureAdminAuthorized(req, res) {
   const store = await loadAdminStore();
   const users = store.users || {};
   if (Object.keys(users).length === 0) {
-    res.status(403).json({ error: "UI admin bootstrap required." });
+    res
+      .status(403)
+      .json({ error: "UI admin bootstrap required. Visit the WebUI and create the first admin (or POST /api/admin/bootstrap)." });
     return false;
   }
   const session = getAdminSession(req);

@@ -931,7 +931,7 @@ function updateAdminUI() {
     elements.adminMessage.textContent = "";
   }
   if (bootstrap && elements.adminMessage) {
-    elements.adminMessage.textContent = "Admin bootstrap required.";
+    elements.adminMessage.textContent = "Admin bootstrap required. Use the form below to create the first UI admin.";
   }
 }
 
@@ -996,7 +996,7 @@ async function handleAdminLogin(event) {
   event.preventDefault();
   if (state.admin.bootstrapRequired) {
     if (elements.adminMessage) {
-      elements.adminMessage.textContent = "Admin bootstrap required before login.";
+      elements.adminMessage.textContent = "Admin bootstrap required. Use the Create admin form below.";
     }
     return;
   }
