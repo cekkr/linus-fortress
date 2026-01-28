@@ -963,6 +963,10 @@ function updateAuthUI() {
   if (!locked && elements.authMessage) {
     elements.authMessage.textContent = "";
   }
+  if (locked && elements.authMessage && state.admin.active && !elements.authMessage.textContent) {
+    elements.authMessage.textContent =
+      "No delegated token yet. Create one with fortress-cli api-users create (requires master API key), or set FORTRESS_UI_API_KEY / FORTRESS_UI_USER_TOKEN for the UI.";
+  }
 }
 
 function showAuthOverlay(message) {
