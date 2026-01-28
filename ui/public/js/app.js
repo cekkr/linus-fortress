@@ -937,10 +937,10 @@ function updateAdminUI() {
 
 function showAdminOverlay(message) {
   state.admin.active = false;
-  if (elements.adminOverlay) {
-    elements.adminOverlay.hidden = false;
-  }
-  if (elements.adminMessage) {
+  const msg = (message || "").toLowerCase();
+  state.admin.bootstrapRequired = msg.includes("bootstrap");
+  updateAdminUI();
+  if (elements.adminMessage && !state.admin.bootstrapRequired) {
     elements.adminMessage.textContent = message || "";
   }
 }
