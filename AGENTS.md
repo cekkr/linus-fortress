@@ -30,6 +30,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Lizard UI supports admin login sessions (bootstrap + optional TOTP MFA) plus server-side delegated-token sessions (no tokens stored in the browser)
 - `POST /containers/expose` supports bulk interface/port exposure to a container with port ranges, protocol selection, per-interface upstream selection, and optional firewall allowlists (rolls back devices and firewall rules on failure)
 - `run-server.sh` now ensures missing OS packages on subsequent runs, supports AlmaLinux snap-based LXD installs, and can optionally harden SSH by creating a sudo user and disabling root login
+- `run-client.sh` provides an interactive helper for CLI/WebUI connection setup against remote APIs
 
 ## Project structure (tree)
 ```
@@ -73,6 +74,8 @@ This file contains the directives for AIs and must be kept current with the mini
 |   |-- sites.json
 |   `-- vms.json
 |-- requirements.txt
+|-- run-client.sh
+|-- run-server.sh
 |-- scripts
 |   |-- fortress-sudoers.template
 |   |-- setup-service-user.sh
@@ -80,6 +83,7 @@ This file contains the directives for AIs and must be kept current with the mini
 |   |   |-- provision_fedora.sh
 |   |   `-- provision_ubuntu.sh
 |   `-- vm
+|-- ui
 `-- tests
     |-- test_firewall.py
     |-- test_migrations.py

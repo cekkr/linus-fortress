@@ -60,6 +60,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).
 - Done: Add a least-privilege sudoers template + service-user setup for running without full root.
 - Done: Ensure `run-server.sh` installs missing OS packages on subsequent runs, supports AlmaLinux snap-based LXD installs, and offers optional SSH hardening prompts.
+- Done: Add `run-client.sh` helper for CLI/WebUI connection setup against remote APIs.
 
 ## Path 10: Production HTTP hosting readiness (near term)
 ### Path 10.1: Firewall management + anti-DDoS

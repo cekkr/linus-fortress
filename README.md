@@ -94,6 +94,14 @@ Least-privilege setup:
 - Use `scripts/setup-service-user.sh` (run as root) to create a service user and install a sudoers entry, or apply `scripts/fortress-sudoers.template` manually.
 - Ensure `run-server.sh` is root-owned and not group/other writable before granting sudo rights.
 
+## Run Client Script
+
+`run-client.sh` is an interactive helper for configuring local access to a remote Fortress API.
+
+Quick start:
+- `./run-client.sh` to run `fortress-cli setup` with prompts.
+- `./run-client.sh --webui` to generate a local WebUI env file and print steps to run the UI locally against a remote API.
+
 ## API Reference
 
 A full OpenAPI description is provided in [`api-v1.yaml`](api-v1.yaml) (import it into Swagger UI, Postman, Insomnia, etc.). The summaries below highlight each route, the permissions enforced by `py/server.py`, and the body/parameter semantics that `fortress-cli.py` uses under the hood.
