@@ -14,6 +14,10 @@ USER_TOKEN=""
 VERIFY_TLS="auto"
 UI_HOST="127.0.0.1"
 UI_PORT="8090"
+RESET_KEYS="0"
+ISSUE_TOKEN="0"
+TOKEN_LABEL=""
+TOKEN_PERMS=""
 
 usage() {
   cat <<'EOF'
@@ -26,6 +30,10 @@ Options:
   --server URL       Fortress API base URL (e.g. https://host:8443).
   --api-key KEY      Master API key (optional).
   --user-token TOKEN Delegated API user token (optional).
+  --reset-keys       Regenerate CLI RSA keypair during setup.
+  --issue-token      Create a delegated token after CLI setup.
+  --token-label NAME Label for the delegated token (default: client).
+  --token-perms LIST Comma-separated permissions for the token.
   --insecure         Disable TLS verification (self-signed certs).
   --secure           Force TLS verification.
   --ui-host HOST     WebUI bind host (default 127.0.0.1).
@@ -124,6 +132,22 @@ parse_args() {
         USER_TOKEN="${2:-}"
         shift 2
         ;;
+      --reset-keys)
+        RESET_KEYS="1"
+        shift
+        ;;
+      --issue-token)
+        ISSUE_TOKEN="1"
+        shift
+        ;;
+      --token-label)
+        TOKEN_LABEL="${2:-}"
+        shift 2
+        ;;
+      --token-perms)
+        TOKEN_PERMS="${2:-}"
+        shift 2
+        ;;
       --insecure)
         VERIFY_TLS="insecure"
         shift
@@ -163,12 +187,65 @@ PY
   fi
 }
 
+split_perms() {
+  local raw=$1
+  raw=${raw//,/ }
+  raw=${raw//;/ }
+  printf '%s' "${raw}"
+}
+
+create_delegated_token_cli() {
+  local label=$1
+  local perms_raw=$2
+  local default_perms="read_status manage_containers access_control manage_backups package_manage recipes_manage recipes_apply manage_routing api_user_admin"
+  if [[ -z "${label}" ]]; then
+    label="client"
+  fi
+  if [[ -z "${perms_raw}" ]]; then
+    perms_raw="${default_perms}"
+  fi
+  local perms
+  perms=$(split_perms "${perms_raw}")
+  local perm_args=()
+  if [[ "${perms}" == "*" ]]; then
+    perm_args=("*")
+  else
+    read -r -a perm_args <<< "${perms}"
+  fi
+  log "Creating delegated token '${label}'..."
+  local output
+  if ! output=$("${PYTHON_BIN}" "${ROOT_DIR}/fortress-cli.py" api-users create "${label}" --permissions "${perm_args[@]}"); then
+    fail "Failed to create delegated token. Ensure the stored auth has api_user_admin permission."
+  fi
+  local token
+  token=$(TOKEN_PAYLOAD="${output}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+
+raw = os.environ.get("TOKEN_PAYLOAD", "")
+try:
+    payload = json.loads(raw)
+except Exception:
+    payload = {}
+print(payload.get("token", ""))
+PY
+)
+  log "Delegated token created:"
+  log "  ${token}"
+  log "Copy/paste helpers:"
+  log "  FORTRESS_UI_USER_TOKEN=${token}"
+  log "  ./fortress-cli.py setup --server ${SERVER_URL} --user-token ${token}"
+}
+
 run_cli_setup() {
   ensure_python_deps
   if [[ -z "${SERVER_URL}" ]]; then
     SERVER_URL=$(prompt_default "Fortress API base URL" "https://127.0.0.1:8443")
   fi
   local setup_args=("${PYTHON_BIN}" "${ROOT_DIR}/fortress-cli.py" "setup" "--server" "${SERVER_URL}")
+  if [[ "${RESET_KEYS}" == "1" ]]; then
+    setup_args+=("--force-keys")
+  fi
   if [[ "${VERIFY_TLS}" == "insecure" ]]; then
     setup_args+=("--insecure")
   elif [[ "${VERIFY_TLS}" == "secure" ]]; then
@@ -183,6 +260,17 @@ run_cli_setup() {
   log "Running fortress-cli setup..."
   "${setup_args[@]}"
   log "CLI ready. Example: ./fortress-cli.py status"
+  if [[ "${ISSUE_TOKEN}" == "1" ]]; then
+    create_delegated_token_cli "${TOKEN_LABEL}" "${TOKEN_PERMS}"
+  elif [[ -t 0 ]]; then
+    if prompt_yes_no "Create a delegated token now?" "N"; then
+      local label
+      label=$(prompt_default "Delegated token label" "${TOKEN_LABEL:-client}")
+      local perms
+      perms=$(prompt_default "Delegated token permissions (comma-separated or *)" "${TOKEN_PERMS:-read_status,manage_containers,access_control,manage_backups,package_manage,recipes_manage,recipes_apply,manage_routing,api_user_admin}")
+      create_delegated_token_cli "${label}" "${perms}"
+    fi
+  fi
 }
 
 guide_webui_setup() {

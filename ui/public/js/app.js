@@ -965,7 +965,7 @@ function updateAuthUI() {
   }
   if (locked && elements.authMessage && state.admin.active && !elements.authMessage.textContent) {
     elements.authMessage.textContent =
-      "No delegated token yet. Create one with fortress-cli api-users create (requires master API key), or set FORTRESS_UI_API_KEY / FORTRESS_UI_USER_TOKEN for the UI.";
+      "No delegated token yet. Create one with fortress-cli api-users create (requires master API key) and include read_status, or set FORTRESS_UI_API_KEY / FORTRESS_UI_USER_TOKEN for the UI.";
   }
 }
 

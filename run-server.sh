@@ -5,6 +5,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="/etc/fortress/fortress.env"
 SSL_DIR="/etc/fortress/ssl"
 STATE_DIR="/var/lib/fortress"
+API_USERS_DB="${STATE_DIR}/api_users.json"
 LOG_FILE="/var/log/fortress.log"
 API_LOG="/var/log/fortress-api.log"
 UI_LOG="/var/log/fortress-ui.log"
@@ -92,6 +93,60 @@ generate_secret() {
 import secrets
 print(secrets.token_hex(32))
 PY
+}
+
+create_delegated_token() {
+  local username=$1
+  local permissions_raw=$2
+  local token
+  token=$(generate_secret)
+  FORTRESS_BOOTSTRAP_TOKEN="${token}" \
+  FORTRESS_BOOTSTRAP_USER="${username}" \
+  FORTRESS_BOOTSTRAP_PERMS="${permissions_raw}" \
+  FORTRESS_BOOTSTRAP_DB="${API_USERS_DB}" \
+    python3 - <<'PY'
+import json
+import os
+import re
+
+path = os.environ.get("FORTRESS_BOOTSTRAP_DB", "/var/lib/fortress/api_users.json")
+token = os.environ.get("FORTRESS_BOOTSTRAP_TOKEN", "")
+username = os.environ.get("FORTRESS_BOOTSTRAP_USER", "bootstrap")
+raw = os.environ.get("FORTRESS_BOOTSTRAP_PERMS", "")
+
+def parse_perms(value):
+    value = (value or "").strip()
+    if not value:
+        return []
+    if value == "*":
+        return ["*"]
+    parts = re.split(r"[,\s]+", value)
+    return [p for p in parts if p]
+
+permissions = parse_perms(raw)
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path, "r") as fh:
+            existing = json.load(fh)
+        if isinstance(existing, dict):
+            data = existing
+    except (OSError, json.JSONDecodeError):
+        data = {}
+
+data[token] = {
+    "username": username,
+    "permissions": permissions,
+    "allowed_containers": None,
+}
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w") as fh:
+    json.dump(data, fh, indent=2)
+
+print(token)
+PY
+  return 0
 }
 
 generate_password() {
@@ -983,6 +1038,25 @@ main() {
       fi
       if [[ -z "${ui_api_key}" && -z "${ui_user_token}" ]]; then
         log "Warning: UI has no API credentials; it will not be able to call the Fortress API."
+      fi
+    fi
+
+    local bootstrap_token=""
+    if prompt_yes_no "Create an initial delegated token for clients/UI now?" "Y"; then
+      local token_label
+      token_label=$(prompt_default "Delegated token label" "bootstrap-ui")
+      local token_permissions
+      token_permissions=$(prompt_default "Delegated token permissions (comma-separated or *)" "read_status,manage_containers,access_control,manage_backups,package_manage,recipes_manage,recipes_apply,manage_routing,api_user_admin")
+      bootstrap_token=$(create_delegated_token "${token_label}" "${token_permissions}")
+      log "Delegated token created:"
+      log "  ${bootstrap_token}"
+      log "Copy/paste helpers:"
+      log "  FORTRESS_UI_USER_TOKEN=${bootstrap_token}"
+      log "  ./fortress-cli.py setup --server https://<host>:${host_port} --user-token ${bootstrap_token}"
+      if [[ "${ui_enabled}" == "1" && -z "${ui_api_key}" && -z "${ui_user_token}" ]]; then
+        if prompt_yes_no "Use this token for the UI now?" "Y"; then
+          ui_user_token="${bootstrap_token}"
+        fi
       fi
     fi
 

@@ -69,6 +69,10 @@ First run (UI admin bootstrap):
 - Open the WebUI and use the “Create admin” form shown on first load, or
 - `POST /api/admin/bootstrap` with `{ "username": "...", "password": "..." }` to create the first UI admin.
 
+Delegated token notes:
+- The WebUI validates delegated tokens by calling `GET /status`, so the token must include `read_status`.
+- You can generate a token with `fortress-cli api-users create ...` or let `run-server.sh`/`run-client.sh` prompt for one.
+
 LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` (or `user.fortress.stack=lamp`) via LXD config, or when the container name includes `lamp`.
 Optional service hints can be supplied with `user.lizard.services=apache,mysql,ftp` (comma-separated) to remove the install badge.
 The UI can probe service availability via `POST /containers/probe` (permission `manage_containers`) and update the LXD labels automatically.
@@ -80,6 +84,7 @@ The file manager install uses Tiny File Manager under `/var/www/html/filemanager
 Use `--reset` to delete the saved env file and re-run the first-run configuration prompts. If an existing Fortress process or service is detected, the script will prompt to stop it before starting.
 When the API/UI bind to a non-loopback address, the script opens the corresponding ports via firewalld (RHEL/AlmaLinux) or ufw (Ubuntu) if the firewall is active.
 If `--mode service` is selected and the repo lives under `/root` or `/home` (or on a `noexec` mount), the script offers to relocate the clone to `/opt/linus-fortress` to avoid systemd/SELinux execution failures.
+On first run, the script can also generate a delegated token for copy/paste into the CLI or WebUI configuration.
 
 Host assumptions:
 - Linux distro with `apt`, `dnf`, or `yum` (Ubuntu/Debian or AlmaLinux/RHEL-like).
@@ -105,6 +110,8 @@ Least-privilege setup:
 Quick start:
 - `./run-client.sh` to run `fortress-cli setup` with prompts.
 - `./run-client.sh --webui` to generate a local WebUI env file and print steps to run the UI locally against a remote API.
+- `./run-client.sh --issue-token` to create a delegated token after setup (requires an API key or a token with `api_user_admin`).
+- `./run-client.sh --reset-keys` to regenerate the CLI RSA keypair.
 
 ## API Reference
 
