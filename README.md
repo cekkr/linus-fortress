@@ -73,6 +73,7 @@ Note: the UI admin store is local to the UI server process (default `/var/lib/fo
 Delegated token notes:
 - The WebUI validates delegated tokens by calling `GET /status`, so the token must include `read_status`.
 - You can generate a token with `fortress-cli api-users create ...` or let `run-server.sh`/`run-client.sh` prompt for one.
+- `fortress-cli` also honors `FORTRESS_API_KEY` / `FORTRESS_USER_TOKEN` environment variables (handy if the local keypair was reset).
 
 LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` (or `user.fortress.stack=lamp`) via LXD config, or when the container name includes `lamp`.
 Optional service hints can be supplied with `user.lizard.services=apache,mysql,ftp` (comma-separated) to remove the install badge.

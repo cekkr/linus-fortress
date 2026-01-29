@@ -226,7 +226,14 @@ class CredentialContext:
         if name in self.cache:
             return self.cache[name]
         private_key = self.unlock(passphrase)
-        secret = decrypt_secret(value, private_key)
+        try:
+            secret = decrypt_secret(value, private_key)
+        except ValueError as exc:
+            raise FortressCLIError(
+                "Stored credentials cannot be decrypted. This usually means the CLI keypair was reset "
+                "or the config was copied from another machine. Re-run `fortress-cli setup --force-keys` "
+                "and re-enter the API key/token (or clear stored secrets with empty values)."
+            ) from exc
         self.cache[name] = secret
         return secret
 
@@ -245,14 +252,16 @@ class FortressClient:
     def _resolve_auth(self, override: Optional[str] = None) -> Dict[str, str]:
         auth_mode = override or self.config.get("preferences", {}).get("auth_mode")
         headers: Dict[str, str] = {}
+        env_api_key = os.environ.get("FORTRESS_API_KEY")
+        env_user_token = os.environ.get("FORTRESS_USER_TOKEN")
         if auth_mode == "user-token":
-            token = self.credentials.get_secret("user_token", self.passphrase)
+            token = env_user_token or self.credentials.get_secret("user_token", self.passphrase)
             if not token:
                 raise FortressCLIError("No stored user token available")
             headers["X-User-Token"] = token
             return headers
-        api_key = self.credentials.get_secret("api_key", self.passphrase)
-        token = self.credentials.get_secret("user_token", self.passphrase)
+        api_key = env_api_key or self.credentials.get_secret("api_key", self.passphrase)
+        token = env_user_token or self.credentials.get_secret("user_token", self.passphrase)
         if api_key:
             headers["X-API-Key"] = api_key
         elif token:
