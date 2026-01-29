@@ -242,6 +242,13 @@ run_cli_setup() {
   if [[ -z "${SERVER_URL}" ]]; then
     SERVER_URL=$(prompt_default "Fortress API base URL" "https://127.0.0.1:8443")
   fi
+  if [[ "${VERIFY_TLS}" == "auto" && -t 0 ]]; then
+    if prompt_yes_no "Allow self-signed TLS for the API?" "N"; then
+      VERIFY_TLS="insecure"
+    else
+      VERIFY_TLS="secure"
+    fi
+  fi
   local setup_args=("${PYTHON_BIN}" "${ROOT_DIR}/fortress-cli.py" "setup" "--server" "${SERVER_URL}")
   if [[ "${RESET_KEYS}" == "1" ]]; then
     setup_args+=("--force-keys")
