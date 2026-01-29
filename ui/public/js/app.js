@@ -912,6 +912,7 @@ function setAdminState(payload) {
   state.admin.storePath = payload && payload.admin_db ? payload.admin_db : null;
   state.admin.error = payload && payload.error ? payload.error : null;
   updateAdminUI();
+  updateAuthUI();
 }
 
 function updateAdminUI() {
@@ -951,6 +952,7 @@ function showAdminOverlay(message) {
   const msg = (message || "").toLowerCase();
   state.admin.bootstrapRequired = msg.includes("bootstrap");
   updateAdminUI();
+  updateAuthUI();
   if (elements.adminMessage && !state.admin.bootstrapRequired && !state.admin.error) {
     elements.adminMessage.textContent = message || "";
   }

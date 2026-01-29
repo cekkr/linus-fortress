@@ -19,6 +19,7 @@ ISSUE_TOKEN="0"
 TOKEN_LABEL=""
 TOKEN_PERMS=""
 PASS_PHRASE="${FORTRESS_PASSPHRASE:-}"
+BOOTSTRAP_UI_ADMIN="auto"
 
 usage() {
   cat <<'EOF'
@@ -36,6 +37,8 @@ Options:
   --token-label NAME Label for the delegated token (default: client).
   --token-perms LIST Comma-separated permissions for the token.
   --passphrase PASS  CLI key passphrase (or set FORTRESS_PASSPHRASE).
+  --bootstrap-admin  Prompt to bootstrap the local UI admin (default in --webui).
+  --no-bootstrap-admin Skip UI admin bootstrap prompt.
   --insecure         Disable TLS verification (self-signed certs).
   --secure           Force TLS verification.
   --ui-host HOST     WebUI bind host (default 127.0.0.1).
@@ -90,6 +93,86 @@ prompt_yes_no() {
     Y|y|yes|YES) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+generate_password() {
+  local length=$((24 + RANDOM % 9))
+  local password=""
+  while true; do
+    if command -v openssl >/dev/null 2>&1; then
+      password=$(openssl rand -base64 64 | tr -dc 'A-Za-z0-9' | head -c "${length}")
+    else
+      password=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "${length}")
+    fi
+    if [[ ${#password} -ge ${length} && "$password" =~ [A-Z] && "$password" =~ [a-z] && "$password" =~ [0-9] ]]; then
+      break
+    fi
+  done
+  printf '%s' "${password:0:length}"
+}
+
+ui_base_url() {
+  local host=$1
+  local port=$2
+  if [[ "${host}" == "0.0.0.0" ]]; then
+    host="127.0.0.1"
+  fi
+  printf 'http://%s:%s' "${host}" "${port}"
+}
+
+bootstrap_ui_admin() {
+  local base_url
+  base_url=$(ui_base_url "${UI_HOST}" "${UI_PORT}")
+  local username
+  username=$(prompt_default "UI admin username" "admin")
+  local password=""
+  if prompt_yes_no "Auto-generate a strong admin password?" "Y"; then
+    password=$(generate_password)
+    log "Generated UI admin password: ${password}"
+  else
+    password=$(prompt_secret "UI admin password")
+    local confirm
+    confirm=$(prompt_secret "Confirm admin password")
+    if [[ "${password}" != "${confirm}" ]]; then
+      fail "Passwords do not match."
+    fi
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    log "curl not found; run the bootstrap request manually once the UI is running:"
+    log "  curl -s -X POST ${base_url}/api/admin/bootstrap -H 'Content-Type: application/json' -d '{\"username\":\"${username}\",\"password\":\"${password}\"}'"
+    return 0
+  fi
+  local status
+  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "${base_url}/api/admin/session" || true)
+  if [[ "${status}" != "200" ]]; then
+    log "UI not reachable at ${base_url}. Start the UI, then run:"
+    log "  curl -s -X POST ${base_url}/api/admin/bootstrap -H 'Content-Type: application/json' -d '{\"username\":\"${username}\",\"password\":\"${password}\"}'"
+    return 0
+  fi
+  local payload
+  payload=$(UI_BOOTSTRAP_USER="${username}" UI_BOOTSTRAP_PASS="${password}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+
+print(json.dumps({"username": os.environ["UI_BOOTSTRAP_USER"], "password": os.environ["UI_BOOTSTRAP_PASS"]}))
+PY
+)
+  local response
+  response=$(curl -s -w "\n%{http_code}" -X POST "${base_url}/api/admin/bootstrap" \
+    -H "Content-Type: application/json" \
+    -d "${payload}")
+  local body="${response%$'\n'*}"
+  local code="${response##*$'\n'}"
+  if [[ "${code}" == "200" ]]; then
+    log "UI admin bootstrap complete."
+    return 0
+  fi
+  if [[ "${code}" == "409" ]]; then
+    log "UI admin already initialized."
+    return 0
+  fi
+  log "UI admin bootstrap failed (${code}). Response: ${body}"
+  return 1
 }
 
 quote_env() {
@@ -153,6 +236,14 @@ parse_args() {
       --passphrase)
         PASS_PHRASE="${2:-}"
         shift 2
+        ;;
+      --bootstrap-admin)
+        BOOTSTRAP_UI_ADMIN="1"
+        shift
+        ;;
+      --no-bootstrap-admin)
+        BOOTSTRAP_UI_ADMIN="0"
+        shift
         ;;
       --insecure)
         VERIFY_TLS="insecure"
@@ -367,6 +458,14 @@ guide_webui_setup() {
   log ""
   if [[ "${wrote_env}" != "1" ]]; then
     log "If you skipped the env file, export FORTRESS_API_URL and FORTRESS_UI_* vars before starting."
+  fi
+
+  if [[ "${BOOTSTRAP_UI_ADMIN}" == "auto" && -t 0 ]]; then
+    if prompt_yes_no "Bootstrap a local UI admin now?" "Y"; then
+      bootstrap_ui_admin
+    fi
+  elif [[ "${BOOTSTRAP_UI_ADMIN}" == "1" ]]; then
+    bootstrap_ui_admin
   fi
 }
 
