@@ -15,6 +15,8 @@ const state = {
     active: false,
     username: null,
     bootstrapRequired: false,
+    storePath: null,
+    error: null,
   },
   events: [],
   probedContainers: new Set(),
@@ -907,31 +909,40 @@ function setAdminState(payload) {
   state.admin.active = Boolean(payload && payload.active);
   state.admin.username = payload && payload.username ? payload.username : null;
   state.admin.bootstrapRequired = Boolean(payload && payload.bootstrap_required);
+  state.admin.storePath = payload && payload.admin_db ? payload.admin_db : null;
+  state.admin.error = payload && payload.error ? payload.error : null;
   updateAdminUI();
 }
 
 function updateAdminUI() {
   const locked = !state.admin.active;
   const bootstrap = state.admin.bootstrapRequired;
+  const storeHint = state.admin.storePath ? ` (store: ${state.admin.storePath})` : "";
   if (elements.adminOverlay) {
     elements.adminOverlay.hidden = !locked;
   }
   if (elements.adminForm) {
-    elements.adminForm.hidden = bootstrap;
+    elements.adminForm.hidden = bootstrap || Boolean(state.admin.error);
   }
   if (elements.adminBootstrapForm) {
-    elements.adminBootstrapForm.hidden = !bootstrap;
+    elements.adminBootstrapForm.hidden = !bootstrap || Boolean(state.admin.error);
   }
   if (elements.adminSubtitle) {
-    elements.adminSubtitle.textContent = bootstrap
-      ? "Create the first UI admin to continue."
-      : "Sign in with a UI admin account to continue.";
+    if (state.admin.error) {
+      elements.adminSubtitle.textContent = "UI admin store error.";
+    } else {
+      elements.adminSubtitle.textContent = bootstrap
+        ? "Create the first UI admin for this UI server to continue."
+        : "Sign in with a UI admin account to continue.";
+    }
   }
   if (!locked && elements.adminMessage) {
     elements.adminMessage.textContent = "";
   }
-  if (bootstrap && elements.adminMessage) {
-    elements.adminMessage.textContent = "Admin bootstrap required. Use the form below to create the first UI admin.";
+  if (state.admin.error && elements.adminMessage) {
+    elements.adminMessage.textContent = `${state.admin.error}${storeHint ? ` ${storeHint}` : ""}`;
+  } else if (bootstrap && elements.adminMessage) {
+    elements.adminMessage.textContent = `No UI admin exists for this UI server${storeHint}. Use the form below to create the first UI admin.`;
   }
 }
 
@@ -940,7 +951,7 @@ function showAdminOverlay(message) {
   const msg = (message || "").toLowerCase();
   state.admin.bootstrapRequired = msg.includes("bootstrap");
   updateAdminUI();
-  if (elements.adminMessage && !state.admin.bootstrapRequired) {
+  if (elements.adminMessage && !state.admin.bootstrapRequired && !state.admin.error) {
     elements.adminMessage.textContent = message || "";
   }
 }

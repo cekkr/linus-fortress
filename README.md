@@ -68,6 +68,7 @@ The UI service enforces admin login (password policy + lockout + audit log + opt
 First run (UI admin bootstrap):
 - Open the WebUI and use the “Create admin” form shown on first load, or
 - `POST /api/admin/bootstrap` with `{ "username": "...", "password": "..." }` to create the first UI admin.
+Note: the UI admin store is local to the UI server process (default `/var/lib/fortress/ui_admins.json` when running as root; `~/.fortress-ui/ui_admins.json` when running as an unprivileged user). If you run the UI locally, you must bootstrap a local admin on that machine.
 
 Delegated token notes:
 - The WebUI validates delegated tokens by calling `GET /status`, so the token must include `read_status`.

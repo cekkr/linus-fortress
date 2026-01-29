@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import path from "path";
+import os from "os";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import { Agent, fetch } from "undici";
@@ -16,8 +17,11 @@ const INSECURE_TLS = /^(1|true|yes)$/i.test(process.env.FORTRESS_UI_INSECURE_TLS
 const SESSION_TTL_SECONDS = Number.parseInt(process.env.FORTRESS_UI_SESSION_TTL || "43200", 10);
 const SESSION_COOKIE = process.env.FORTRESS_UI_SESSION_COOKIE || "fortress_session";
 const COOKIE_SECURE = /^(1|true|yes)$/i.test(process.env.FORTRESS_UI_COOKIE_SECURE || "");
-const ADMIN_DB = process.env.FORTRESS_UI_ADMIN_DB || "/var/lib/fortress/ui_admins.json";
-const ADMIN_AUDIT_LOG = process.env.FORTRESS_UI_ADMIN_AUDIT_LOG || "/var/lib/fortress/ui_admin_audit.log";
+const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+const defaultAdminDir = isRoot ? "/var/lib/fortress" : path.join(os.homedir(), ".fortress-ui");
+const ADMIN_DB = process.env.FORTRESS_UI_ADMIN_DB || path.join(defaultAdminDir, "ui_admins.json");
+const ADMIN_AUDIT_LOG =
+  process.env.FORTRESS_UI_ADMIN_AUDIT_LOG || path.join(defaultAdminDir, "ui_admin_audit.log");
 const ADMIN_SESSION_TTL_SECONDS = Number.parseInt(process.env.FORTRESS_UI_ADMIN_SESSION_TTL || "43200", 10);
 const ADMIN_SESSION_COOKIE = process.env.FORTRESS_UI_ADMIN_SESSION_COOKIE || "fortress_admin_session";
 const ADMIN_ENABLED = !/^(0|false|no)$/i.test(process.env.FORTRESS_UI_ADMIN_ENABLED || "1");
@@ -261,6 +265,7 @@ async function loadAdminStore() {
   } catch (err) {
     if (err.code !== "ENOENT") {
       console.warn("Failed to read admin DB:", err.message);
+      return { users: {}, _error: `Unable to read admin store at ${ADMIN_DB}: ${err.message}` };
     }
   }
   return { users: {} };
@@ -385,11 +390,16 @@ async function ensureAdminAuthorized(req, res) {
     return true;
   }
   const store = await loadAdminStore();
+  if (store._error) {
+    res.status(500).json({ error: store._error, admin_db: ADMIN_DB });
+    return false;
+  }
   const users = store.users || {};
   if (Object.keys(users).length === 0) {
-    res
-      .status(403)
-      .json({ error: "UI admin bootstrap required. Visit the WebUI and create the first admin (or POST /api/admin/bootstrap)." });
+    res.status(403).json({
+      error: `UI admin bootstrap required. Create the first admin for this UI server (store: ${ADMIN_DB}).`,
+      admin_db: ADMIN_DB,
+    });
     return false;
   }
   const session = getAdminSession(req);
@@ -699,13 +709,17 @@ app.get(
   "/api/admin/session",
   asyncHandler(async (req, res) => {
     const store = await loadAdminStore();
+    if (store._error) {
+      res.json({ active: false, bootstrap_required: false, error: store._error, admin_db: ADMIN_DB });
+      return;
+    }
     const users = store.users || {};
     if (Object.keys(users).length === 0) {
-      res.json({ active: false, bootstrap_required: true });
+      res.json({ active: false, bootstrap_required: true, admin_db: ADMIN_DB });
       return;
     }
     const session = getAdminSession(req);
-    res.json({ active: Boolean(session), username: session ? session.username : null });
+    res.json({ active: Boolean(session), username: session ? session.username : null, admin_db: ADMIN_DB });
   })
 );
 
@@ -713,6 +727,10 @@ app.post(
   "/api/admin/bootstrap",
   asyncHandler(async (req, res) => {
     const store = await loadAdminStore();
+    if (store._error) {
+      res.status(500).json({ error: store._error, admin_db: ADMIN_DB });
+      return;
+    }
     const users = store.users || {};
     if (Object.keys(users).length > 0) {
       res.status(409).json({ error: "Admin already initialized." });
@@ -743,7 +761,12 @@ app.post(
       updated_at: new Date().toISOString(),
     };
     users[username] = record;
-    await saveAdminStore({ users });
+    try {
+      await saveAdminStore({ users });
+    } catch (err) {
+      res.status(500).json({ error: `Failed to save admin store at ${ADMIN_DB}: ${err.message}` });
+      return;
+    }
     await logAdminEvent({ action: "bootstrap", username, status: "success", ...buildAdminAuditContext(req) });
     res.json({ message: "Admin bootstrap complete", user: sanitizeAdminUser(record) });
   })
