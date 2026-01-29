@@ -1121,6 +1121,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--passphrase", help="Passphrase used to unlock the stored private key")
 
     subparsers = parser.add_subparsers(dest="command")
+    if hasattr(subparsers, "required"):
+        subparsers.required = True
 
     setup_parser = subparsers.add_parser("setup", help="Initial configuration and key generation")
     setup_parser.add_argument("--server", help="Server base URL, e.g. https://host:8443")
@@ -1153,6 +1155,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     api_users_parser = subparsers.add_parser("api-users", help="Manage delegated API users")
     api_users_sub = api_users_parser.add_subparsers(dest="subcommand")
+    if hasattr(api_users_sub, "required"):
+        api_users_sub.required = True
     api_users_list = api_users_sub.add_parser("list", help="List API users")
     api_users_list.set_defaults(func=api_users_command)
     api_users_create = api_users_sub.add_parser("create", help="Create a new API user")
@@ -1166,6 +1170,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     backup_parser = subparsers.add_parser("backup", help="Backup utilities")
     backup_sub = backup_parser.add_subparsers(dest="subcommand")
+    if hasattr(backup_sub, "required"):
+        backup_sub.required = True
     backup_list = backup_sub.add_parser("list", help="List encrypted backups")
     backup_list.set_defaults(func=backup_command)
     backup_trigger = backup_sub.add_parser("trigger", help="Trigger encrypted backup for a container")
@@ -1184,6 +1190,8 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_parser = subparsers.add_parser("recipes", help="Manage automation recipes")
     recipes_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
     recipes_sub = recipes_parser.add_subparsers(dest="subcommand")
+    if hasattr(recipes_sub, "required"):
+        recipes_sub.required = True
     recipes_list = recipes_sub.add_parser("list", help="List recipes")
     recipes_list.set_defaults(func=recipes_command)
     recipes_create = recipes_sub.add_parser("create", help="Create a new recipe")
@@ -1226,6 +1234,8 @@ def build_parser() -> argparse.ArgumentParser:
     firewall_parser = subparsers.add_parser("firewall", help="Manage host firewall rules")
     firewall_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
     firewall_sub = firewall_parser.add_subparsers(dest="subcommand")
+    if hasattr(firewall_sub, "required"):
+        firewall_sub.required = True
     firewall_status = firewall_sub.add_parser("status", help="Show firewall status")
     firewall_status.set_defaults(func=firewall_command)
     firewall_rules = firewall_sub.add_parser("rules", help="List firewall rules")
@@ -1266,6 +1276,8 @@ def build_parser() -> argparse.ArgumentParser:
     sites_parser = subparsers.add_parser("sites", help="Manage websites")
     sites_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
     sites_sub = sites_parser.add_subparsers(dest="subcommand")
+    if hasattr(sites_sub, "required"):
+        sites_sub.required = True
     sites_list = sites_sub.add_parser("list", help="List sites")
     sites_list.set_defaults(func=sites_command)
     sites_get = sites_sub.add_parser("get", help="Get a site")
@@ -1351,6 +1363,8 @@ def build_parser() -> argparse.ArgumentParser:
     migrations_parser = subparsers.add_parser("migrations", help="Manage data migrations")
     migrations_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
     migrations_sub = migrations_parser.add_subparsers(dest="subcommand")
+    if hasattr(migrations_sub, "required"):
+        migrations_sub.required = True
     migrations_status = migrations_sub.add_parser("status", help="Show migration status")
     migrations_status.set_defaults(func=migrations_command)
     migrations_plan = migrations_sub.add_parser("plan", help="Plan migrations")
@@ -1371,6 +1385,8 @@ def build_parser() -> argparse.ArgumentParser:
     system_parser = subparsers.add_parser("system", help="System maintenance tasks")
     system_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
     system_sub = system_parser.add_subparsers(dest="subcommand")
+    if hasattr(system_sub, "required"):
+        system_sub.required = True
     system_upgrade = system_sub.add_parser("upgrade", help="Update host packages and apply migrations")
     system_upgrade.add_argument("--skip-packages", action="store_true", help="Skip package updates")
     system_upgrade.add_argument("--full-upgrade", action="store_true", help="Use full upgrade (dist-upgrade)")
@@ -1381,6 +1397,8 @@ def build_parser() -> argparse.ArgumentParser:
     tls_parser = subparsers.add_parser("tls", help="TLS certificate maintenance")
     tls_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
     tls_sub = tls_parser.add_subparsers(dest="subcommand")
+    if hasattr(tls_sub, "required"):
+        tls_sub.required = True
     tls_renew = tls_sub.add_parser("renew", help="Renew Let's Encrypt certificates")
     tls_renew.add_argument("--domain", help="Domain to renew (matches routes/sites)")
     tls_renew.add_argument("--cert-name", help="Explicit certbot cert name")
@@ -1390,6 +1408,8 @@ def build_parser() -> argparse.ArgumentParser:
     vms_parser = subparsers.add_parser("vms", help="Manage VM testing environments")
     vms_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
     vms_sub = vms_parser.add_subparsers(dest="subcommand")
+    if hasattr(vms_sub, "required"):
+        vms_sub.required = True
     vms_list = vms_sub.add_parser("list", help="List VM records")
     vms_list.set_defaults(func=vms_command)
     vms_get = vms_sub.add_parser("get", help="Get a VM record")
@@ -1500,6 +1520,8 @@ def build_parser() -> argparse.ArgumentParser:
     hosts_parser = subparsers.add_parser("hosts", help="Manage remote hosts")
     hosts_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
     hosts_sub = hosts_parser.add_subparsers(dest="subcommand")
+    if hasattr(hosts_sub, "required"):
+        hosts_sub.required = True
     hosts_list = hosts_sub.add_parser("list", help="List host records")
     hosts_list.set_defaults(func=hosts_command)
     hosts_get = hosts_sub.add_parser("get", help="Get a host record")
@@ -1582,6 +1604,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not getattr(args, "command", None):
         parser.print_help()
         return 1
+    if not hasattr(args, "func"):
+        parser.print_help()
+        return 2
     try:
         args.func(args)
         return 0
