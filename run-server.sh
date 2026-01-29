@@ -1039,6 +1039,10 @@ main() {
       if [[ -z "${ui_api_key}" && -z "${ui_user_token}" ]]; then
         log "Warning: UI has no API credentials; it will not be able to call the Fortress API."
       fi
+      if ! is_loopback_host "${ui_host}"; then
+        log "Public UI configured; opening firewall for ${ui_port}/tcp."
+        ensure_firewall_port_open "${ui_host}" "${ui_port}"
+      fi
     fi
 
     local bootstrap_token=""
@@ -1068,6 +1072,12 @@ main() {
       fi
       log "Run mode must be foreground, screen, or service."
     done
+    if [[ "${ui_enabled}" == "1" && "${run_mode}" == "service" ]]; then
+      if ! prompt_yes_no "Run admin UI as a systemd service too?" "Y"; then
+        log "Admin UI will not run in service mode. Re-run with --configure to enable."
+        ui_enabled="0"
+      fi
+    fi
 
     mkdir -p "$(dirname "${ENV_FILE}")"
     local tmp_env

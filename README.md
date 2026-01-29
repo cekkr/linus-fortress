@@ -118,6 +118,35 @@ Quick start:
 During `--webui`, the script also prompts to bootstrap a local UI admin (use `--no-bootstrap-admin` to skip).
 Tip: `fortress-cli setup --show-keys` prints the key paths (and `--show-passphrase` prints the passphrase when keys are regenerated).
 
+## Remote server + local client (recommended flow)
+
+### 1) Server (remote host)
+1. Run `./run-server.sh --configure` and answer:
+   - API host interface: use `0.0.0.0` if the API is remote.
+   - API port: default `8443`.
+   - Enable master API key for bootstrap (recommended).
+   - Enable admin UI server only if you want a **server-side** UI.
+2. If you make the UI public (UI host not loopback), the script will **offer to open the firewall** for the UI port.
+3. If run mode is `service`, the script asks whether to run the UI as a systemd service too.
+4. When prompted, create an initial delegated token (include `read_status`).
+
+### 2) Client (your laptop)
+CLI:
+- `./run-client.sh --insecure` if the server uses self-signed TLS, otherwise omit `--insecure`.
+- Point to the remote API URL (e.g. `https://<server-ip>:8443`).
+- Use the master API key (or a delegated token with `api_user_admin`) to create delegated tokens.
+
+Local WebUI (recommended):
+1. `./run-client.sh --webui`
+2. It writes `ui/.env.local` with `FORTRESS_API_URL=https://<server-ip>:8443` and TLS settings.
+3. Start the UI: `cd ui && npm install && npm start`
+4. The **UI admin is local** to your laptop. Bootstrap it once using the form.
+5. Enter a delegated token (must include `read_status`).
+
+Server-side WebUI (optional):
+- Only use if you want the UI hosted on the server.
+- Make sure the firewall allows the UI port and consider additional access controls (VPN, IP allowlist, reverse proxy auth).
+
 ## API Reference
 
 A full OpenAPI description is provided in [`api-v1.yaml`](api-v1.yaml) (import it into Swagger UI, Postman, Insomnia, etc.). The summaries below highlight each route, the permissions enforced by `py/server.py`, and the body/parameter semantics that `fortress-cli.py` uses under the hood.
