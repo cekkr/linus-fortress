@@ -263,10 +263,16 @@ async function loadAdminStore() {
       return parsed;
     }
   } catch (err) {
-    if (err.code !== "ENOENT") {
-      console.warn("Failed to read admin DB:", err.message);
-      return { users: {}, _error: `Unable to read admin store at ${ADMIN_DB}: ${err.message}` };
+    if (err.code === "ENOENT") {
+      try {
+        await saveAdminStore({ users: {} });
+        return { users: {} };
+      } catch (writeErr) {
+        return { users: {}, _error: `Unable to initialize admin store at ${ADMIN_DB}: ${writeErr.message}` };
+      }
     }
+    console.warn("Failed to read admin DB:", err.message);
+    return { users: {}, _error: `Unable to read admin store at ${ADMIN_DB}: ${err.message}` };
   }
   return { users: {} };
 }
