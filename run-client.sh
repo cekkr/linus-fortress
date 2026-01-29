@@ -18,6 +18,7 @@ RESET_KEYS="0"
 ISSUE_TOKEN="0"
 TOKEN_LABEL=""
 TOKEN_PERMS=""
+PASS_PHRASE="${FORTRESS_PASSPHRASE:-}"
 
 usage() {
   cat <<'EOF'
@@ -34,6 +35,7 @@ Options:
   --issue-token      Create a delegated token after CLI setup.
   --token-label NAME Label for the delegated token (default: client).
   --token-perms LIST Comma-separated permissions for the token.
+  --passphrase PASS  CLI key passphrase (or set FORTRESS_PASSPHRASE).
   --insecure         Disable TLS verification (self-signed certs).
   --secure           Force TLS verification.
   --ui-host HOST     WebUI bind host (default 127.0.0.1).
@@ -148,6 +150,10 @@ parse_args() {
         TOKEN_PERMS="${2:-}"
         shift 2
         ;;
+      --passphrase)
+        PASS_PHRASE="${2:-}"
+        shift 2
+        ;;
       --insecure)
         VERIFY_TLS="insecure"
         shift
@@ -214,7 +220,13 @@ create_delegated_token_cli() {
   fi
   log "Creating delegated token '${label}'..."
   local output
-  if ! output=$("${PYTHON_BIN}" "${ROOT_DIR}/fortress-cli.py" api-users create "${label}" --permissions "${perm_args[@]}"); then
+  local cli_args=("${PYTHON_BIN}" "${ROOT_DIR}/fortress-cli.py")
+  if [[ -n "${PASS_PHRASE}" ]]; then
+    cli_args+=("--passphrase" "${PASS_PHRASE}")
+  fi
+  cli_args+=("api-users" "create" "${label}" "--permissions" "${perm_args[@]}")
+  if ! output=$("${cli_args[@]}" 2>&1); then
+    log "${output}"
     fail "Failed to create delegated token. Ensure the stored auth has api_user_admin permission."
   fi
   local token
@@ -252,6 +264,9 @@ run_cli_setup() {
   local setup_args=("${PYTHON_BIN}" "${ROOT_DIR}/fortress-cli.py" "setup" "--server" "${SERVER_URL}")
   if [[ "${RESET_KEYS}" == "1" ]]; then
     setup_args+=("--force-keys")
+    if [[ -n "${PASS_PHRASE}" ]]; then
+      setup_args+=("--key-passphrase" "${PASS_PHRASE}")
+    fi
   fi
   if [[ "${VERIFY_TLS}" == "insecure" ]]; then
     setup_args+=("--insecure")
@@ -268,6 +283,9 @@ run_cli_setup() {
   "${setup_args[@]}"
   log "CLI ready. Example: ./fortress-cli.py status"
   if [[ "${ISSUE_TOKEN}" == "1" ]]; then
+    if [[ -z "${PASS_PHRASE}" && -t 0 ]]; then
+      PASS_PHRASE=$(prompt_secret "CLI key passphrase (leave blank to prompt later)")
+    fi
     create_delegated_token_cli "${TOKEN_LABEL}" "${TOKEN_PERMS}"
   elif [[ -t 0 ]]; then
     if prompt_yes_no "Create a delegated token now?" "N"; then
@@ -275,6 +293,9 @@ run_cli_setup() {
       label=$(prompt_default "Delegated token label" "${TOKEN_LABEL:-client}")
       local perms
       perms=$(prompt_default "Delegated token permissions (comma-separated or *)" "${TOKEN_PERMS:-read_status,manage_containers,access_control,manage_backups,package_manage,recipes_manage,recipes_apply,manage_routing,api_user_admin}")
+      if [[ -z "${PASS_PHRASE}" ]]; then
+        PASS_PHRASE=$(prompt_secret "CLI key passphrase (leave blank to prompt later)")
+      fi
       create_delegated_token_cli "${label}" "${perms}"
     fi
   fi
