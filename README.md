@@ -114,6 +114,7 @@ Quick start:
 - `./run-client.sh --webui` to generate a local WebUI env file and print steps to run the UI locally against a remote API.
 - `./run-client.sh --issue-token` to create a delegated token after setup (requires an API key or a token with `api_user_admin`).
 - `./run-client.sh --reset-keys` to regenerate the CLI RSA keypair.
+Tip: `fortress-cli setup --show-keys` prints the key paths (and `--show-passphrase` prints the passphrase when keys are regenerated).
 
 ## API Reference
 

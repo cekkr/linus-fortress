@@ -66,8 +66,8 @@ def get_passphrase(confirm: bool = False, preset: Optional[str] = None) -> str:
     return first
 
 
-def generate_rsa_keypair(bits: int = DEFAULT_KEY_BITS, passphrase: Optional[str] = None) -> None:
-    """Generate a RSA keypair and persist it to disk."""
+def generate_rsa_keypair(bits: int = DEFAULT_KEY_BITS, passphrase: Optional[str] = None) -> str:
+    """Generate a RSA keypair and persist it to disk. Returns the passphrase used."""
     ensure_storage_dir()
     passphrase = get_passphrase(confirm=True, preset=passphrase)
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
@@ -84,6 +84,7 @@ def generate_rsa_keypair(bits: int = DEFAULT_KEY_BITS, passphrase: Optional[str]
     PRIVATE_KEY_PATH.write_bytes(private_bytes)
     PUBLIC_KEY_PATH.write_bytes(public_bytes)
     print(f"Generated {bits}-bit RSA keypair under {CONFIG_DIR}")
+    return passphrase
 
 
 def prompt(text: str, default: Optional[str] = None) -> str:
@@ -319,9 +320,10 @@ class FortressClient:
 
 def setup_command(args: argparse.Namespace) -> None:
     ensure_storage_dir()
-
-    if args.force_keys or not keys_exist():
-        generate_rsa_keypair(bits=args.key_bits, passphrase=args.key_passphrase)
+    passphrase_used: Optional[str] = None
+    keys_regenerated = args.force_keys or not keys_exist()
+    if keys_regenerated:
+        passphrase_used = generate_rsa_keypair(bits=args.key_bits, passphrase=args.key_passphrase)
     else:
         print("Existing RSA keypair found, keeping current keys.")
 
@@ -338,7 +340,11 @@ def setup_command(args: argparse.Namespace) -> None:
     elif args.secure:
         verify_tls = True
 
-    stored: Dict[str, Optional[str]] = existing_config.get("stored", {}).copy()
+    if keys_regenerated and existing_config.get("stored"):
+        print("Warning: keypair regenerated; clearing stored secrets. Re-enter API key/token.")
+        stored: Dict[str, Optional[str]] = {}
+    else:
+        stored = existing_config.get("stored", {}).copy()
 
     def capture_secret(name: str, provided: Optional[str], prompt_label: str) -> Optional[str]:
         if provided == "":
@@ -378,6 +384,14 @@ def setup_command(args: argparse.Namespace) -> None:
     }
     save_config(config)
     print(f"Configuration saved to {CONFIG_PATH}")
+    if args.show_keys:
+        print(f"Public key: {PUBLIC_KEY_PATH}")
+        print(f"Private key: {PRIVATE_KEY_PATH}")
+    if args.show_passphrase:
+        if passphrase_used:
+            print(f"Passphrase: {passphrase_used}")
+        else:
+            print("Passphrase: (not available; rerun setup with --force-keys and --key-passphrase or FORTRESS_PASSPHRASE)")
 
 
 def info_command(_: argparse.Namespace) -> None:
@@ -1142,6 +1156,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--key-bits", type=int, default=DEFAULT_KEY_BITS)
     setup_parser.add_argument("--timeout", type=int, help="HTTP timeout in seconds")
     setup_parser.add_argument("--force-keys", action="store_true", help="Regenerate RSA keypair even if one exists")
+    setup_parser.add_argument("--show-keys", action="store_true", help="Print key paths after setup")
+    setup_parser.add_argument("--show-passphrase", action="store_true", help="Print passphrase used for new keys (only when regenerated)")
     setup_parser.add_argument("--secure", action="store_true", help="Enforce TLS verification")
     setup_parser.add_argument("--insecure", action="store_true", help="Disable TLS verification (not recommended)")
     setup_parser.add_argument("--key-passphrase", help="Passphrase for new keys (non-interactive environments)")
