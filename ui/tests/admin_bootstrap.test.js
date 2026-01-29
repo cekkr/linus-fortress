@@ -6,6 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { request } from "undici";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function getFreePort() {
   return new Promise((resolve, reject) => {

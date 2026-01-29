@@ -725,7 +725,12 @@ app.get(
       return;
     }
     const session = getAdminSession(req);
-    res.json({ active: Boolean(session), username: session ? session.username : null, admin_db: ADMIN_DB });
+    res.json({
+      active: Boolean(session),
+      username: session ? session.username : null,
+      bootstrap_required: false,
+      admin_db: ADMIN_DB,
+    });
   })
 );
 
