@@ -147,6 +147,45 @@ Server-side WebUI (optional):
 - Only use if you want the UI hosted on the server.
 - Make sure the firewall allows the UI port and consider additional access controls (VPN, IP allowlist, reverse proxy auth).
 
+## Fast remote demo (server + client + remote WebUI)
+
+Goal: quickest secure-ish setup for a remote server with a **server-hosted WebUI**, plus a local CLI client.
+
+### Server (remote host) — first time or reconfigure
+1. Reconfigure (keeps repo, rewrites env):  
+   `./run-server.sh --configure`
+2. Recommended answers:
+   - API host interface: `0.0.0.0`
+   - API port: `8443`
+   - Enable master API key for bootstrap: **Yes**
+   - Enable admin UI server: **Yes**
+   - Admin UI host: `0.0.0.0` (public) or a specific IP
+   - Admin UI port: `8090`
+   - Admin UI API URL: `https://127.0.0.1:8443`
+   - Allow UI to trust self-signed TLS from API: **Yes** (if using self-signed)
+   - Create initial delegated token: **Yes** (include `read_status`)
+   - Run mode: `service` (recommended)
+   - Run admin UI as a systemd service too: **Yes**
+
+Security recommendations (fast but safer):
+- Use a strong master API key; disable it after you create delegated tokens.
+- Prefer delegated tokens with least privilege + `read_status` for the UI.
+- If the UI is public, restrict access (VPN, IP allowlist, reverse proxy auth).
+- Rotate tokens if you pasted them into terminals or chat.
+
+### Client (your laptop)
+1. Configure CLI against the remote API (self-signed? use `--insecure`):  
+   `./run-client.sh --insecure`
+2. Create a delegated token (if you didn’t already):  
+   `./run-client.sh --issue-token --insecure`
+
+### Remote WebUI usage
+1. Open `http://<server-ip>:8090` (or your chosen UI port).
+2. Bootstrap the **UI admin** (first visit).
+3. Paste the delegated token (must include `read_status`).
+
+Tip: If you only want a **local WebUI**, use `./run-client.sh --webui` instead and keep the UI port closed on the server.
+
 ## API Reference
 
 A full OpenAPI description is provided in [`api-v1.yaml`](api-v1.yaml) (import it into Swagger UI, Postman, Insomnia, etc.). The summaries below highlight each route, the permissions enforced by `py/server.py`, and the body/parameter semantics that `fortress-cli.py` uses under the hood.
