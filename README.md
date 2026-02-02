@@ -74,6 +74,7 @@ The admin store file is initialized on the first UI request, even before bootstr
 Delegated token notes:
 - The WebUI validates delegated tokens by calling `GET /status`, so the token must include `read_status`.
 - You can generate a token with `fortress-cli api-users create ...` or let `run-server.sh`/`run-client.sh` prompt for one.
+- Typed tokens (`user-token:<token>` / `api-key:<key>`) are accepted and shown in copy/paste helpers.
 - `fortress-cli` also honors `FORTRESS_API_KEY` / `FORTRESS_USER_TOKEN` environment variables (handy if the local keypair was reset).
 
 LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` (or `user.fortress.stack=lamp`) via LXD config, or when the container name includes `lamp`.
@@ -112,6 +113,8 @@ Least-privilege setup:
 
 Quick start:
 - `./run-client.sh` to run `fortress-cli setup` with prompts.
+- You can pass a plain IP/hostname via `--server` (defaults to `https://<addr>:8443`).
+- `./run-client.sh --server <ip> --token user-token:<token>` for a one-line remote bootstrap.
 - `./run-client.sh --webui` to generate a local WebUI env file and print steps to run the UI locally against a remote API.
 - `./run-client.sh --issue-token` to create a delegated token after setup (requires an API key or a token with `api_user_admin`).
 - `./run-client.sh --reset-keys` to regenerate the CLI RSA keypair.
@@ -126,14 +129,15 @@ Tip: `fortress-cli setup --show-keys` prints the key paths (and `--show-passphra
    - API port: default `8443`.
    - Enable master API key for bootstrap (recommended).
    - Enable admin UI server only if you want a **server-side** UI.
-2. If you make the UI public (UI host not loopback), the script will **offer to open the firewall** for the UI port.
+   - If UI is enabled, choose whether to make it public (bind `0.0.0.0`).
+2. If you make the UI public, the script will **offer to open the firewall** for the UI port.
 3. If run mode is `service`, the script asks whether to run the UI as a systemd service too.
-4. When prompted, create an initial delegated token (include `read_status`).
+4. When prompted, create an initial delegated token (default permissions now `*`; tighten later).
 
 ### 2) Client (your laptop)
 CLI:
 - `./run-client.sh --insecure` if the server uses self-signed TLS, otherwise omit `--insecure`.
-- Point to the remote API URL (e.g. `https://<server-ip>:8443`).
+- Point to the remote API (a bare IP/hostname is enough; it expands to `https://<addr>:8443`).
 - Use the master API key (or a delegated token with `api_user_admin`) to create delegated tokens.
 
 Local WebUI (recommended):
@@ -159,11 +163,11 @@ Goal: quickest secure-ish setup for a remote server with a **server-hosted WebUI
    - API port: `8443`
    - Enable master API key for bootstrap: **Yes**
    - Enable admin UI server: **Yes**
-   - Admin UI host: `0.0.0.0` (public) or a specific IP
+   - Make admin UI public (bind `0.0.0.0`): **Yes**
    - Admin UI port: `8090`
    - Admin UI API URL: `https://127.0.0.1:8443`
    - Allow UI to trust self-signed TLS from API: **Yes** (if using self-signed)
-   - Create initial delegated token: **Yes** (include `read_status`)
+   - Create initial delegated token: **Yes** (default permissions `*`)
    - Run mode: `service` (recommended)
    - Run admin UI as a systemd service too: **Yes**
 
@@ -175,14 +179,14 @@ Security recommendations (fast but safer):
 
 ### Client (your laptop)
 1. Configure CLI against the remote API (self-signed? use `--insecure`):  
-   `./run-client.sh --insecure`
+   `./run-client.sh --server <server-ip> --token user-token:<token> --insecure`
 2. Create a delegated token (if you didn’t already):  
    `./run-client.sh --issue-token --insecure`
 
 ### Remote WebUI usage
 1. Open `http://<server-ip>:8090` (or your chosen UI port).
 2. Bootstrap the **UI admin** (first visit).
-3. Paste the delegated token (must include `read_status`).
+3. Paste the delegated token (must include `read_status`; `user-token:<token>` accepted).
 
 Tip: If you only want a **local WebUI**, use `./run-client.sh --webui` instead and keep the UI port closed on the server.
 
@@ -190,7 +194,7 @@ Tip: If you only want a **local WebUI**, use `./run-client.sh --webui` instead a
 
 A full OpenAPI description is provided in [`api-v1.yaml`](api-v1.yaml) (import it into Swagger UI, Postman, Insomnia, etc.). The summaries below highlight each route, the permissions enforced by `py/server.py`, and the body/parameter semantics that `fortress-cli.py` uses under the hood.
 
-All endpoints require either `X-API-Key` or `X-User-Token`. Permissions listed below map to the capabilities stored in the delegated API user records.
+All endpoints require either `X-API-Key` or `X-User-Token`. Typed tokens (`api-key:<key>` or `user-token:<token>`) are accepted in either header and normalized by the API. Permissions listed below map to the capabilities stored in the delegated API user records.
 
 ### Status & Routing
 

@@ -1,10 +1,21 @@
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 
 
 DEFAULT_API_SECRET = "CHANGE_THIS_TO_A_VERY_LONG_RANDOM_STRING"
+TOKEN_TYPE_ALIASES = {
+    "api-key": "api-key",
+    "api_key": "api-key",
+    "master-key": "api-key",
+    "master_key": "api-key",
+    "master": "api-key",
+    "user-token": "user-token",
+    "user_token": "user-token",
+    "user": "user-token",
+    "delegated": "user-token",
+}
 
 
 def resolve_master_key(api_secret_key: Optional[str], default_secret: str = DEFAULT_API_SECRET) -> Optional[str]:
@@ -24,6 +35,42 @@ def mask_token(token: str) -> str:
     return f"{token[:4]}...{token[-4:]}"
 
 
+def parse_prefixed_token(raw: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    if not raw:
+        return None, None
+    value = raw.strip()
+    if not value:
+        return None, None
+    if ":" not in value:
+        return None, value
+    prefix, token = value.split(":", 1)
+    prefix = prefix.strip().lower()
+    token = token.strip()
+    if not token:
+        return None, value
+    token_type = TOKEN_TYPE_ALIASES.get(prefix)
+    if not token_type:
+        return None, value
+    return token_type, token
+
+
+def normalize_auth_headers(
+    x_api_key: Optional[str],
+    x_user_token: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    api_kind, api_token = parse_prefixed_token(x_api_key)
+    if api_kind:
+        if api_kind == "api-key":
+            return api_token, None
+        return None, api_token
+    user_kind, user_token = parse_prefixed_token(x_user_token)
+    if user_kind:
+        if user_kind == "api-key":
+            return user_token, None
+        return None, user_token
+    return x_api_key, x_user_token
+
+
 def verify_token(
     x_api_key: Optional[str],
     x_user_token: Optional[str] = None,
@@ -32,7 +79,8 @@ def verify_token(
     master_key: Optional[str],
     load_users: Callable[[], Dict[str, Dict[str, Any]]],
 ) -> Dict[str, Any]:
-    """Validate access either via master API key or delegated user token."""
+    """Validate access either via master API key or delegated user token (typed tokens supported)."""
+    x_api_key, x_user_token = normalize_auth_headers(x_api_key, x_user_token)
     if master_key and x_api_key and x_api_key == master_key:
         return {"actor": "admin", "permissions": ["*"], "allowed_containers": None}
 

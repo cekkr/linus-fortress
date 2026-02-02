@@ -84,6 +84,41 @@ prompt_secret() {
   printf '%s' "$answer"
 }
 
+TOKEN_TYPE=""
+TOKEN_VALUE=""
+
+parse_typed_token() {
+  local raw=$1
+  TOKEN_TYPE=""
+  TOKEN_VALUE="${raw}"
+  if [[ -z "${raw}" || "${raw}" != *:* ]]; then
+    return 0
+  fi
+  local prefix="${raw%%:*}"
+  local token="${raw#*:}"
+  local normalized="${prefix,,}"
+  case "${normalized}" in
+    api-key|api_key|master|master-key|master_key|api)
+      TOKEN_TYPE="api-key"
+      TOKEN_VALUE="${token}"
+      ;;
+    user-token|user_token|user|delegated|token)
+      TOKEN_TYPE="user-token"
+      TOKEN_VALUE="${token}"
+      ;;
+    *)
+      TOKEN_TYPE=""
+      TOKEN_VALUE="${raw}"
+      ;;
+  esac
+}
+
+format_typed_token() {
+  local token_type=$1
+  local token=$2
+  printf '%s:%s' "${token_type}" "${token}"
+}
+
 generate_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32
@@ -992,6 +1027,7 @@ main() {
       if [[ -z "$api_key" ]]; then
         api_key=$(generate_secret)
         log "Generated master API key: ${api_key}"
+        log "Typed token: $(format_typed_token "api-key" "${api_key}")"
       fi
     fi
     local backup_password
@@ -1013,7 +1049,11 @@ main() {
     local ui_user_token=""
     local ui_insecure_tls="0"
     if [[ "${ui_enabled}" == "1" ]]; then
-      ui_host=$(prompt_default "Admin UI host" "127.0.0.1")
+      if prompt_yes_no "Make admin UI public (bind 0.0.0.0)?" "N"; then
+        ui_host="0.0.0.0"
+      else
+        ui_host=$(prompt_default "Admin UI host" "127.0.0.1")
+      fi
       while true; do
         ui_port=$(prompt_default "Admin UI port" "8090")
         if [[ "$ui_port" =~ ^[0-9]+$ ]] && ((ui_port >= 1 && ui_port <= 65535)); then
@@ -1022,14 +1062,30 @@ main() {
         log "Port must be a number between 1 and 65535."
       done
       api_url=$(prompt_default "Admin UI API URL" "https://127.0.0.1:${host_port}")
+      local ui_token_input=""
       if [[ -n "${api_key}" ]]; then
         if prompt_yes_no "Use master API key for UI auth?" "Y"; then
           ui_api_key="${api_key}"
         else
-          ui_user_token=$(prompt_secret "Delegated user token for UI")
+          ui_token_input=$(prompt_secret "UI access token (user-token:... or api-key:...)")
         fi
       else
-        ui_user_token=$(prompt_secret "Delegated user token for UI (required when master key disabled)")
+        ui_token_input=$(prompt_secret "Delegated user token for UI (user-token:...)")
+      fi
+      if [[ -n "${ui_token_input}" ]]; then
+        parse_typed_token "${ui_token_input}"
+        if [[ "${TOKEN_TYPE}" == "api-key" ]]; then
+          if [[ -n "${api_key}" ]]; then
+            ui_api_key="${TOKEN_VALUE}"
+          else
+            log "Master API key disabled; UI cannot use api-key tokens. Use a user-token instead."
+          fi
+        else
+          if [[ -z "${TOKEN_TYPE}" ]]; then
+            log "Assuming delegated user token for UI."
+          fi
+          ui_user_token="${TOKEN_VALUE}"
+        fi
       fi
       if [[ -f "${SELF_SIGNED_MARKER}" ]]; then
         if prompt_yes_no "Allow UI to trust self-signed TLS from API?" "Y"; then
@@ -1050,12 +1106,16 @@ main() {
       local token_label
       token_label=$(prompt_default "Delegated token label" "bootstrap-ui")
       local token_permissions
-      token_permissions=$(prompt_default "Delegated token permissions (comma-separated or *)" "read_status,manage_containers,access_control,manage_backups,package_manage,recipes_manage,recipes_apply,manage_routing,api_user_admin")
+      token_permissions=$(prompt_default "Delegated token permissions (comma-separated or *)" "*")
       bootstrap_token=$(create_delegated_token "${token_label}" "${token_permissions}")
+      local typed_bootstrap
+      typed_bootstrap=$(format_typed_token "user-token" "${bootstrap_token}")
       log "Delegated token created:"
       log "  ${bootstrap_token}"
+      log "  ${typed_bootstrap}"
       log "Copy/paste helpers:"
       log "  FORTRESS_UI_USER_TOKEN=${bootstrap_token}"
+      log "  ./run-client.sh --server <host> --token ${typed_bootstrap}"
       log "  ./fortress-cli.py setup --server https://<host>:${host_port} --user-token ${bootstrap_token}"
       if [[ "${ui_enabled}" == "1" && -z "${ui_api_key}" && -z "${ui_user_token}" ]]; then
         if prompt_yes_no "Use this token for the UI now?" "Y"; then

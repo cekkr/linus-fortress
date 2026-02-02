@@ -5,7 +5,8 @@ info:
   description: |
     FastAPI service that orchestrates LXD containers, routing, access control, backups,
     firewall, and package management. Authentication can be done either via the master `X-API-Key`
-    or delegated `X-User-Token`. Both headers are documented as security schemes below.
+    or delegated `X-User-Token`. Typed tokens (`api-key:<key>` or `user-token:<token>`) are accepted
+    in either header and normalized by the API. Both headers are documented as security schemes below.
 servers:
   - url: https://fortress.local:8443
     description: Fortress default listener (change host/port as needed)
@@ -1927,10 +1928,12 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
+      description: Master API key. Typed tokens (`api-key:<key>` / `user-token:<token>`) are accepted.
     UserTokenAuth:
       type: apiKey
       in: header
       name: X-User-Token
+      description: Delegated token. Typed tokens (`api-key:<key>` / `user-token:<token>`) are accepted.
   schemas:
     Message:
       type: object

@@ -11,6 +11,7 @@ MODE="cli"
 SERVER_URL=""
 API_KEY=""
 USER_TOKEN=""
+TOKEN_INPUT=""
 VERIFY_TLS="auto"
 UI_HOST="127.0.0.1"
 UI_PORT="8090"
@@ -29,9 +30,10 @@ Default flow configures the CLI connection (fortress-cli setup).
 
 Options:
   --webui            Guide setup for running the WebUI locally.
-  --server URL       Fortress API base URL (e.g. https://host:8443).
+  --server ADDR      Fortress API address or URL (e.g. 203.0.113.10 or https://host:8443).
   --api-key KEY      Master API key (optional).
   --user-token TOKEN Delegated API user token (optional).
+  --token TOKEN      Typed token (api-key:... or user-token:...).
   --reset-keys       Regenerate CLI RSA keypair during setup.
   --issue-token      Create a delegated token after CLI setup.
   --token-label NAME Label for the delegated token (default: client).
@@ -109,6 +111,83 @@ generate_password() {
     fi
   done
   printf '%s' "${password:0:length}"
+}
+
+TOKEN_TYPE=""
+TOKEN_VALUE=""
+
+parse_typed_token() {
+  local raw=$1
+  TOKEN_TYPE=""
+  TOKEN_VALUE="${raw}"
+  if [[ -z "${raw}" || "${raw}" != *:* ]]; then
+    return 0
+  fi
+  local prefix="${raw%%:*}"
+  local token="${raw#*:}"
+  local normalized="${prefix,,}"
+  case "${normalized}" in
+    api-key|api_key|master|master-key|master_key|api)
+      TOKEN_TYPE="api-key"
+      TOKEN_VALUE="${token}"
+      ;;
+    user-token|user_token|user|delegated|token)
+      TOKEN_TYPE="user-token"
+      TOKEN_VALUE="${token}"
+      ;;
+    *)
+      TOKEN_TYPE=""
+      TOKEN_VALUE="${raw}"
+      ;;
+  esac
+}
+
+apply_token_input() {
+  local raw=$1
+  if [[ -z "${raw}" ]]; then
+    return 0
+  fi
+  parse_typed_token "${raw}"
+  if [[ "${TOKEN_TYPE}" == "api-key" ]]; then
+    API_KEY="${TOKEN_VALUE}"
+    USER_TOKEN=""
+    return 0
+  fi
+  if [[ -z "${TOKEN_TYPE}" ]]; then
+    log "Token type not specified; assuming user-token."
+  fi
+  USER_TOKEN="${TOKEN_VALUE}"
+  API_KEY=""
+}
+
+normalize_server_url() {
+  local input=$1
+  local default_port=${2:-8443}
+  if [[ -z "${input}" ]]; then
+    printf 'https://127.0.0.1:%s' "${default_port}"
+    return 0
+  fi
+  if [[ "${input}" == *"://"* ]]; then
+    printf '%s' "${input}"
+    return 0
+  fi
+  if [[ "${input}" == *:*:* ]]; then
+    if [[ "${input}" =~ ^\\[.*\\](:[0-9]+)?$ ]]; then
+      if [[ "${input}" =~ :[0-9]+$ ]]; then
+        printf 'https://%s' "${input}"
+      else
+        printf 'https://%s:%s' "${input}" "${default_port}"
+      fi
+    else
+      printf 'https://[%s]:%s' "${input}" "${default_port}"
+    fi
+    return 0
+  fi
+  if [[ "${input}" =~ ^[^/]+:[0-9]+$ ]]; then
+    printf 'https://%s' "${input}"
+    return 0
+  fi
+  printf 'https://%s:%s' "${input}" "${default_port}"
 }
 
 ui_base_url() {
@@ -217,6 +296,10 @@ parse_args() {
         USER_TOKEN="${2:-}"
         shift 2
         ;;
+      --token)
+        TOKEN_INPUT="${2:-}"
+        shift 2
+        ;;
       --reset-keys)
         RESET_KEYS="1"
         shift
@@ -294,7 +377,7 @@ split_perms() {
 create_delegated_token_cli() {
   local label=$1
   local perms_raw=$2
-  local default_perms="read_status manage_containers access_control manage_backups package_manage recipes_manage recipes_apply manage_routing api_user_admin"
+  local default_perms="*"
   if [[ -z "${label}" ]]; then
     label="client"
   fi
@@ -334,22 +417,36 @@ print(payload.get("token", ""))
 PY
 )
   log "Delegated token created:"
+  local typed_token="user-token:${token}"
   log "  ${token}"
+  log "  ${typed_token}"
   log "Copy/paste helpers:"
   log "  FORTRESS_UI_USER_TOKEN=${token}"
+  log "  ./run-client.sh --server ${SERVER_URL} --token ${typed_token}"
   log "  ./fortress-cli.py setup --server ${SERVER_URL} --user-token ${token}"
 }
 
 run_cli_setup() {
   ensure_python_deps
   if [[ -z "${SERVER_URL}" ]]; then
-    SERVER_URL=$(prompt_default "Fortress API base URL" "https://127.0.0.1:8443")
+    local server_input
+    server_input=$(prompt_default "Fortress API address or URL" "127.0.0.1")
+    SERVER_URL=$(normalize_server_url "${server_input}")
+  else
+    SERVER_URL=$(normalize_server_url "${SERVER_URL}")
   fi
   if [[ "${VERIFY_TLS}" == "auto" && -t 0 ]]; then
     if prompt_yes_no "Allow self-signed TLS for the API?" "N"; then
       VERIFY_TLS="insecure"
     else
       VERIFY_TLS="secure"
+    fi
+  fi
+  if [[ -z "${API_KEY}" && -z "${USER_TOKEN}" && -t 0 ]]; then
+    local token_input
+    token_input=$(prompt_secret "Access token (api-key:... or user-token:..., leave blank to skip)")
+    if [[ -n "${token_input}" ]]; then
+      apply_token_input "${token_input}"
     fi
   fi
   local setup_args=("${PYTHON_BIN}" "${ROOT_DIR}/fortress-cli.py" "setup" "--server" "${SERVER_URL}")
@@ -383,7 +480,7 @@ run_cli_setup() {
       local label
       label=$(prompt_default "Delegated token label" "${TOKEN_LABEL:-client}")
       local perms
-      perms=$(prompt_default "Delegated token permissions (comma-separated or *)" "${TOKEN_PERMS:-read_status,manage_containers,access_control,manage_backups,package_manage,recipes_manage,recipes_apply,manage_routing,api_user_admin}")
+      perms=$(prompt_default "Delegated token permissions (comma-separated or *)" "${TOKEN_PERMS:-*}")
       if [[ -z "${PASS_PHRASE}" ]]; then
         PASS_PHRASE=$(prompt_secret "CLI key passphrase (leave blank to prompt later)")
       fi
@@ -404,7 +501,11 @@ guide_webui_setup() {
   fi
 
   if [[ -z "${SERVER_URL}" ]]; then
-    SERVER_URL=$(prompt_default "Fortress API base URL" "https://127.0.0.1:8443")
+    local server_input
+    server_input=$(prompt_default "Fortress API address or URL" "127.0.0.1")
+    SERVER_URL=$(normalize_server_url "${server_input}")
+  else
+    SERVER_URL=$(normalize_server_url "${SERVER_URL}")
   fi
 
   if [[ "${VERIFY_TLS}" == "auto" ]]; then
@@ -416,21 +517,11 @@ guide_webui_setup() {
   fi
 
   if [[ -z "${API_KEY}" && -z "${USER_TOKEN}" ]]; then
-    local auth_choice
-    auth_choice=$(prompt_default "Auth for WebUI (api-key/user-token/skip)" "user-token")
-    case "${auth_choice}" in
-      api-key)
-        API_KEY=$(prompt_secret "API master key")
-        ;;
-      user-token)
-        USER_TOKEN=$(prompt_secret "Delegated user token")
-        ;;
-      skip)
-        ;;
-      *)
-        log "Unknown choice; continuing without stored credentials."
-        ;;
-    esac
+    local token_input
+    token_input=$(prompt_secret "WebUI access token (api-key:... or user-token:..., leave blank to skip)")
+    if [[ -n "${token_input}" ]]; then
+      apply_token_input "${token_input}"
+    fi
   fi
 
   local env_path="${UI_DIR}/.env.local"
@@ -471,6 +562,9 @@ guide_webui_setup() {
 
 main() {
   parse_args "$@"
+  if [[ -n "${TOKEN_INPUT}" && -z "${API_KEY}" && -z "${USER_TOKEN}" ]]; then
+    apply_token_input "${TOKEN_INPUT}"
+  fi
   if [[ "${MODE}" == "webui" ]]; then
     guide_webui_setup
   else
