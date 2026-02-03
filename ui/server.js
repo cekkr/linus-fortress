@@ -776,6 +776,7 @@ app.get(
       active: Boolean(session),
       username: session ? session.username : null,
       bootstrap_required: false,
+      token_session: false,
       admin_db: ADMIN_DB,
     });
   })

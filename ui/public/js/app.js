@@ -15,6 +15,7 @@ const state = {
     active: false,
     username: null,
     bootstrapRequired: false,
+    tokenSession: false,
     bootstrapNotified: false,
     storePath: null,
     error: null,
@@ -911,6 +912,7 @@ function setAdminState(payload) {
   state.admin.active = Boolean(payload && payload.active);
   state.admin.username = payload && payload.username ? payload.username : null;
   state.admin.bootstrapRequired = Boolean(payload && payload.bootstrap_required);
+  state.admin.tokenSession = Boolean(payload && payload.token_session);
   state.admin.storePath = payload && payload.admin_db ? payload.admin_db : null;
   state.admin.error = payload && payload.error ? payload.error : null;
   if (!state.admin.bootstrapRequired) {
@@ -924,8 +926,9 @@ function updateAdminUI() {
   const locked = !state.admin.active;
   const bootstrap = state.admin.bootstrapRequired;
   const storeHint = state.admin.storePath ? ` (store: ${state.admin.storePath})` : "";
+  const hideForTokenGate = bootstrap && !state.admin.tokenSession;
   if (elements.adminOverlay) {
-    elements.adminOverlay.hidden = !locked;
+    elements.adminOverlay.hidden = !locked || hideForTokenGate;
   }
   if (elements.adminForm) {
     elements.adminForm.hidden = bootstrap || Boolean(state.admin.error);
@@ -982,8 +985,9 @@ function setAuthState(payload) {
 
 function updateAuthUI() {
   const locked = state.auth.mode === "none";
+  const allowTokenGate = state.admin.bootstrapRequired;
   if (elements.authOverlay) {
-    elements.authOverlay.hidden = !locked || !state.admin.active;
+    elements.authOverlay.hidden = !locked || (!state.admin.active && !allowTokenGate);
   }
   if (elements.logoutButton) {
     elements.logoutButton.hidden = !state.auth.session;
@@ -1140,6 +1144,7 @@ async function handleLogin(event) {
       body: JSON.stringify({ user_token: token }),
     });
     elements.authToken.value = "";
+    await refreshAdminSession();
     await refreshSession();
     if (state.auth.active) {
       await loadGraph();

@@ -12,5 +12,8 @@
     "express": "^4.19.2",
     "undici": "^6.19.0",
     "web-streams-polyfill": "^4.0.0"
+  },
+  "devDependencies": {
+    "puppeteer": "^22.15.0"
   }
 }
