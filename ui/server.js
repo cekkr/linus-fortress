@@ -4,7 +4,9 @@ import path from "path";
 import os from "os";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
-import { Agent, fetch } from "undici";
+
+let fetchFn;
+let dispatcher;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,13 +38,45 @@ const TOTP_DIGITS = 6;
 const sessions = new Map();
 const adminSessions = new Map();
 
-const dispatcher = INSECURE_TLS
-  ? new Agent({
+async function ensureReadableStream() {
+  if (globalThis.ReadableStream) {
+    return;
+  }
+  try {
+    const webStreams = await import("stream/web");
+    if (webStreams.ReadableStream) {
+      globalThis.ReadableStream = webStreams.ReadableStream;
+      return;
+    }
+  } catch (err) {
+    // Fall through to polyfill.
+  }
+  try {
+    const polyfill = await import("web-streams-polyfill/ponyfill/es2018");
+    if (polyfill.ReadableStream) {
+      globalThis.ReadableStream = polyfill.ReadableStream;
+      return;
+    }
+  } catch (err) {
+    // Fall through to error.
+  }
+  console.error("ReadableStream is not available. Upgrade Node.js (>=18 recommended) or install stream/web support.");
+  process.exit(1);
+}
+
+async function initHttpClient() {
+  await ensureReadableStream();
+  const undici = await import("undici");
+  fetchFn = undici.fetch;
+  if (INSECURE_TLS) {
+    const agent = new undici.Agent({
       connect: {
         rejectUnauthorized: false,
       },
-    })
-  : undefined;
+    });
+    dispatcher = agent;
+  }
+}
 
 const app = express();
 app.disable("x-powered-by");
@@ -443,7 +477,10 @@ async function fortressRequest(method, apiPath, body, tokenOverride) {
   if (dispatcher) {
     options.dispatcher = dispatcher;
   }
-  const response = await fetch(url, options);
+  if (!fetchFn) {
+    throw new Error("HTTP client not initialized");
+  }
+  const response = await fetchFn(url, options);
   const text = await response.text();
   let payload = null;
   if (text) {
@@ -1323,6 +1360,14 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`Lizard UI listening on http://${HOST}:${PORT}`);
+async function start() {
+  await initHttpClient();
+  app.listen(PORT, HOST, () => {
+    console.log(`Lizard UI listening on http://${HOST}:${PORT}`);
+  });
+}
+
+start().catch((err) => {
+  console.error("Failed to start Lizard UI:", err);
+  process.exit(1);
 });
