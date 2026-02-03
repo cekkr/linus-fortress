@@ -34,6 +34,7 @@ const TOTP_ISSUER = process.env.FORTRESS_UI_TOTP_ISSUER || "Fortress UI";
 const TOTP_WINDOW = Number.parseInt(process.env.FORTRESS_UI_TOTP_WINDOW || "1", 10);
 const TOTP_STEP_SECONDS = 30;
 const TOTP_DIGITS = 6;
+const DEBUG_ENABLED = !/^(0|false|no)$/i.test(process.env.FORTRESS_DEBUG || "1");
 
 const sessions = new Map();
 const adminSessions = new Map();
@@ -523,6 +524,7 @@ async function fortressRequest(method, apiPath, body, tokenOverride) {
         : "";
     const error = new Error(`Fortress API unreachable: ${err.message || err}.${hint}`);
     error.status = 502;
+    error.cause = err;
     throw error;
   }
   const text = await response.text();
@@ -771,10 +773,34 @@ function asyncHandler(handler) {
       await handler(req, res);
     } catch (err) {
       const status = err.status || 500;
-      res.status(status).json({
+      const payload = {
         error: err.message || "Request failed",
         details: err.payload || null,
-      });
+      };
+      if (DEBUG_ENABLED) {
+        const cause = err.cause;
+        let causeInfo = null;
+        if (cause) {
+          if (typeof cause === "object") {
+            causeInfo = {
+              name: cause.name,
+              message: cause.message,
+              stack: cause.stack,
+              code: cause.code,
+            };
+          } else {
+            causeInfo = cause;
+          }
+        }
+        payload.debug = {
+          name: err.name,
+          message: err.message,
+          stack: err.stack,
+          code: err.code,
+          cause: causeInfo,
+        };
+      }
+      res.status(status).json(payload);
     }
   };
 }

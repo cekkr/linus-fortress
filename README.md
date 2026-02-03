@@ -89,6 +89,7 @@ Use `--reset` to delete the saved env file and re-run the first-run configuratio
 When the API/UI bind to a non-loopback address, the script opens the corresponding ports via firewalld (RHEL/AlmaLinux) or ufw (Ubuntu) if the firewall is active.
 If `--mode service` is selected and the repo lives under `/root` or `/home` (or on a `noexec` mount), the script offers to relocate the clone to `/opt/linus-fortress` to avoid systemd/SELinux execution failures.
 On first run, the script can also generate a delegated token for copy/paste into the CLI or WebUI configuration.
+Debug responses (default enabled) can be toggled with `./run-server.sh --debug-enable` or `./run-server.sh --debug-disable`.
 
 Host assumptions:
 - Linux distro with `apt`, `dnf`, or `yum` (Ubuntu/Debian or AlmaLinux/RHEL-like).

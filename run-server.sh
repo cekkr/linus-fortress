@@ -16,6 +16,7 @@ UI_DIR="${ROOT_DIR}/ui"
 
 RUN_MODE_ARG=""
 UI_ENABLED_ARG=""
+DEBUG_ARG=""
 FORCE_SETUP=""
 RESET_SETTINGS=""
 ORIG_ARGS=()
@@ -31,6 +32,8 @@ Options:
   --service                         Shortcut for --mode service.
   --skip-ui                         Do not start the admin UI server.
   --enable-ui                       Force-start the admin UI server.
+  --debug-enable                    Enable debug responses (default).
+  --debug-disable                   Disable debug responses.
   --configure                       Re-run first-run prompts.
   --reset                           Reset saved settings (removes fortress.env).
   -h, --help                        Show this help.
@@ -211,6 +214,30 @@ write_env_line() {
   local key=$1
   local value=$2
   printf '%s="%s"\n' "$key" "$(escape_env_value "$value")"
+}
+
+set_env_var() {
+  local key=$1
+  local value=$2
+  local tmp
+  tmp=$(mktemp)
+  local replaced=0
+  if [[ -f "${ENV_FILE}" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == "${key}="* ]]; then
+        write_env_line "${key}" "${value}" >> "${tmp}"
+        replaced=1
+      else
+        printf '%s\n' "$line" >> "${tmp}"
+      fi
+    done < "${ENV_FILE}"
+  fi
+  if [[ "${replaced}" -eq 0 ]]; then
+    write_env_line "${key}" "${value}" >> "${tmp}"
+  fi
+  chmod 640 "${tmp}"
+  chown root:root "${tmp}" >/dev/null 2>&1 || true
+  mv "${tmp}" "${ENV_FILE}"
 }
 
 selinux_enforcing() {
@@ -924,6 +951,14 @@ parse_args() {
         UI_ENABLED_ARG="1"
         shift
         ;;
+      --debug-enable)
+        DEBUG_ARG="1"
+        shift
+        ;;
+      --debug-disable)
+        DEBUG_ARG="0"
+        shift
+        ;;
       --configure)
         FORCE_SETUP="1"
         shift
@@ -1147,6 +1182,7 @@ main() {
       write_env_line "FORTRESS_HOST_PORT" "${host_port}"
       write_env_line "FORTRESS_BACKUP_PASSWORD" "${backup_password}"
       write_env_line "FORTRESS_ACME_CHALLENGE_DIR" "${ACME_DIR}"
+      write_env_line "FORTRESS_DEBUG" "1"
       if [[ -n "${api_key}" ]]; then
         write_env_line "FORTRESS_API_KEY" "${api_key}"
       fi
@@ -1185,6 +1221,12 @@ main() {
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
   set +a
+
+  local debug_value="${DEBUG_ARG:-${FORTRESS_DEBUG:-1}}"
+  export FORTRESS_DEBUG="${debug_value}"
+  if [[ -n "${DEBUG_ARG}" ]]; then
+    set_env_var "FORTRESS_DEBUG" "${debug_value}"
+  fi
 
   local run_mode="${RUN_MODE_ARG:-${FORTRESS_RUN_MODE:-foreground}}"
   if [[ "$run_mode" != "foreground" && "$run_mode" != "screen" && "$run_mode" != "service" ]]; then
