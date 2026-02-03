@@ -109,10 +109,38 @@ function buildHeaders() {
   return headers;
 }
 
+function parseTypedToken(raw) {
+  if (!raw || typeof raw !== "string") {
+    return { type: null, token: "" };
+  }
+  const value = raw.trim();
+  if (!value || !value.includes(":")) {
+    return { type: null, token: value };
+  }
+  const [prefix, ...rest] = value.split(":");
+  const token = rest.join(":").trim();
+  const normalized = prefix.trim().toLowerCase();
+  if (!token) {
+    return { type: null, token: value };
+  }
+  if (["api-key", "api_key", "master", "master-key", "master_key", "api"].includes(normalized)) {
+    return { type: "api-key", token };
+  }
+  if (["user-token", "user_token", "user", "delegated", "token"].includes(normalized)) {
+    return { type: "user-token", token };
+  }
+  return { type: null, token: value };
+}
+
 function authHeaders(tokenOverride) {
   const headers = buildHeaders();
   if (tokenOverride) {
-    headers["X-User-Token"] = tokenOverride;
+    const parsed = parseTypedToken(tokenOverride);
+    if (parsed.type === "api-key") {
+      headers["X-API-Key"] = parsed.token;
+    } else {
+      headers["X-User-Token"] = parsed.token || tokenOverride;
+    }
   } else if (API_KEY) {
     headers["X-API-Key"] = API_KEY;
   } else if (USER_TOKEN) {
@@ -484,7 +512,19 @@ async function fortressRequest(method, apiPath, body, tokenOverride) {
   if (!fetchFn) {
     throw new Error("HTTP client not initialized");
   }
-  const response = await fetchFn(url, options);
+  let response;
+  try {
+    response = await fetchFn(url, options);
+  } catch (err) {
+    const hint =
+      (err && err.message && err.message.toLowerCase().includes("certificate")) ||
+      (err && err.code && String(err.code).toUpperCase().includes("CERT"))
+        ? " Check FORTRESS_UI_INSECURE_TLS=1 if the API uses self-signed TLS."
+        : "";
+    const error = new Error(`Fortress API unreachable: ${err.message || err}.${hint}`);
+    error.status = 502;
+    throw error;
+  }
   const text = await response.text();
   let payload = null;
   if (text) {
