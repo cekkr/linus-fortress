@@ -436,6 +436,10 @@ async function ensureAdminAuthorized(req, res) {
   }
   const users = store.users || {};
   if (Object.keys(users).length === 0) {
+    const tokenSession = Boolean(getSessionToken(req));
+    if (req.path === "/session" || tokenSession) {
+      return true;
+    }
     res.status(403).json({
       error: `UI admin bootstrap required. Create the first admin for this UI server (store: ${ADMIN_DB}).`,
       admin_db: ADMIN_DB,
@@ -758,7 +762,13 @@ app.get(
     }
     const users = store.users || {};
     if (Object.keys(users).length === 0) {
-      res.json({ active: false, bootstrap_required: true, admin_db: ADMIN_DB });
+      const tokenSession = Boolean(getSessionToken(req));
+      res.json({
+        active: tokenSession,
+        bootstrap_required: true,
+        token_session: tokenSession,
+        admin_db: ADMIN_DB,
+      });
       return;
     }
     const session = getAdminSession(req);

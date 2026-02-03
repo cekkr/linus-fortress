@@ -15,6 +15,7 @@ const state = {
     active: false,
     username: null,
     bootstrapRequired: false,
+    bootstrapNotified: false,
     storePath: null,
     error: null,
   },
@@ -84,6 +85,7 @@ const elements = {
   adminBootstrapPassword: document.getElementById("admin-bootstrap-password"),
   adminBootstrapConfirm: document.getElementById("admin-bootstrap-confirm"),
   adminMessage: document.getElementById("admin-message"),
+  adminBootstrapButton: document.getElementById("admin-bootstrap"),
   logoutButton: document.getElementById("logout"),
 };
 
@@ -911,6 +913,9 @@ function setAdminState(payload) {
   state.admin.bootstrapRequired = Boolean(payload && payload.bootstrap_required);
   state.admin.storePath = payload && payload.admin_db ? payload.admin_db : null;
   state.admin.error = payload && payload.error ? payload.error : null;
+  if (!state.admin.bootstrapRequired) {
+    state.admin.bootstrapNotified = false;
+  }
   updateAdminUI();
   updateAuthUI();
 }
@@ -928,6 +933,9 @@ function updateAdminUI() {
   if (elements.adminBootstrapForm) {
     elements.adminBootstrapForm.hidden = !bootstrap || Boolean(state.admin.error);
   }
+  if (elements.adminBootstrapButton) {
+    elements.adminBootstrapButton.hidden = !bootstrap || !state.admin.active;
+  }
   if (elements.adminSubtitle) {
     if (state.admin.error) {
       elements.adminSubtitle.textContent = "UI admin store error.";
@@ -944,6 +952,13 @@ function updateAdminUI() {
     elements.adminMessage.textContent = `${state.admin.error}${storeHint ? ` ${storeHint}` : ""}`;
   } else if (bootstrap && elements.adminMessage) {
     elements.adminMessage.textContent = `No UI admin exists for this UI server${storeHint}. Use the form below to create the first UI admin.`;
+  }
+  if (bootstrap && state.admin.active && !state.admin.bootstrapNotified) {
+    state.admin.bootstrapNotified = true;
+    logEvent(
+      "error",
+      `UI admin not initialized${storeHint}. Click "Create admin" in the header to finish setup.`
+    );
   }
 }
 
@@ -1548,6 +1563,11 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   if (elements.logoutButton) {
     elements.logoutButton.addEventListener("click", handleLogout);
+  }
+  if (elements.adminBootstrapButton) {
+    elements.adminBootstrapButton.addEventListener("click", () => {
+      showAdminOverlay("Admin bootstrap required. Use the Create admin form below.");
+    });
   }
   refreshAdminSession()
     .then((payload) => {
