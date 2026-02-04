@@ -11,7 +11,7 @@ let dispatcher;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function loadEnvFileSync(filePath) {
+function loadEnvFileSync(filePath, force = false) {
   try {
     const raw = fs.readFileSync(filePath, "utf8");
     for (const line of raw.split(/\r?\n/)) {
@@ -32,7 +32,7 @@ function loadEnvFileSync(filePath) {
         value = value.slice(1, -1);
       }
       value = value.replace(/\\n/g, "\n");
-      if (process.env[key] === undefined) {
+      if (force || process.env[key] === undefined) {
         process.env[key] = value;
       }
     }
@@ -44,10 +44,21 @@ function loadEnvFileSync(filePath) {
 }
 
 const envPath = process.env.FORTRESS_UI_ENV_FILE || path.join(__dirname, ".env.local");
-loadEnvFileSync(envPath);
+loadEnvFileSync(envPath, true);
+if (process.env.FORTRESS_UI_ENV_FILE === undefined) {
+  const altEnv = path.join(process.cwd(), ".env.local");
+  if (altEnv !== envPath) {
+    loadEnvFileSync(altEnv, true);
+  }
+}
 
 const HOST = process.env.FORTRESS_UI_HOST || "127.0.0.1";
 const PORT = Number.parseInt(process.env.FORTRESS_UI_PORT || "8090", 10);
+if (HOST === "127.0.0.1") {
+  console.warn(
+    "FORTRESS_UI_HOST resolved to 127.0.0.1. If you expected a different host, ensure .env.local is loaded or unset FORTRESS_UI_HOST."
+  );
+}
 const API_URL = process.env.FORTRESS_API_URL || "https://127.0.0.1:8443";
 const API_KEY = process.env.FORTRESS_UI_API_KEY || "";
 const USER_TOKEN = process.env.FORTRESS_UI_USER_TOKEN || "";
