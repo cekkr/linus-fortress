@@ -3,12 +3,48 @@ import express from "express";
 import path from "path";
 import os from "os";
 import { fileURLToPath } from "url";
-import fs from "fs/promises";
+import fs from "fs";
+import fsPromises from "fs/promises";
 
 let fetchFn;
 let dispatcher;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function loadEnvFileSync(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
+      const idx = trimmed.indexOf("=");
+      if (idx <= 0) {
+        continue;
+      }
+      const key = trimmed.slice(0, idx).trim();
+      let value = trimmed.slice(idx + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      value = value.replace(/\\n/g, "\n");
+      if (process.env[key] === undefined) {
+        process.env[key] = value;
+      }
+    }
+  } catch (err) {
+    if (err && err.code !== "ENOENT") {
+      console.warn(`Failed to load env file ${filePath}:`, err.message);
+    }
+  }
+}
+
+const envPath = process.env.FORTRESS_UI_ENV_FILE || path.join(__dirname, ".env.local");
+loadEnvFileSync(envPath);
 
 const HOST = process.env.FORTRESS_UI_HOST || "127.0.0.1";
 const PORT = Number.parseInt(process.env.FORTRESS_UI_PORT || "8090", 10);
@@ -315,12 +351,12 @@ function clearSessionCookie(res) {
 
 async function ensureAdminDir() {
   const dir = path.dirname(ADMIN_DB);
-  await fs.mkdir(dir, { recursive: true });
+  await fsPromises.mkdir(dir, { recursive: true });
 }
 
 async function loadAdminStore() {
   try {
-    const raw = await fs.readFile(ADMIN_DB, "utf8");
+    const raw = await fsPromises.readFile(ADMIN_DB, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
       return parsed;
@@ -342,14 +378,14 @@ async function loadAdminStore() {
 
 async function saveAdminStore(store) {
   await ensureAdminDir();
-  await fs.writeFile(ADMIN_DB, JSON.stringify(store, null, 2));
+  await fsPromises.writeFile(ADMIN_DB, JSON.stringify(store, null, 2));
 }
 
 async function logAdminEvent(event) {
   const entry = { ...event, timestamp: new Date().toISOString() };
   const dir = path.dirname(ADMIN_AUDIT_LOG);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.appendFile(ADMIN_AUDIT_LOG, `${JSON.stringify(entry)}\n`);
+  await fsPromises.mkdir(dir, { recursive: true });
+  await fsPromises.appendFile(ADMIN_AUDIT_LOG, `${JSON.stringify(entry)}\n`);
 }
 
 function buildAdminAuditContext(req) {
@@ -645,7 +681,7 @@ function fortressRequestFor(req, method, apiPath, body) {
 }
 
 async function findAppFiles(dir, collected = []) {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const entries = await fsPromises.readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name.startsWith(".")) {
       continue;
@@ -667,7 +703,7 @@ async function loadModules() {
   const files = await findAppFiles(appsRoot);
   const modules = [];
   for (const file of files) {
-    const raw = await fs.readFile(file, "utf8");
+    const raw = await fsPromises.readFile(file, "utf8");
     try {
       const parsed = JSON.parse(raw);
       if (parsed && parsed.id && parsed.title) {
