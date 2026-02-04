@@ -364,10 +364,27 @@ Body:
 #### `POST /container/create` (permission `manage_containers`, scoped to `name`)
 Body fields (defaults shown):
 - `name` (**required** string) – LXD container name.
-- `distro` (string, default `ubuntu:22.04`) – image alias to launch.
+- `distro` (string, default `ubuntu:lts`) – image alias to launch (`ubuntu:lts` resolves to the latest LTS available on the `ubuntu:` remote).
 - `cpu_limit` (string, default `1`) – passed to `lxc config set limits.cpu`.
 - `ram_limit` (string, default `512MB`).
 - `disk_limit` (string, default `10GB`).
+
+#### `GET /containers/images/popular` (permission `manage_containers`)
+- Returns popular image presets, resolved aliases, availability on configured LXD remotes, and the latest Ubuntu LTS alias (if the `ubuntu:` remote is configured).
+
+#### `POST /containers/images/popular` (permission `manage_containers`)
+Body:
+```json
+{"name": "images:almalinux/9/cloud", "label": "AlmaLinux 9"}
+```
+- Adds or updates a preset (saved in `/var/lib/fortress/container_images.json`).
+
+#### `POST /containers/images/popular/remove` (permission `manage_containers`)
+Body:
+```json
+{"name": "images:almalinux/9/cloud"}
+```
+- Removes a preset entry.
 
 #### `POST /containers/probe` (permission `manage_containers`, container scoped)
 Body (example):

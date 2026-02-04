@@ -53,6 +53,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Expand container actions with start/stop/restart, snapshot create/list/restore/delete, exec/logs, and port exposure flows (user/group management still pending).
 - Implement step-by-step wizards for container creation, routing, recipe apply, and backup/restore.
 - Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.
+- Add a settings panel to manage popular LXD image presets, show remote availability, and refresh latest LTS aliases.
 - Add monitoring dashboards powered by `/monitoring/resources` with alert overlays.
 - Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
@@ -151,6 +152,7 @@ Done:
 - Extend schema coverage to monitoring history.
 Next:
 - Extend schema coverage to any new JSON stores (firewall state, UI admin store if adopted server-side).
+- Extend schema coverage to container image presets (`/var/lib/fortress/container_images.json`).
 
 Design: migration engine (schema registry + patch tracking)
 - Registry: keep `schemas/*.json` with `schema_version`, `schema_hash`, defaults, and `aliases` for renamed fields.

@@ -44,10 +44,18 @@ const state = {
   events: [],
   probedContainers: new Set(),
   probeInFlight: false,
+  images: {
+    popular: [],
+    remotes: [],
+    latest: null,
+    loading: false,
+    error: null,
+  },
   wizard: {
     active: false,
     mode: null,
     step: 0,
+    prevStep: 0,
     busy: false,
     error: null,
     context: {
@@ -55,10 +63,14 @@ const state = {
     },
     form: {
       name: "",
-      distro: "ubuntu:22.04",
+      distro: "ubuntu:lts",
       cpu_limit: "1",
       ram_limit: "512MB",
       disk_limit: "10GB",
+    },
+    imagePreset: {
+      alias: "",
+      label: "",
     },
     routing: {
       domain: "",
@@ -482,13 +494,15 @@ function resolveServiceState(service, containerMeta) {
 }
 
 function resetCreateWizard() {
+  const latest = state.images && state.images.latest && state.images.latest.ubuntu_lts ? state.images.latest.ubuntu_lts : "ubuntu:lts";
   state.wizard.form = {
     name: "",
-    distro: "ubuntu:22.04",
+    distro: latest,
     cpu_limit: "1",
     ram_limit: "512MB",
     disk_limit: "10GB",
   };
+  state.wizard.imagePreset = { alias: "", label: "" };
 }
 
 function resetRoutingWizard(containerName) {
@@ -659,11 +673,13 @@ function openWizard(mode, contextContainer, options = {}) {
   state.wizard.active = true;
   state.wizard.mode = mode;
   state.wizard.step = 0;
+  state.wizard.prevStep = 0;
   state.wizard.busy = false;
   state.wizard.error = null;
   if (mode === "create-container") {
     resetCreateWizard();
     state.wizard.context.container = null;
+    loadPopularImages().catch(() => {});
   } else if (mode === "routing") {
     resetRoutingWizard(contextContainer);
   } else if (mode === "filemanager") {
@@ -1391,23 +1407,75 @@ function renderWizard() {
   let steps = [];
   let bodyMarkup = "";
   let nextLabel = "Next";
+  const directionClass =
+    wizard.prevStep === undefined || wizard.prevStep === null || wizard.prevStep === wizard.step
+      ? ""
+      : wizard.step > wizard.prevStep
+      ? "slide-forward"
+      : "slide-back";
 
   if (wizard.mode === "create-container") {
     steps = ["Identity", "Resources", "Confirm"];
     if (wizard.step === 0) {
+      const optionsSource =
+        state.images && state.images.popular && state.images.popular.length
+          ? state.images.popular
+          : [
+              { name: "ubuntu:lts", resolved_name: "ubuntu:lts", label: "Ubuntu (latest LTS)", available: true },
+              { name: "debian:12", resolved_name: "debian:12", label: "Debian 12", available: true },
+              { name: "images:almalinux/9/cloud", resolved_name: "images:almalinux/9/cloud", label: "AlmaLinux 9 (cloud)", available: true },
+            ];
+      const distroOptions = optionsSource
+        .map((item) => {
+          const value = item.resolved_name || item.name;
+          const disabled = item.available === false ? "disabled" : "";
+          const suffix = item.available === false ? " (unavailable)" : "";
+          const renderedLabel =
+            item.resolved_name && item.resolved_name !== item.name
+              ? `${item.label || item.name} — ${item.resolved_name}`
+              : item.label || item.name;
+          return `<option value="${value}" ${wizard.form.distro === value ? "selected" : ""} ${disabled}>${renderedLabel}${suffix}</option>`;
+        })
+        .join("");
+      const presetsList = optionsSource
+        .map(
+          (item) => `
+          <div class="tag">
+            <span>${item.label || item.name}</span>
+            <button class="tag-remove" data-wizard-action="remove-image" data-image-name="${item.name}" title="Remove preset">×</button>
+          </div>
+        `
+        )
+        .join("");
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-name">Container name</label>
           <input id="wiz-name" name="name" data-wizard-group="form" value="${wizard.form.name}" placeholder="web-01" />
         </div>
         <div class="wizard-field">
-          <label for="wiz-distro">Distro</label>
+          <label for="wiz-distro">Image</label>
           <select id="wiz-distro" name="distro" data-wizard-group="form">
-            <option value="ubuntu:22.04" ${wizard.form.distro === "ubuntu:22.04" ? "selected" : ""}>Ubuntu 22.04</option>
-            <option value="ubuntu:20.04" ${wizard.form.distro === "ubuntu:20.04" ? "selected" : ""}>Ubuntu 20.04</option>
-            <option value="debian:12" ${wizard.form.distro === "debian:12" ? "selected" : ""}>Debian 12</option>
-            <option value="almalinux:9" ${wizard.form.distro === "almalinux:9" ? "selected" : ""}>AlmaLinux 9</option>
+            ${distroOptions}
           </select>
+          <div class="wizard-hint">
+            <span>
+              ${state.images.loading ? "Checking LXD images..." : state.images.error ? `<span class="pill danger">${state.images.error}</span>` : `Remotes: ${state.images.remotes && state.images.remotes.length ? state.images.remotes.join(", ") : "unknown"}`}
+            </span>
+            <button class="action ghost mini" data-wizard-action="refresh-images" type="button">Refresh</button>
+          </div>
+        </div>
+        <div class="wizard-field">
+          <label>Add image preset</label>
+          <div class="wizard-inline">
+            <input id="wiz-image-alias" name="alias" data-wizard-group="imagePreset" value="${wizard.imagePreset.alias}" placeholder="images:almalinux/9/cloud" />
+            <input id="wiz-image-label" name="label" data-wizard-group="imagePreset" value="${wizard.imagePreset.label}" placeholder="Label (optional)" />
+            <button class="action ghost" data-wizard-action="add-image" type="button">Add</button>
+          </div>
+          ${
+            presetsList
+              ? `<div class="wizard-tags">${presetsList}</div>`
+              : `<div class="wizard-hint">No presets yet. Add one or refresh.</div>`
+          }
         </div>
       `;
     } else if (wizard.step === 1) {
@@ -1435,7 +1503,7 @@ function renderWizard() {
             <span>${wizard.form.name || "(missing)"}</span>
           </div>
           <div>
-            <strong>Distro</strong>
+            <strong>Image</strong>
             <span>${wizard.form.distro}</span>
           </div>
           <div>
@@ -2314,16 +2382,20 @@ function renderWizard() {
   const backDisabled = wizard.step === 0 ? "disabled" : "";
   const nextDisabled = wizard.busy ? "disabled" : "";
 
+  const contentClass = directionClass ? `wizard-content ${directionClass}` : "wizard-content";
   elements.wizard.innerHTML = `
     <div class="wizard-steps">${stepMarkup}</div>
-    ${bodyMarkup}
-    ${errorMarkup}
+    <div class="${contentClass}">
+      ${bodyMarkup}
+      ${errorMarkup}
+    </div>
     <div class="wizard-actions">
       <button class="action ghost" data-wizard-action="close">Close</button>
       <button class="action ghost" data-wizard-action="back" ${backDisabled}>Back</button>
       <button class="action" data-wizard-action="next" ${nextDisabled}>${nextLabel}</button>
     </div>
   `;
+  wizard.prevStep = wizard.step;
 }
 
 function renderAll() {
@@ -2837,6 +2909,38 @@ async function autoProbeContainers() {
   }
   state.probeInFlight = false;
   await loadGraph({ skipProbe: true });
+}
+
+async function loadPopularImages(options = {}) {
+  state.images.loading = true;
+  state.images.error = null;
+  try {
+    const payload = await apiRequest("/api/containers/images/popular");
+    state.images.popular = Array.isArray(payload.images) ? payload.images : [];
+    state.images.remotes = Array.isArray(payload.remotes) ? payload.remotes : [];
+    state.images.latest = payload.latest || null;
+    if (state.wizard.active && state.wizard.mode === "create-container") {
+      const preferred = state.images.popular[0]
+        ? state.images.popular[0].resolved_name || state.images.popular[0].name
+        : state.images.latest && state.images.latest.ubuntu_lts
+        ? state.images.latest.ubuntu_lts
+        : "ubuntu:lts";
+      if (!state.wizard.form.distro || state.wizard.form.distro === "ubuntu:lts") {
+        state.wizard.form.distro = preferred;
+      }
+    }
+    if (options.log) {
+      logEvent("success", "Image presets refreshed");
+    }
+  } catch (err) {
+    state.images.error = err.message || "Failed to load image presets";
+    if (options.log) {
+      logEvent("error", state.images.error);
+    }
+  } finally {
+    state.images.loading = false;
+    renderWizard();
+  }
 }
 
 async function loadRoutes(options = {}) {
@@ -3560,8 +3664,58 @@ async function handleAction(actionId, node, params = {}) {
   logEvent("error", `Unhandled action: ${actionId}`);
 }
 
-async function handleWizardAction(action) {
+async function handleWizardAction(action, payload = {}) {
   if (!state.wizard.active) {
+    return;
+  }
+  if (action === "add-image") {
+    const alias = state.wizard.imagePreset.alias.trim();
+    const label = state.wizard.imagePreset.label.trim();
+    if (!alias) {
+      state.wizard.error = "Image alias is required";
+      renderWizard();
+      return;
+    }
+    try {
+      await apiRequest("/api/containers/images/popular", {
+        method: "POST",
+        body: JSON.stringify({ name: alias, label: label || undefined }),
+      });
+      state.wizard.imagePreset = { alias: "", label: "" };
+      await loadPopularImages();
+      logEvent("success", `Image preset saved (${alias})`);
+    } catch (err) {
+      state.wizard.error = err.message || "Failed to save image preset";
+    }
+    renderWizard();
+    return;
+  }
+  if (action === "refresh-images") {
+    await loadPopularImages({ log: true });
+    return;
+  }
+  if (action === "remove-image") {
+    const alias = payload.imageName || payload.name || "";
+    if (!alias) {
+      state.wizard.error = "Missing image alias";
+      renderWizard();
+      return;
+    }
+    try {
+      await apiRequest("/api/containers/images/popular/remove", {
+        method: "POST",
+        body: JSON.stringify({ name: alias }),
+      });
+      await loadPopularImages();
+      const availableValues = state.images.popular.map((item) => item.resolved_name || item.name);
+      if (!availableValues.includes(state.wizard.form.distro)) {
+        state.wizard.form.distro = availableValues[0] || "ubuntu:lts";
+      }
+      logEvent("success", `Image preset removed (${alias})`);
+    } catch (err) {
+      state.wizard.error = err.message || "Failed to remove image preset";
+    }
+    renderWizard();
     return;
   }
   if (action === "close") {
@@ -3572,6 +3726,7 @@ async function handleWizardAction(action) {
     return;
   }
   if (action === "back") {
+    state.wizard.prevStep = state.wizard.step;
     state.wizard.step = Math.max(0, state.wizard.step - 1);
     renderWizard();
     return;
@@ -3597,6 +3752,7 @@ async function handleWizardAction(action) {
     };
     const steps = stepCounts[state.wizard.mode] || 1;
     if (state.wizard.step < steps - 1) {
+      state.wizard.prevStep = state.wizard.step;
       state.wizard.step += 1;
       renderWizard();
       return;
@@ -4060,7 +4216,9 @@ function bindEvents() {
     if (!action) {
       return;
     }
-    handleWizardAction(action.getAttribute("data-wizard-action"));
+    const data = { ...action.dataset };
+    delete data.wizardAction;
+    handleWizardAction(action.getAttribute("data-wizard-action"), data);
   });
 
   elements.wizard.addEventListener("input", (event) => {
@@ -4093,6 +4251,8 @@ function bindEvents() {
       state.wizard.containerSnapshot[target.name] = target.type === "checkbox" ? target.checked : value;
     } else if (group === "exec") {
       state.wizard.exec[target.name] = value;
+    } else if (group === "imagePreset") {
+      state.wizard.imagePreset[target.name] = value;
     } else {
       state.wizard.form[target.name] = value;
     }

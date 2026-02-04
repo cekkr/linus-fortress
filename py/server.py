@@ -172,6 +172,7 @@ ACME_CHALLENGE_DIR = os.environ.get("FORTRESS_ACME_CHALLENGE_DIR", "/var/lib/for
 FIREWALL_STATE_DIR = "/var/lib/fortress/firewall"
 FIREWALL_ROLLBACK_DIR = os.path.join(FIREWALL_STATE_DIR, "rollbacks")
 FIREWALL_DDOS_POLICY_PATH = os.path.join(FIREWALL_STATE_DIR, "ddos_policy.json")
+POPULAR_IMAGES_DB = "/var/lib/fortress/container_images.json"
 
 # Logging setup
 logging.basicConfig(filename='/var/log/fortress.log', level=logging.INFO, 
@@ -405,7 +406,15 @@ class PackageUpdateRequest(BaseModel):
     full_upgrade: bool = False
 # --- CORE LOGIC ---
 
-app.include_router(build_container_router(authorize, audit_api, sanitize_payload, SHARED_STORAGE_DIR))
+app.include_router(
+    build_container_router(
+        authorize,
+        audit_api,
+        sanitize_payload,
+        SHARED_STORAGE_DIR,
+        POPULAR_IMAGES_DB,
+    )
+)
 
 @app.get("/status", dependencies=[])
 def system_status(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):

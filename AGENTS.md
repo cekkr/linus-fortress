@@ -6,6 +6,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/storage.py` centralizes JSON store helpers for API users, recipes, hosts, VMs, sites, and monitoring history
 - py/fortress/monitoring.py centralizes host/container resource snapshots with alert thresholds
 - Container lifecycle/access/connectivity APIs are implemented in `py/fortress/api/containers.py` with LXC helpers in `py/fortress/containers.py`
+- Container image presets (including `ubuntu:lts` resolution) are stored in `/var/lib/fortress/container_images.json` and surfaced via new container image endpoints
 - `py/fortress/routing.py` centralizes nginx routing config rendering, domain validation, TLS path checks, ACME challenge support, conflict detection, and reload/testing helpers for HTTP(S) host routing
 - `py/fortress/tls.py` handles certbot-backed Let's Encrypt issuance/renewal for HTTP-01 challenges
 - Routing entries support multi-domain server names (including wildcard domains), conflict detection, and can be refreshed via `POST /routing/refresh` to update upstream IPs
@@ -96,6 +97,7 @@ This file contains the directives for AIs and must be kept current with the mini
 
 ## HTTP API map (code ownership)
 - `py/fortress/api/containers.py`: `/container/create`, `/container/{name}`, `/access/external/*`, `/container/users/*`, `/container/groups`, `/containers/connect/*`
+- `py/fortress/api/containers.py`: `/containers/images/popular`, `/containers/images/popular/remove`
 - `py/server.py`: `/status`, `/monitoring/resources`, `/routing`, `/routing/add`, `/routing/{domain}`, `/tls/renew`, `/api-users*`, `/firewall/*`, `/packages/*`, `/system/upgrade`, `/recipes*`, `/sites*`, `/migrations*`, `/backup/*`, `/restore`
 - `py/server.py`: `/vms*` (VM registry, start/stop/status, snapshots, SSH provisioning/probing)
 - `py/server.py`: `/hosts*` (SSH-managed host registry, provisioning/probing, saved states)

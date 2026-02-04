@@ -120,7 +120,7 @@ body {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 320px;
+  grid-template-columns: 240px minmax(0, 1fr) 360px;
   gap: var(--grid-gap);
   padding: 24px 28px 32px;
 }
@@ -421,6 +421,7 @@ body {
 .wizard {
   background: linear-gradient(160deg, rgba(27, 38, 31, 0.88), rgba(42, 52, 39, 0.88));
   color: #eaf5d5;
+  overflow: hidden;
 }
 
 .wizard-body {
@@ -428,6 +429,20 @@ body {
   flex-direction: column;
   gap: 12px;
   font-size: 13px;
+}
+
+.wizard-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wizard-content.slide-forward {
+  animation: wizardSlideForward 0.22s ease both;
+}
+
+.wizard-content.slide-back {
+  animation: wizardSlideBack 0.22s ease both;
 }
 
 .wizard-steps {
@@ -479,6 +494,61 @@ body {
   accent-color: var(--leaf);
 }
 
+.wizard-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: rgba(234, 245, 213, 0.7);
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.wizard-inline {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.wizard-inline input {
+  flex: 1 1 160px;
+}
+
+.wizard-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 11px;
+}
+
+.tag-remove {
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: #f1f7dc;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  cursor: pointer;
+  line-height: 18px;
+}
+
+.action.mini {
+  padding: 4px 10px;
+  font-size: 10px;
+}
+
 .wizard-actions {
   display: flex;
   justify-content: space-between;
@@ -487,6 +557,28 @@ body {
 
 .wizard-actions button {
   flex: 1;
+}
+
+@keyframes wizardSlideForward {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes wizardSlideBack {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .event-log {

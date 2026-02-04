@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from fortress import containers as container_ops
 from fortress.firewall import apply_firewall_rule
+from fortress.storage import load_json, save_json
 
 AuthorizeFn = Callable[..., Dict[str, Any]]
 AuditFn = Callable[..., None]
@@ -14,10 +15,19 @@ SanitizeFn = Callable[..., Dict[str, Any]]
 
 class ContainerCreate(BaseModel):
     name: str
-    distro: str = "ubuntu:22.04"
+    distro: str = "ubuntu:lts"
     cpu_limit: str = "1"
     ram_limit: str = "512MB"
     disk_limit: str = "10GB"
+
+
+class PopularImage(BaseModel):
+    name: str
+    label: Optional[str] = None
+
+
+class PopularImageRemove(BaseModel):
+    name: str
 
 
 class ExternalAccessRule(BaseModel):
@@ -156,9 +166,127 @@ def build_container_router(
     audit_api: AuditFn,
     sanitize_payload: SanitizeFn,
     shared_storage_dir: str,
+    popular_images_db: str,
 ) -> APIRouter:
     router = APIRouter()
     logger = logging.getLogger(__name__)
+
+    def _load_image_store() -> Dict[str, Any]:
+        return load_json(popular_images_db, {"popular": []}, label="popular images")
+
+    def _save_image_store(payload: Dict[str, Any]) -> None:
+        save_json(popular_images_db, payload, indent=2)
+
+    def _default_popular_images() -> List[Dict[str, str]]:
+        latest = container_ops.find_latest_ubuntu_lts_alias()
+        return [
+            {"name": "ubuntu:lts", "label": "Ubuntu (latest LTS)"},
+            {"name": latest or "ubuntu:22.04", "label": "Ubuntu LTS pinned"},
+            {"name": "debian:12", "label": "Debian 12 (Bookworm)"},
+            {"name": "images:almalinux/9/cloud", "label": "AlmaLinux 9 (cloud)"},
+        ]
+
+    def _list_popular_entries() -> List[Dict[str, str]]:
+        store = _load_image_store()
+        popular = store.get("popular") or []
+        if not popular:
+            popular = _default_popular_images()
+            _save_image_store({"popular": popular})
+        seen = set()
+        entries: List[Dict[str, str]] = []
+        for item in popular:
+            name = item.get("name") if isinstance(item, dict) else str(item)
+            if not name:
+                continue
+            normalized = name.strip()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            label = item.get("label") if isinstance(item, dict) else None
+            entries.append({"name": normalized, "label": label or normalized})
+        return entries
+
+    def _inspect_entry(entry: Dict[str, str]) -> Dict[str, Any]:
+        name = entry.get("name", "").strip()
+        resolved = container_ops.resolve_image_alias(name)
+        remote, alias = container_ops.parse_image_alias(resolved)
+        payload: Dict[str, Any] = {
+            "name": name,
+            "label": entry.get("label") or name,
+            "resolved_name": resolved,
+            "remote": remote,
+            "alias": alias,
+            "available": False,
+        }
+        try:
+            meta = container_ops.ensure_image_available(resolved)
+            props = meta.get("properties") or {}
+            payload.update(
+                {
+                    "available": True,
+                    "architecture": meta.get("architecture"),
+                    "type": meta.get("type"),
+                    "release": props.get("release") or props.get("version"),
+                    "os": props.get("os"),
+                }
+            )
+        except HTTPException as exc:
+            payload["reason"] = exc.detail
+        except Exception as exc:
+            payload["reason"] = str(exc)
+        return payload
+
+    @router.get("/containers/images/popular")
+    def list_popular_images(
+        x_api_key: Optional[str] = Header(default=None),
+        x_user_token: Optional[str] = Header(default=None),
+    ):
+        authorize("container_create", "manage_containers", x_api_key, x_user_token)
+        latest_lts = container_ops.find_latest_ubuntu_lts_alias()
+        entries = _list_popular_entries()
+        inspected = [_inspect_entry(entry) for entry in entries]
+        audit_api("container_images_list", details={"count": len(inspected)})
+        return {
+            "images": inspected,
+            "latest": {"ubuntu_lts": latest_lts},
+            "remotes": sorted(container_ops.list_lxd_remotes()),
+        }
+
+    @router.post("/containers/images/popular")
+    def add_popular_image(
+        payload: PopularImage,
+        x_api_key: Optional[str] = Header(default=None),
+        x_user_token: Optional[str] = Header(default=None),
+    ):
+        authorize("container_create", "manage_containers", x_api_key, x_user_token)
+        store = _load_image_store()
+        popular = store.get("popular") or []
+        updated = False
+        for item in popular:
+            if isinstance(item, dict) and item.get("name") == payload.name:
+                if payload.label:
+                    item["label"] = payload.label
+                updated = True
+                break
+        if not updated:
+            popular.append(payload.dict())
+        _save_image_store({"popular": popular})
+        audit_api("container_images_add", target=payload.name)
+        return {"message": "Image preset saved", "popular": popular}
+
+    @router.post("/containers/images/popular/remove")
+    def remove_popular_image(
+        payload: PopularImageRemove,
+        x_api_key: Optional[str] = Header(default=None),
+        x_user_token: Optional[str] = Header(default=None),
+    ):
+        authorize("container_create", "manage_containers", x_api_key, x_user_token)
+        store = _load_image_store()
+        popular = store.get("popular") or []
+        filtered = [item for item in popular if not (isinstance(item, dict) and item.get("name") == payload.name)]
+        _save_image_store({"popular": filtered})
+        audit_api("container_images_remove", target=payload.name)
+        return {"message": "Image preset removed", "popular": filtered}
 
     @router.post("/container/create")
     def create_container(
@@ -178,6 +306,9 @@ def build_container_router(
             )
             audit_api("container_create", target=config.name, details=sanitize_payload(config.dict()))
             return {"message": f"Container {config.name} created successfully"}
+        except HTTPException as exc:
+            audit_api("container_create", target=config.name, details={"error": exc.detail}, status="error")
+            raise
         except Exception as exc:
             audit_api("container_create", target=config.name, details={"error": str(exc)}, status="error")
             raise HTTPException(status_code=500, detail=str(exc))

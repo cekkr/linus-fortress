@@ -194,6 +194,64 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+  /containers/images/popular:
+    get:
+      summary: List popular image presets with LXD availability details
+      tags: [Containers]
+      responses:
+        "200":
+          description: Image preset inventory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContainerImagePresetList"
+    post:
+      summary: Add or update a popular image preset
+      tags: [Containers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerImagePreset"
+      responses:
+        "200":
+          description: Preset write acknowledgement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  popular:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ContainerImagePreset"
+  /containers/images/popular/remove:
+    post:
+      summary: Remove a popular image preset
+      tags: [Containers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerImagePresetRemove"
+      responses:
+        "200":
+          description: Preset removal acknowledgement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  popular:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ContainerImagePreset"
   /vms:
     get:
       summary: List registered VM test environments
@@ -2205,7 +2263,7 @@ components:
           type: string
         distro:
           type: string
-          default: ubuntu:22.04
+          default: ubuntu:lts
         cpu_limit:
           type: string
           default: "1"
@@ -2215,6 +2273,61 @@ components:
         disk_limit:
           type: string
           default: 10GB
+    ContainerImagePreset:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+    ContainerImagePresetRemove:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+    ContainerImageInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        resolved_name:
+          type: string
+        remote:
+          type: string
+        alias:
+          type: string
+        available:
+          type: boolean
+        architecture:
+          type: string
+        type:
+          type: string
+        release:
+          type: string
+        os:
+          type: string
+        reason:
+          type: string
+    ContainerImagePresetList:
+      type: object
+      properties:
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContainerImageInfo"
+        latest:
+          type: object
+          properties:
+            ubuntu_lts:
+              type: string
+        remotes:
+          type: array
+          items:
+            type: string
     DomainRoute:
       type: object
       required: [domain, container_name]

@@ -1380,6 +1380,30 @@ app.get(
   })
 );
 
+app.get(
+  "/api/containers/images/popular",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", "/containers/images/popular");
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/containers/images/popular",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/containers/images/popular", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/containers/images/popular/remove",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/containers/images/popular/remove", req.body || {});
+    res.json(payload);
+  })
+);
+
 app.post(
   "/api/containers",
   asyncHandler(async (req, res) => {

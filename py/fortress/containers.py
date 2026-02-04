@@ -1,10 +1,11 @@
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from fastapi import HTTPException
 
@@ -15,6 +16,7 @@ SENSITIVE_KEYWORDS = {"password", "passwd", "secret", "token", "key", "chpasswd"
 MAX_PORT = 65535
 MIN_PORT = 1
 MAX_PROXY_DEVICES_PER_REQUEST = 50
+UBUNTU_LTS_PATTERN = re.compile(r"^(?P<year>\d{2})\.04$")
 
 AuditCallback = Callable[[str, str, Optional[str], Optional[Dict[str, Any]], str], None]
 _AUDIT_CALLBACK: Optional[AuditCallback] = None
@@ -184,7 +186,9 @@ def create_container(
     ram_limit: str,
     disk_limit: Optional[str],
 ) -> None:
-    run_command(["lxc", "launch", distro, name])
+    resolved_alias = resolve_image_alias(distro)
+    ensure_image_available(resolved_alias)
+    run_command(["lxc", "launch", resolved_alias, name])
     run_command(["lxc", "config", "set", name, "limits.cpu", cpu_limit])
     run_command(["lxc", "config", "set", name, "limits.memory", ram_limit])
     run_command(["lxc", "config", "set", name, "security.nesting", "true"])
@@ -465,3 +469,84 @@ def remove_shared_mount(share_name: str, containers: List[str]) -> None:
     for container in containers:
         device_name = f"{share_name}-{container}"
         remove_disk_device(container, device_name)
+
+
+def parse_image_alias(alias: str) -> Tuple[str, str]:
+    """Split a LXD alias into remote and image components."""
+    if ":" in alias:
+        remote, image_alias = alias.split(":", 1)
+    else:
+        remote, image_alias = "", alias
+    return remote, image_alias
+
+
+def list_lxd_remotes() -> Set[str]:
+    """Return the set of configured LXD remotes."""
+    try:
+        raw = run_command(["lxc", "remote", "list", "--format", "json"])
+        remotes = json.loads(raw)
+        return {remote.get("name") for remote in remotes if remote.get("name")}
+    except Exception:
+        logging.exception("Failed to list LXD remotes")
+        return set()
+
+
+def ensure_image_available(alias: str) -> Dict[str, Any]:
+    """Validate that an image alias exists on a configured remote and return metadata."""
+    remote, _ = parse_image_alias(alias)
+    remotes = list_lxd_remotes()
+    if remote and remote not in remotes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"LXD remote '{remote}' is not configured. Add it with `lxc remote add {remote} ...` or choose another image.",
+        )
+    try:
+        info_raw = run_command(["lxc", "image", "list", alias, "--format", "json", "--limit", "1"])
+        images = json.loads(info_raw)
+    except HTTPException as exc:
+        logging.error("Image lookup failed for %s: %s", alias, exc.detail)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image '{alias}' was not found on remote '{remote or 'local'}'.",
+        ) from exc
+    if not images:
+        raise HTTPException(status_code=400, detail=f"Image '{alias}' was not found on remote '{remote or 'local'}'.")
+    return images[0]
+
+
+def find_latest_ubuntu_lts_alias() -> Optional[str]:
+    """Detect the latest available Ubuntu LTS alias on the ubuntu: remote."""
+    remotes = list_lxd_remotes()
+    if "ubuntu" not in remotes:
+        return None
+    try:
+        raw = run_command(["lxc", "image", "list", "ubuntu:", "--format", "json", "--limit", "100"])
+        images = json.loads(raw)
+    except Exception:
+        logging.exception("Failed to query ubuntu: images")
+        return None
+    aliases: Set[str] = set()
+    for image in images:
+        for alias in image.get("aliases", []):
+            name = alias.get("name") if isinstance(alias, dict) else alias
+            if not isinstance(name, str):
+                continue
+            match = UBUNTU_LTS_PATTERN.match(name.strip())
+            if match:
+                aliases.add(name.strip())
+    if not aliases:
+        return None
+    latest = sorted(
+        aliases,
+        key=lambda v: tuple(int(part) for part in v.split(".")),
+    )[-1]
+    return f"ubuntu:{latest}"
+
+
+def resolve_image_alias(distro: str) -> str:
+    """Resolve pseudo aliases like ubuntu:lts to a concrete image alias."""
+    normalized = distro.strip()
+    if normalized.lower() in {"ubuntu:lts", "ubuntu:latest-lts", "ubuntu:lts/latest"}:
+        latest = find_latest_ubuntu_lts_alias()
+        return latest or "ubuntu:22.04"
+    return normalized
