@@ -1531,6 +1531,99 @@ app.get(
   })
 );
 
+app.get(
+  "/api/sites",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", "/sites");
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/sites/:site_id",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/sites",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/sites", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.put(
+  "/api/sites/:site_id",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "PUT", `/sites/${req.params.site_id}`, req.body || {});
+    res.json(payload);
+  })
+);
+
+app.delete(
+  "/api/sites/:site_id",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "DELETE", `/sites/${req.params.site_id}`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/sites/:site_id/deploy",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", `/sites/${req.params.site_id}/deploy`, req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/sites/:site_id/backup",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", `/sites/${req.params.site_id}/backup`, req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/sites/:site_id/rollback",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", `/sites/${req.params.site_id}/rollback`, req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/sites/:site_id/services/restart",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(
+      req,
+      "POST",
+      `/sites/${req.params.site_id}/services/restart`,
+      req.body || {}
+    );
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/sites/:site_id/logs",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}/logs`);
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/sites/:site_id/health",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}/health`);
+    res.json(payload);
+  })
+);
+
 app.post(
   "/api/packages/install",
   asyncHandler(async (req, res) => {

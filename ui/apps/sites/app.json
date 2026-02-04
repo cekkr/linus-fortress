@@ -1,0 +1,20 @@
+{
+  "id": "sites",
+  "title": "Sites",
+  "description": "PHP sites bound to containers, domains, TLS, and deploys.",
+  "icon": "globe",
+  "parent": "home",
+  "order": 9,
+  "actions": [
+    {
+      "id": "sites-refresh",
+      "label": "Refresh",
+      "variant": "ghost"
+    },
+    {
+      "id": "site-create",
+      "label": "Create Site",
+      "variant": "primary"
+    }
+  ]
+}

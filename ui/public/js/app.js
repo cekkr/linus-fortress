@@ -13,6 +13,8 @@ const state = {
   vms: [],
   vmsLoading: false,
   containerSnapshots: new Map(),
+  sites: [],
+  sitesLoading: false,
   routes: [],
   routesLoading: false,
   recipes: [],
@@ -112,6 +114,40 @@ const state = {
       user: "",
       workdir: "",
       environment: "",
+    },
+    siteCreate: {
+      name: "",
+      primary_domain: "",
+      domains: "",
+      container_name: "",
+      docroot: "/var/www/html",
+      php_version: "",
+      create_database: true,
+      create_user: true,
+    },
+    siteDeploy: {
+      site_id: "",
+      source_type: "git",
+      source: "",
+      ref: "",
+      subdir: "",
+      strip_components: 0,
+      post_deploy_commands: "",
+      restart_services: true,
+    },
+    siteBackup: {
+      site_id: "",
+      include_database: true,
+      label: "",
+    },
+    siteRollback: {
+      site_id: "",
+      backup_id: "",
+      restart_services: true,
+    },
+    siteServices: {
+      site_id: "",
+      services: "",
     },
     host: {
       name: "",
@@ -564,6 +600,56 @@ function resetExecWizard(containerName) {
   state.wizard.context.container = containerName || null;
 }
 
+function resetSiteCreateWizard() {
+  state.wizard.siteCreate = {
+    name: "",
+    primary_domain: "",
+    domains: "",
+    container_name: state.containers[0] ? state.containers[0].name : "",
+    docroot: "/var/www/html",
+    php_version: "",
+    create_database: true,
+    create_user: true,
+  };
+  state.wizard.context.container = null;
+}
+
+function resetSiteDeployWizard(siteId) {
+  state.wizard.siteDeploy = {
+    site_id: siteId || "",
+    source_type: "git",
+    source: "",
+    ref: "",
+    subdir: "",
+    strip_components: 0,
+    post_deploy_commands: "",
+    restart_services: true,
+  };
+}
+
+function resetSiteBackupWizard(siteId) {
+  state.wizard.siteBackup = {
+    site_id: siteId || "",
+    include_database: true,
+    label: "",
+  };
+}
+
+function resetSiteRollbackWizard(siteId) {
+  state.wizard.siteRollback = {
+    site_id: siteId || "",
+    backup_id: "",
+    restart_services: true,
+  };
+}
+
+function resetSiteServicesWizard(siteId) {
+  state.wizard.siteServices = {
+    site_id: siteId || "",
+    services: "",
+  };
+}
+
 function openWizard(mode, contextContainer, options = {}) {
   state.wizard.active = true;
   state.wizard.mode = mode;
@@ -594,6 +680,16 @@ function openWizard(mode, contextContainer, options = {}) {
     resetContainerSnapshotWizard(contextContainer || null);
   } else if (mode === "exec") {
     resetExecWizard(contextContainer || null);
+  } else if (mode === "site-create") {
+    resetSiteCreateWizard();
+  } else if (mode === "site-deploy") {
+    resetSiteDeployWizard(options.siteId || "");
+  } else if (mode === "site-backup") {
+    resetSiteBackupWizard(options.siteId || "");
+  } else if (mode === "site-rollback") {
+    resetSiteRollbackWizard(options.siteId || "");
+  } else if (mode === "site-services") {
+    resetSiteServicesWizard(options.siteId || "");
   }
   renderWizard();
 }
@@ -940,6 +1036,45 @@ function renderVmsPreview(node) {
   `;
 }
 
+function renderSitesPreview(node) {
+  if (state.sitesLoading) {
+    elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>Loading sites...</div>`;
+    return;
+  }
+  if (!state.sites.length) {
+    elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>No sites yet. Create one to begin.</div>`;
+    return;
+  }
+  const rows = state.sites
+    .map((site) => {
+      const status = site.status || "unknown";
+      const pill = `<span class="pill ${status.includes("active") ? "running" : "stopped"}">${status}</span>`;
+      return `
+        <div class="event-item">
+          <div><strong>${site.id || site.name}</strong> — ${site.primary_domain} (${site.container_name})</div>
+          <div class="card-meta">
+            ${pill}
+            ${site.runtime && site.runtime.php_version ? `<span class="pill">PHP ${site.runtime.php_version}</span>` : ""}
+          </div>
+          <div class="card-actions">
+            <button class="action ghost" data-action-id="site-deploy" data-site="${site.id}" data-node-id="${node.id}">Deploy</button>
+            <button class="action ghost" data-action-id="site-backup" data-site="${site.id}" data-node-id="${node.id}">Backup</button>
+            <button class="action ghost" data-action-id="site-rollback" data-site="${site.id}" data-node-id="${node.id}">Rollback</button>
+            <button class="action ghost" data-action-id="site-services" data-site="${site.id}" data-node-id="${node.id}">Restart services</button>
+            <button class="action ghost" data-action-id="site-logs" data-site="${site.id}" data-node-id="${node.id}">Logs</button>
+            <button class="action ghost" data-action-id="site-health" data-site="${site.id}" data-node-id="${node.id}">Health</button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>${node.description || ""}</div>
+    ${rows}
+  `;
+}
+
 function renderHostsPreview(node) {
   let body = "";
   if (state.hostsLoading) {
@@ -1013,10 +1148,15 @@ function renderPreview() {
     renderVmsPreview(node);
     return;
   }
+  if (node.id === "sites") {
+    renderSitesPreview(node);
+    return;
+  }
 
   const actions = Array.isArray(node.actions) ? node.actions : [];
   const contextContainer = node.context ? node.context.container : null;
   const containerMeta = contextContainer ? state.containerIndex.get(contextContainer) : null;
+  const snapshots = contextContainer ? state.containerSnapshots.get(contextContainer) || [] : [];
   const status = containerMeta ? normalizeStatus(containerMeta.status) : null;
   const badgeClass = node.badge ? node.badge.toLowerCase().replace(/[^a-z0-9]+/g, "-") : null;
   const serviceState = resolveServiceState(node.service, containerMeta);
@@ -1088,6 +1228,15 @@ function renderPreview() {
         `
             : ""
         }
+        </div>
+      `
+        : ""
+    }
+    ${
+      snapshots.length
+        ? `
+      <div class="card-meta">
+        <span class="pill">${snapshots.length} snapshots</span>
       </div>
     `
         : ""
@@ -1782,6 +1931,203 @@ function renderWizard() {
         </div>
       `;
     }
+  } else if (wizard.mode === "site-create") {
+    const containersOptions = state.containers
+      .map(
+        (c) =>
+          `<option value="${c.name}" ${c.name === state.wizard.siteCreate.container_name ? "selected" : ""}>${c.name}</option>`
+      )
+      .join("");
+    steps = ["Domains", "Container", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-site-name">Site name</label>
+          <input id="wiz-site-name" name="name" data-wizard-group="siteCreate" value="${wizard.siteCreate.name}" placeholder="app-site" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-primary">Primary domain</label>
+          <input id="wiz-site-primary" name="primary_domain" data-wizard-group="siteCreate" value="${wizard.siteCreate.primary_domain}" placeholder="app.example.com" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-domains">Additional domains (comma separated)</label>
+          <input id="wiz-site-domains" name="domains" data-wizard-group="siteCreate" value="${wizard.siteCreate.domains}" placeholder="www.app.example.com" />
+        </div>
+      `;
+    } else if (wizard.step === 1) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-site-container">Container</label>
+          <select id="wiz-site-container" name="container_name" data-wizard-group="siteCreate">${containersOptions}</select>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-docroot">Docroot</label>
+          <input id="wiz-site-docroot" name="docroot" data-wizard-group="siteCreate" value="${wizard.siteCreate.docroot}" placeholder="/var/www/html" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-php">PHP version (optional)</label>
+          <input id="wiz-site-php" name="php_version" data-wizard-group="siteCreate" value="${wizard.siteCreate.php_version}" placeholder="8.2" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-db">Create database</label>
+          <input id="wiz-site-db" type="checkbox" name="create_database" data-wizard-group="siteCreate" ${
+            wizard.siteCreate.create_database ? "checked" : ""
+          } />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-user">Create app user</label>
+          <input id="wiz-site-user" type="checkbox" name="create_user" data-wizard-group="siteCreate" ${
+            wizard.siteCreate.create_user ? "checked" : ""
+          } />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Creating..." : "Create";
+      bodyMarkup = `
+        <div>Confirm site.</div>
+        <div class="preview-meta">
+          <div><strong>Name</strong><span>${wizard.siteCreate.name || "(missing)"}</span></div>
+          <div><strong>Domain</strong><span>${wizard.siteCreate.primary_domain || "(missing)"}</span></div>
+          <div><strong>Container</strong><span>${wizard.siteCreate.container_name || "(missing)"}</span></div>
+          <div><strong>Docroot</strong><span>${wizard.siteCreate.docroot}</span></div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "site-deploy") {
+    const siteId = wizard.siteDeploy.site_id;
+    steps = ["Source", "Options", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div>Deploy assets to site ${siteId || ""}.</div>
+        <div class="wizard-field">
+          <label for="wiz-deploy-type">Source type</label>
+          <select id="wiz-deploy-type" name="source_type" data-wizard-group="siteDeploy">
+            <option value="git" ${wizard.siteDeploy.source_type === "git" ? "selected" : ""}>Git</option>
+            <option value="archive" ${wizard.siteDeploy.source_type === "archive" ? "selected" : ""}>Archive</option>
+            <option value="local" ${wizard.siteDeploy.source_type === "local" ? "selected" : ""}>Local path</option>
+          </select>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-deploy-source">Source</label>
+          <input id="wiz-deploy-source" name="source" data-wizard-group="siteDeploy" value="${wizard.siteDeploy.source}" placeholder="https://github.com/org/repo.git or /path/file.tar.gz" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-deploy-ref">Ref (branch/tag)</label>
+          <input id="wiz-deploy-ref" name="ref" data-wizard-group="siteDeploy" value="${wizard.siteDeploy.ref}" placeholder="main" />
+        </div>
+      `;
+    } else if (wizard.step === 1) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-deploy-subdir">Subdir (optional)</label>
+          <input id="wiz-deploy-subdir" name="subdir" data-wizard-group="siteDeploy" value="${wizard.siteDeploy.subdir}" placeholder="web" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-deploy-strip">Strip components (archives)</label>
+          <input id="wiz-deploy-strip" name="strip_components" data-wizard-group="siteDeploy" value="${wizard.siteDeploy.strip_components}" placeholder="0" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-deploy-commands">Post-deploy commands (one per line)</label>
+          <textarea id="wiz-deploy-commands" name="post_deploy_commands" data-wizard-group="siteDeploy" rows="3" placeholder="composer install">${wizard.siteDeploy.post_deploy_commands}</textarea>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-deploy-restart">Restart services after deploy</label>
+          <input id="wiz-deploy-restart" type="checkbox" name="restart_services" data-wizard-group="siteDeploy" ${
+            wizard.siteDeploy.restart_services ? "checked" : ""
+          } />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Deploying..." : "Deploy";
+      bodyMarkup = `
+        <div>Confirm deploy to ${siteId || "(missing)"}.</div>
+        <div class="preview-meta">
+          <div><strong>Source</strong><span>${wizard.siteDeploy.source}</span></div>
+          <div><strong>Type</strong><span>${wizard.siteDeploy.source_type}</span></div>
+          <div><strong>Ref</strong><span>${wizard.siteDeploy.ref || "default"}</span></div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "site-backup") {
+    const siteId = wizard.siteBackup.site_id;
+    steps = ["Backup", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-site-backup-id">Site</label>
+          <input id="wiz-site-backup-id" name="site_id" data-wizard-group="siteBackup" value="${siteId}" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-backup-label">Label</label>
+          <input id="wiz-site-backup-label" name="label" data-wizard-group="siteBackup" value="${wizard.siteBackup.label}" placeholder="pre-release" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-backup-db">Include database</label>
+          <input id="wiz-site-backup-db" type="checkbox" name="include_database" data-wizard-group="siteBackup" ${
+            wizard.siteBackup.include_database ? "checked" : ""
+          } />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Backing up..." : "Backup";
+      bodyMarkup = `
+        <div>Backup site ${siteId || "(missing)"}.</div>
+        <div class="preview-meta">
+          <div><strong>Label</strong><span>${wizard.siteBackup.label || "none"}</span></div>
+          <div><strong>Include DB</strong><span>${wizard.siteBackup.include_database ? "yes" : "no"}</span></div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "site-rollback") {
+    const siteId = wizard.siteRollback.site_id;
+    steps = ["Rollback", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-site-rollback-id">Site</label>
+          <input id="wiz-site-rollback-id" name="site_id" data-wizard-group="siteRollback" value="${siteId}" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-backup-id">Backup ID</label>
+          <input id="wiz-site-backup-id" name="backup_id" data-wizard-group="siteRollback" value="${wizard.siteRollback.backup_id}" placeholder="backup-uuid" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-rollback-restart">Restart services</label>
+          <input id="wiz-site-rollback-restart" type="checkbox" name="restart_services" data-wizard-group="siteRollback" ${
+            wizard.siteRollback.restart_services ? "checked" : ""
+          } />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Rolling back..." : "Rollback";
+      bodyMarkup = `
+        <div>Rollback site ${siteId || "(missing)"}.</div>
+        <div class="preview-meta">
+          <div><strong>Backup</strong><span>${wizard.siteRollback.backup_id || "(missing)"}</span></div>
+          <div><strong>Restart</strong><span>${wizard.siteRollback.restart_services ? "yes" : "no"}</span></div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "site-services") {
+    const siteId = wizard.siteServices.site_id;
+    steps = ["Services", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-site-services-id">Site</label>
+          <input id="wiz-site-services-id" name="site_id" data-wizard-group="siteServices" value="${siteId}" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-services-list">Services (comma separated, optional)</label>
+          <input id="wiz-site-services-list" name="services" data-wizard-group="siteServices" value="${wizard.siteServices.services}" placeholder="php-fpm,nginx" />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Restarting..." : "Restart";
+      bodyMarkup = `
+        <div>Restart services for ${siteId || "(missing)"}.</div>
+      `;
+    }
   } else if (wizard.mode === "host-create") {
     const host = wizard.host;
     steps = ["Identity", "SSH", "Confirm"];
@@ -1909,6 +2255,11 @@ async function hydrateNode(id) {
       await loadFirewall();
     } else if (nodeId === "vms") {
       await loadVms();
+    } else if (nodeId === "sites") {
+      await loadSites();
+    } else if (nodeId && nodeId.startsWith("container:")) {
+      const name = nodeId.split(":")[1];
+      await loadContainerSnapshots(name);
     }
   } catch (err) {
     // Errors already logged.
@@ -1976,6 +2327,26 @@ function parseEnvBlock(raw) {
     }
   }
   return result;
+}
+
+function parseCsv(raw) {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function parseMultiline(raw) {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 async function apiRequest(path, options = {}) {
@@ -2511,6 +2882,41 @@ async function refreshVmStatus(name) {
   return response;
 }
 
+async function loadSites(options = {}) {
+  state.sitesLoading = true;
+  renderPreview();
+  try {
+    const payload = await apiRequest("/api/sites");
+    state.sites = payload && Array.isArray(payload.sites) ? payload.sites : [];
+    if (options.log) {
+      logEvent("success", "Sites refreshed");
+    }
+    return state.sites;
+  } catch (err) {
+    logEvent("error", err.message || "Failed to load sites");
+    throw err;
+  } finally {
+    state.sitesLoading = false;
+    renderPreview();
+  }
+}
+
+async function loadContainerSnapshots(containerName) {
+  if (!containerName) {
+    return [];
+  }
+  try {
+    const payload = await apiRequest(`/api/containers/${encodeURIComponent(containerName)}/snapshots`);
+    const snaps = payload && Array.isArray(payload.snapshots) ? payload.snapshots : [];
+    state.containerSnapshots.set(containerName, snaps);
+    renderPreview();
+    return snaps;
+  } catch (err) {
+    logEvent("error", err.message || `Failed to load snapshots for ${containerName}`);
+    return [];
+  }
+}
+
 async function loadHosts(options = {}) {
   state.hostsLoading = true;
   renderPreview();
@@ -2642,6 +3048,63 @@ async function handleAction(actionId, node, params = {}) {
 
   if (actionId === "vms-refresh") {
     await loadVms({ log: true });
+    return;
+  }
+
+  if (actionId === "sites-refresh") {
+    await loadSites({ log: true });
+    return;
+  }
+
+  if (actionId === "site-create") {
+    openWizard("site-create");
+    return;
+  }
+
+  if (actionId === "site-deploy") {
+    const siteId = params.site;
+    openWizard("site-deploy", null, { siteId });
+    return;
+  }
+
+  if (actionId === "site-backup") {
+    const siteId = params.site;
+    openWizard("site-backup", null, { siteId });
+    return;
+  }
+
+  if (actionId === "site-rollback") {
+    const siteId = params.site;
+    openWizard("site-rollback", null, { siteId });
+    return;
+  }
+
+  if (actionId === "site-services") {
+    const siteId = params.site;
+    openWizard("site-services", null, { siteId });
+    return;
+  }
+
+  if (actionId === "site-logs") {
+    const siteId = params.site;
+    if (!siteId) {
+      logEvent("error", "Site ID missing");
+      return;
+    }
+    const response = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}/logs`);
+    const logs = response && response.logs ? String(response.logs).split("\n").slice(-20).join("\n") : "No logs";
+    logEvent("success", `Logs for ${siteId}:\n${logs}`);
+    return;
+  }
+
+  if (actionId === "site-health") {
+    const siteId = params.site;
+    if (!siteId) {
+      logEvent("error", "Site ID missing");
+      return;
+    }
+    const response = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}/health`);
+    logEvent("success", response.message || `Health: ${JSON.stringify(response)}`);
     return;
   }
 
@@ -2904,6 +3367,11 @@ async function handleWizardAction(action) {
       "vm-snapshot": 2,
       "container-snapshot": 2,
       exec: 2,
+      "site-create": 3,
+      "site-deploy": 3,
+      "site-backup": 2,
+      "site-rollback": 2,
+      "site-services": 2,
     };
     const steps = stepCounts[state.wizard.mode] || 1;
     if (state.wizard.step < steps - 1) {
@@ -3159,11 +3627,11 @@ async function handleWizardAction(action) {
         logEvent("success", response.message || `Snapshot ${snapName} created for ${containerName}`);
         state.wizard.active = false;
         state.wizard.mode = null;
-      } else if (state.wizard.mode === "exec") {
-        const containerName = state.wizard.context.container;
-        if (!containerName) {
-          throw new Error("Container is required");
-        }
+    } else if (state.wizard.mode === "exec") {
+      const containerName = state.wizard.context.container;
+      if (!containerName) {
+        throw new Error("Container is required");
+      }
         const commandText = state.wizard.exec.command.trim();
         if (!commandText) {
           throw new Error("Command is required");
@@ -3180,6 +3648,101 @@ async function handleWizardAction(action) {
           }),
         });
         logEvent("success", response.output ? `Exec output: ${response.output.slice(0, 200)}...` : "Command executed");
+        state.wizard.active = false;
+        state.wizard.mode = null;
+      } else if (state.wizard.mode === "site-create") {
+        const payload = {
+          name: state.wizard.siteCreate.name.trim(),
+          primary_domain: state.wizard.siteCreate.primary_domain.trim(),
+          domains: parseCsv(state.wizard.siteCreate.domains),
+          container_name: state.wizard.siteCreate.container_name,
+          docroot: state.wizard.siteCreate.docroot.trim() || "/var/www/html",
+          runtime: state.wizard.siteCreate.php_version
+            ? { php_version: state.wizard.siteCreate.php_version.trim() }
+            : undefined,
+          create_database: Boolean(state.wizard.siteCreate.create_database),
+          create_user: Boolean(state.wizard.siteCreate.create_user),
+        };
+        if (!payload.name || !payload.primary_domain || !payload.container_name) {
+          throw new Error("Name, primary domain, and container are required");
+        }
+        const response = await apiRequest("/api/sites", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        logEvent("success", response.message || `Site ${payload.name} created`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+        await loadSites();
+      } else if (state.wizard.mode === "site-deploy") {
+        const siteId = state.wizard.siteDeploy.site_id.trim();
+        if (!siteId) {
+          throw new Error("Site ID is required");
+        }
+        const commands = parseMultiline(state.wizard.siteDeploy.post_deploy_commands);
+        const payload = {
+          source_type: state.wizard.siteDeploy.source_type,
+          source: state.wizard.siteDeploy.source.trim(),
+          ref: state.wizard.siteDeploy.ref.trim() || undefined,
+          subdir: state.wizard.siteDeploy.subdir.trim() || undefined,
+          strip_components: Number.parseInt(state.wizard.siteDeploy.strip_components, 10) || 0,
+          post_deploy_commands: commands,
+          restart_services: Boolean(state.wizard.siteDeploy.restart_services),
+        };
+        if (!payload.source) {
+          throw new Error("Source is required");
+        }
+        const response = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}/deploy`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        logEvent("success", response.message || `Deploy triggered for ${siteId}`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+      } else if (state.wizard.mode === "site-backup") {
+        const siteId = state.wizard.siteBackup.site_id.trim();
+        if (!siteId) {
+          throw new Error("Site ID is required");
+        }
+        const payload = {
+          include_database: Boolean(state.wizard.siteBackup.include_database),
+          label: state.wizard.siteBackup.label.trim() || undefined,
+        };
+        const response = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}/backup`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        logEvent("success", response.message || `Backup created for ${siteId}`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+      } else if (state.wizard.mode === "site-rollback") {
+        const siteId = state.wizard.siteRollback.site_id.trim();
+        const backupId = state.wizard.siteRollback.backup_id.trim();
+        if (!siteId || !backupId) {
+          throw new Error("Site ID and backup ID are required");
+        }
+        const payload = {
+          backup_id: backupId,
+          restart_services: Boolean(state.wizard.siteRollback.restart_services),
+        };
+        const response = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}/rollback`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        logEvent("success", response.message || `Rollback started for ${siteId}`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+      } else if (state.wizard.mode === "site-services") {
+        const siteId = state.wizard.siteServices.site_id.trim();
+        if (!siteId) {
+          throw new Error("Site ID is required");
+        }
+        const services = parseCsv(state.wizard.siteServices.services);
+        const response = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}/services/restart`, {
+          method: "POST",
+          body: JSON.stringify({ services: services.length ? services : undefined }),
+        });
+        logEvent("success", response.message || `Services restarted for ${siteId}`);
         state.wizard.active = false;
         state.wizard.mode = null;
       } else if (state.wizard.mode === "filemanager") {
