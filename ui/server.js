@@ -1547,6 +1547,14 @@ app.get(
   })
 );
 
+app.get(
+  "/api/sites/:site_id/backups",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}/backups`);
+    res.json(payload);
+  })
+);
+
 app.post(
   "/api/sites",
   asyncHandler(async (req, res) => {

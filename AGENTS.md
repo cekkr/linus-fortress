@@ -28,7 +28,9 @@ This file contains the directives for AIs and must be kept current with the mini
 - api-v1.yaml documents the HTTP contract (OpenAPI 3.0.3) and README.md lists request bodies/permissions for each endpoint
 - Domain routing and LXD proxy helpers now support choosing container interfaces and host listen ports/addresses for finer TCP/IP exposure control between containers and the host
 - Lizard UI supports admin login sessions (bootstrap + optional TOTP MFA) plus server-side delegated-token sessions (no tokens stored in the browser)
+- Lizard UI now wires routing/recipes/packages/hosts plus container lifecycle (start/stop/restart/snapshot/exec/logs), monitoring sparklines + firewall diffs, and site management cards (deploy/backup/rollback/services)
 - `POST /containers/expose` supports bulk interface/port exposure to a container with port ranges, protocol selection, per-interface upstream selection, and optional firewall allowlists (rolls back devices and firewall rules on failure)
+- Sites API exposes backup inventory via `GET /sites/{site_id}/backups` (metadata stored under `/var/lib/fortress/site_backups`)
 - `run-server.sh` now ensures missing OS packages on subsequent runs, supports AlmaLinux snap-based LXD installs, and can optionally harden SSH by creating a sudo user and disabling root login
 - `run-client.sh` provides an interactive helper for CLI/WebUI connection setup against remote APIs
 

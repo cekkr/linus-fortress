@@ -50,7 +50,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 ## Path 8: Lizard UI (app-based web manager) (short term)
 - Done: Add UI auth flow with server-side sessions backed by delegated tokens (no tokens in the browser).
 - Done: Wire Routing, Recipes, Host Packages, Hosts, Firewall, Monitoring, and VM list views with live API calls and wizards.
-- Expand container actions: start/stop/restart, snapshots, exec, user/group management, and port exposure flows.
+- Done: Expand container actions with start/stop/restart, snapshot create/list/restore/delete, exec/logs, and port exposure flows (user/group management still pending).
 - Implement step-by-step wizards for container creation, routing, recipe apply, and backup/restore.
 - Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.
 - Add monitoring dashboards powered by `/monitoring/resources` with alert overlays.
@@ -125,12 +125,13 @@ Acceptance criteria:
 - Backups and rollbacks are one-click and leave the site in a consistent state.
 - Logs (web + PHP-FPM) are retrievable via API with bounded output and permissions.
 - Routing, TLS, and service restarts are coordinated and rollback-safe.
-Next:
-Done: Add Let's Encrypt automation to site TLS workflows.
-Next: Surface TLS status/renewal state in WebUI.
 Done:
+- Add Let's Encrypt automation to site TLS workflows.
 - Support php.ini override injection during site updates.
+Progress:
+- WebUI surfaces per-site routing/TLS/runtime/database details and backup lists with rollback triggers.
 Next:
+- Surface TLS status/renewal state in WebUI.
 - Add PHP-FPM pool tuning during site updates.
 
 ### Path 10.5: Auto-upgrade + migrations

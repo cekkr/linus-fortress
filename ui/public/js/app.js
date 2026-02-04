@@ -13,6 +13,11 @@ const state = {
   vms: [],
   vmsLoading: false,
   containerSnapshots: new Map(),
+  containerSnapshotLoading: new Set(),
+  siteDetails: new Map(),
+  siteDetailsLoading: new Set(),
+  siteBackups: new Map(),
+  siteBackupsLoading: new Set(),
   sites: [],
   sitesLoading: false,
   routes: [],
@@ -1049,13 +1054,90 @@ function renderSitesPreview(node) {
     .map((site) => {
       const status = site.status || "unknown";
       const pill = `<span class="pill ${status.includes("active") ? "running" : "stopped"}">${status}</span>`;
+      const siteId = site.id || site.name;
+      const detail = siteId ? state.siteDetails.get(siteId) || site : site;
+      const runtime = detail.runtime || {};
+      const routing = detail.routing || {};
+      const tls = detail.tls || {};
+      const database = detail.database || {};
+      const domains = Array.isArray(detail.domains) ? detail.domains : [];
+      const backups = siteId ? state.siteBackups.get(siteId) || [] : [];
+      const backupsLoading = siteId ? state.siteBackupsLoading.has(siteId) : false;
+      const detailsLoading = siteId ? state.siteDetailsLoading.has(siteId) : false;
+      const routingLabel =
+        routing.listen_port || routing.container_port
+          ? `${routing.listen_address || "0.0.0.0"}:${routing.listen_port || 80} → ${routing.container_interface || "eth0"}:${routing.container_port || 80}`
+          : "not set";
+      const tlsLabel = tls.mode ? `${tls.mode}${tls.cert_name ? ` (${tls.cert_name})` : ""}` : "disabled";
+      const dbLabel =
+        database && (database.engine || database.name || database.username)
+          ? `${database.engine || "db"} ${database.name || ""} ${database.username ? `as ${database.username}` : ""}`
+          : "none";
+      const backupBlock = siteId
+        ? `
+        <div class="event-item">
+          <div><strong>Backups</strong></div>
+          <div class="card-meta">
+            <span class="pill">${backups.length} backups</span>
+            ${backupsLoading ? `<span class="pill">loading...</span>` : ""}
+          </div>
+          ${
+            backupsLoading
+              ? ""
+              : backups.length
+              ? backups
+                  .map(
+                    (backup) => `
+            <div class="card-meta">
+              <span class="pill">${backup.backup_id}</span>
+              ${backup.created_at ? `<span class="pill">${backup.created_at}</span>` : ""}
+              ${backup.include_database ? `<span class="pill">DB</span>` : ""}
+              <button class="action ghost" data-action-id="site-rollback" data-site="${siteId}" data-backup="${backup.backup_id}" data-node-id="${node.id}">Rollback</button>
+            </div>
+          `
+                  )
+                  .join("")
+              : `<div class="card-meta"><span class="pill">No backups yet</span></div>`
+          }
+        </div>
+      `
+        : "";
       return `
         <div class="event-item">
           <div><strong>${site.id || site.name}</strong> — ${site.primary_domain} (${site.container_name})</div>
           <div class="card-meta">
             ${pill}
+            ${detailsLoading ? `<span class="pill">loading...</span>` : ""}
             ${site.runtime && site.runtime.php_version ? `<span class="pill">PHP ${site.runtime.php_version}</span>` : ""}
+            <span class="pill">${domains.length ? `${domains.length + 1} domains` : "1 domain"}</span>
           </div>
+          <div class="preview-meta">
+            <div>
+              <strong>Routing</strong>
+              <span>${routingLabel}</span>
+            </div>
+            <div>
+              <strong>TLS</strong>
+              <span>${tlsLabel}</span>
+            </div>
+            <div>
+              <strong>Domains</strong>
+              <span>${detail.primary_domain}${domains.length ? `, ${domains.join(", ")}` : ""}</span>
+            </div>
+            <div>
+              <strong>Docroot</strong>
+              <span>${detail.docroot || "/var/www/html"}</span>
+            </div>
+            <div>
+              <strong>Runtime</strong>
+              <span>${runtime.php_version ? `PHP ${runtime.php_version}` : "n/a"}${runtime.user ? ` • ${runtime.user}` : ""}</span>
+            </div>
+            <div>
+              <strong>Database</strong>
+              <span>${dbLabel}</span>
+            </div>
+          </div>
+          ${backupBlock}
           <div class="card-actions">
             <button class="action ghost" data-action-id="site-deploy" data-site="${site.id}" data-node-id="${node.id}">Deploy</button>
             <button class="action ghost" data-action-id="site-backup" data-site="${site.id}" data-node-id="${node.id}">Backup</button>
@@ -1157,6 +1239,7 @@ function renderPreview() {
   const contextContainer = node.context ? node.context.container : null;
   const containerMeta = contextContainer ? state.containerIndex.get(contextContainer) : null;
   const snapshots = contextContainer ? state.containerSnapshots.get(contextContainer) || [] : [];
+  const snapshotsLoading = contextContainer ? state.containerSnapshotLoading.has(contextContainer) : false;
   const status = containerMeta ? normalizeStatus(containerMeta.status) : null;
   const badgeClass = node.badge ? node.badge.toLowerCase().replace(/[^a-z0-9]+/g, "-") : null;
   const serviceState = resolveServiceState(node.service, containerMeta);
@@ -1233,10 +1316,31 @@ function renderPreview() {
         : ""
     }
     ${
-      snapshots.length
+      contextContainer
         ? `
-      <div class="card-meta">
-        <span class="pill">${snapshots.length} snapshots</span>
+      <div class="event-item">
+        <div><strong>Snapshots</strong></div>
+        <div class="card-meta">
+          <span class="pill">${snapshots.length} snapshots</span>
+          ${snapshotsLoading ? `<span class="pill">loading...</span>` : ""}
+        </div>
+        ${
+          snapshotsLoading && !snapshots.length
+            ? `<div>Loading snapshots...</div>`
+            : snapshots.length
+            ? snapshots
+                .map(
+                  (snap) => `
+          <div class="card-meta">
+            <span class="pill">${snap}</span>
+            <button class="action ghost" data-action-id="container-snapshot-restore" data-snapshot="${snap}" data-node-id="${node.id}">Restore</button>
+            <button class="action danger ghost" data-action-id="container-snapshot-delete" data-snapshot="${snap}" data-node-id="${node.id}">Delete</button>
+          </div>
+        `
+                )
+                .join("")
+            : `<div class="card-meta"><span class="pill">No snapshots yet</span></div>`
+        }
       </div>
     `
         : ""
@@ -2888,6 +2992,19 @@ async function loadSites(options = {}) {
   try {
     const payload = await apiRequest("/api/sites");
     state.sites = payload && Array.isArray(payload.sites) ? payload.sites : [];
+    const keepIds = new Set(state.sites.map((site) => site.id || site.name).filter(Boolean));
+    for (const key of Array.from(state.siteDetails.keys())) {
+      if (!keepIds.has(key)) {
+        state.siteDetails.delete(key);
+        state.siteBackups.delete(key);
+      }
+    }
+    if (options.details !== false && state.sites.length) {
+      const detailPromises = state.sites.map((site) =>
+        loadSiteDetails(site.id || site.name, { includeBackups: true, silent: !options.log })
+      );
+      await Promise.allSettled(detailPromises);
+    }
     if (options.log) {
       logEvent("success", "Sites refreshed");
     }
@@ -2901,10 +3018,70 @@ async function loadSites(options = {}) {
   }
 }
 
+async function loadSiteDetails(siteId, options = {}) {
+  if (!siteId) {
+    return null;
+  }
+  const silent = Boolean(options.silent);
+  state.siteDetailsLoading.add(siteId);
+  renderPreview();
+  try {
+    const payload = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}`);
+    const detail = payload && payload.site ? payload.site : null;
+    if (detail) {
+      state.siteDetails.set(siteId, detail);
+      if (options.includeBackups) {
+        await loadSiteBackups(siteId, { silent: true });
+      }
+    }
+    if (options.log) {
+      logEvent("success", `Site ${siteId} details refreshed`);
+    }
+    return detail;
+  } catch (err) {
+    if (!silent) {
+      logEvent("error", err.message || `Failed to load site ${siteId}`);
+    }
+    return null;
+  } finally {
+    state.siteDetailsLoading.delete(siteId);
+    renderPreview();
+  }
+}
+
+async function loadSiteBackups(siteId, options = {}) {
+  if (!siteId) {
+    return [];
+  }
+  const silent = Boolean(options.silent);
+  state.siteBackupsLoading.add(siteId);
+  renderPreview();
+  try {
+    const payload = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}/backups`);
+    const backups = payload && Array.isArray(payload.backups) ? payload.backups : [];
+    state.siteBackups.set(siteId, backups);
+    if (options.log) {
+      logEvent("success", `Backups refreshed for ${siteId}`);
+    }
+    renderPreview();
+    return backups;
+  } catch (err) {
+    if (!silent) {
+      logEvent("error", err.message || `Failed to load backups for ${siteId}`);
+    }
+    return [];
+  } finally {
+    state.siteBackupsLoading.delete(siteId);
+    renderPreview();
+  }
+}
+
 async function loadContainerSnapshots(containerName) {
   if (!containerName) {
     return [];
   }
+  state.containerSnapshotLoading.add(containerName);
+  renderPreview();
   try {
     const payload = await apiRequest(`/api/containers/${encodeURIComponent(containerName)}/snapshots`);
     const snaps = payload && Array.isArray(payload.snapshots) ? payload.snapshots : [];
@@ -2914,6 +3091,9 @@ async function loadContainerSnapshots(containerName) {
   } catch (err) {
     logEvent("error", err.message || `Failed to load snapshots for ${containerName}`);
     return [];
+  } finally {
+    state.containerSnapshotLoading.delete(containerName);
+    renderPreview();
   }
 }
 
@@ -2986,6 +3166,7 @@ async function handleAction(actionId, node, params = {}) {
     const response = await apiRequest(path, { method: "POST" });
     logEvent("success", response.message || `${actionId.replace("container-", "")} sent to ${containerName}`);
     await loadGraph({ skipProbe: true });
+    await hydrateNode(node ? node.id : state.selectedId);
     return;
   }
 
@@ -2996,6 +3177,43 @@ async function handleAction(actionId, node, params = {}) {
       return;
     }
     openWizard("container-snapshot", containerName);
+    return;
+  }
+
+  if (actionId === "container-snapshot-restore") {
+    const containerName = node && node.context ? node.context.container : params.container;
+    const snapshot = params.snapshot;
+    if (!containerName || !snapshot) {
+      logEvent("error", "Snapshot and container are required");
+      return;
+    }
+    const response = await apiRequest(
+      `/api/containers/${encodeURIComponent(containerName)}/snapshots/${encodeURIComponent(snapshot)}/restore`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+    logEvent("success", response.message || `Snapshot ${snapshot} restored for ${containerName}`);
+    await loadContainerSnapshots(containerName);
+    await loadGraph({ skipProbe: true });
+    return;
+  }
+
+  if (actionId === "container-snapshot-delete") {
+    const containerName = node && node.context ? node.context.container : params.container;
+    const snapshot = params.snapshot;
+    if (!containerName || !snapshot) {
+      logEvent("error", "Snapshot and container are required");
+      return;
+    }
+    const confirmed = window.confirm(`Delete snapshot ${snapshot} for ${containerName}?`);
+    if (!confirmed) {
+      return;
+    }
+    const response = await apiRequest(
+      `/api/containers/${encodeURIComponent(containerName)}/snapshots/${encodeURIComponent(snapshot)}`,
+      { method: "DELETE" }
+    );
+    logEvent("success", response.message || `Snapshot ${snapshot} deleted for ${containerName}`);
+    await loadContainerSnapshots(containerName);
     return;
   }
 
@@ -3076,6 +3294,10 @@ async function handleAction(actionId, node, params = {}) {
   if (actionId === "site-rollback") {
     const siteId = params.site;
     openWizard("site-rollback", null, { siteId });
+    if (params.backup) {
+      state.wizard.siteRollback.backup_id = params.backup;
+      renderWizard();
+    }
     return;
   }
 
@@ -3627,11 +3849,13 @@ async function handleWizardAction(action) {
         logEvent("success", response.message || `Snapshot ${snapName} created for ${containerName}`);
         state.wizard.active = false;
         state.wizard.mode = null;
-    } else if (state.wizard.mode === "exec") {
-      const containerName = state.wizard.context.container;
-      if (!containerName) {
-        throw new Error("Container is required");
-      }
+        await loadContainerSnapshots(containerName);
+        await loadGraph({ skipProbe: true });
+      } else if (state.wizard.mode === "exec") {
+        const containerName = state.wizard.context.container;
+        if (!containerName) {
+          throw new Error("Container is required");
+        }
         const commandText = state.wizard.exec.command.trim();
         if (!commandText) {
           throw new Error("Command is required");
@@ -3697,6 +3921,7 @@ async function handleWizardAction(action) {
           body: JSON.stringify(payload),
         });
         logEvent("success", response.message || `Deploy triggered for ${siteId}`);
+        await loadSiteDetails(siteId, { includeBackups: true, silent: true });
         state.wizard.active = false;
         state.wizard.mode = null;
       } else if (state.wizard.mode === "site-backup") {
@@ -3713,6 +3938,7 @@ async function handleWizardAction(action) {
           body: JSON.stringify(payload),
         });
         logEvent("success", response.message || `Backup created for ${siteId}`);
+        await loadSiteBackups(siteId, { silent: true });
         state.wizard.active = false;
         state.wizard.mode = null;
       } else if (state.wizard.mode === "site-rollback") {
@@ -3730,6 +3956,7 @@ async function handleWizardAction(action) {
           body: JSON.stringify(payload),
         });
         logEvent("success", response.message || `Rollback started for ${siteId}`);
+        await loadSiteDetails(siteId, { includeBackups: true, silent: true });
         state.wizard.active = false;
         state.wizard.mode = null;
       } else if (state.wizard.mode === "site-services") {

@@ -2096,6 +2096,41 @@ def get_site(site_id: str, x_api_key: Optional[str] = Header(default=None), x_us
     audit_api("sites_get", target=site_id)
     return {"site": sanitize_site_record(record)}
 
+@app.get("/sites/{site_id}/backups")
+def list_site_backups(site_id: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_backup_list", "sites_read", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    if auth_context.get("allowed_containers"):
+        enforce_container_scope(auth_context, record["container_name"])
+    backups: List[Dict[str, Any]] = []
+    if os.path.isdir(SITE_BACKUP_DIR):
+        for entry in os.listdir(SITE_BACKUP_DIR):
+            if not entry.endswith(".json"):
+                continue
+            meta_path = os.path.join(SITE_BACKUP_DIR, entry)
+            try:
+                meta = load_json_dict(meta_path, label="Site backup metadata")
+            except Exception:
+                continue
+            if meta.get("site_id") != site_id:
+                continue
+            backup_id = meta.get("backup_id") or entry[:-5]
+            archive_path = os.path.join(SITE_BACKUP_DIR, f"{backup_id}.tar.gz")
+            size = os.path.getsize(archive_path) if os.path.exists(archive_path) else None
+            backups.append(
+                {
+                    "backup_id": backup_id,
+                    "created_at": meta.get("created_at"),
+                    "include_database": bool(meta.get("include_database")),
+                    "path": archive_path if os.path.exists(archive_path) else None,
+                    "size_bytes": size,
+                }
+            )
+    backups.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    audit_api("sites_backup_list", target=site_id, details={"count": len(backups)})
+    return {"backups": backups}
+
 @app.put("/sites/{site_id}")
 def update_site(site_id: str, payload: SiteUpdateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     auth_context = authorize("sites_update", "sites_manage", x_api_key, x_user_token)
