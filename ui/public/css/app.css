@@ -535,6 +535,21 @@ body {
   padding-left: 8px;
   color: #1f2a1d;
 }
+
+.sparkline {
+  margin: 6px 0 10px;
+}
+
+.sparkline-label {
+  font-size: 11px;
+  color: #3c4832;
+  margin-bottom: 2px;
+}
+
+.sparkline svg {
+  width: 100%;
+  height: 40px;
+}
 .auth-overlay {
   position: fixed;
   inset: 0;

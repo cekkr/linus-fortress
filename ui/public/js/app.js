@@ -12,6 +12,7 @@ const state = {
   firewallPreviousRules: [],
   vms: [],
   vmsLoading: false,
+  containerSnapshots: new Map(),
   routes: [],
   routesLoading: false,
   recipes: [],
@@ -101,6 +102,16 @@ const state = {
     },
     vmSnapshot: {
       name: "",
+    },
+    containerSnapshot: {
+      name: "",
+      stateful: false,
+    },
+    exec: {
+      command: "",
+      user: "",
+      workdir: "",
+      environment: "",
     },
     host: {
       name: "",
@@ -535,6 +546,24 @@ function resetVmSnapshotWizard(vmName) {
   state.wizard.context.vm = vmName || null;
 }
 
+function resetContainerSnapshotWizard(containerName) {
+  state.wizard.containerSnapshot = {
+    name: "",
+    stateful: false,
+  };
+  state.wizard.context.container = containerName || null;
+}
+
+function resetExecWizard(containerName) {
+  state.wizard.exec = {
+    command: "",
+    user: "",
+    workdir: "",
+    environment: "",
+  };
+  state.wizard.context.container = containerName || null;
+}
+
 function openWizard(mode, contextContainer, options = {}) {
   state.wizard.active = true;
   state.wizard.mode = mode;
@@ -561,6 +590,10 @@ function openWizard(mode, contextContainer, options = {}) {
     resetFirewallWizard(options.firewallMode || "open");
   } else if (mode === "vm-snapshot") {
     resetVmSnapshotWizard(options.vmName || null);
+  } else if (mode === "container-snapshot") {
+    resetContainerSnapshotWizard(contextContainer || null);
+  } else if (mode === "exec") {
+    resetExecWizard(contextContainer || null);
   }
   renderWizard();
 }
@@ -765,7 +798,44 @@ function renderMonitoringPreview(node) {
     ${chartBar(host.cpu_percent, "CPU")}
     ${chartBar(host.memory_percent, "RAM")}
     ${chartBar(host.disk_percent, "Disk")}
+    ${
+      Array.isArray(snapshot.history_samples) && snapshot.history_samples.length
+        ? renderSparkline(snapshot.history_samples, "cpu_percent", "Host CPU history")
+        : ""
+    }
     ${containerRows.join("")}
+  `;
+}
+
+function renderSparkline(samples, key, label) {
+  const values = samples
+    .map((item) => {
+      const host = item.host || {};
+      return typeof host[key] === "number" ? host[key] : null;
+    })
+    .filter((v) => v !== null);
+  if (!values.length) {
+    return "";
+  }
+  const max = Math.max(...values, 1);
+  const width = 140;
+  const height = 40;
+  const step = values.length > 1 ? width / (values.length - 1) : width;
+  const points = values
+    .map((v, i) => {
+      const x = i * step;
+      const y = height - (v / max) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const last = values[values.length - 1];
+  return `
+    <div class="sparkline">
+      <div class="sparkline-label">${label} (${last.toFixed(1)}%)</div>
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        <polyline fill="none" stroke="var(--leaf)" stroke-width="2" points="${points}" />
+      </svg>
+    </div>
   `;
 }
 
@@ -777,6 +847,8 @@ function renderFirewallPreview(node) {
   const fw = state.firewall || {};
   const rules = Array.isArray(fw.rules) ? fw.rules : [];
   const prevCount = Array.isArray(state.firewallPreviousRules) ? state.firewallPreviousRules.length : 0;
+  const diffAdded = fw.added || [];
+  const diffRemoved = fw.removed || [];
   const body =
     rules.length === 0
       ? `<div>No firewall rules loaded. Use Open Port to add one.</div>`
@@ -803,6 +875,19 @@ function renderFirewallPreview(node) {
       <span class="pill">${rules.length} rules</span>
       <span class="pill">${Math.max(rules.length - prevCount, 0)} new since last refresh</span>
     </div>
+    ${
+      diffAdded.length || diffRemoved.length
+        ? `
+      <div class="event-item">
+        <div><strong>Diff vs baseline</strong></div>
+        <div class="card-meta">
+          <span class="pill running">${diffAdded.length} added</span>
+          <span class="pill danger">${diffRemoved.length} removed</span>
+        </div>
+      </div>
+    `
+        : ""
+    }
     ${body}
   `;
 }
@@ -1615,6 +1700,88 @@ function renderWizard() {
         </div>
       `;
     }
+  } else if (wizard.mode === "container-snapshot") {
+    const containerName = wizard.context.container || "";
+    steps = ["Snapshot", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div>Create a snapshot for ${containerName || "container"}.</div>
+        <div class="wizard-field">
+          <label for="wiz-ct-snap-name">Snapshot name</label>
+          <input id="wiz-ct-snap-name" name="name" data-wizard-group="containerSnapshot" value="${wizard.containerSnapshot.name}" placeholder="snap-1" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-ct-snap-stateful">Stateful</label>
+          <input id="wiz-ct-snap-stateful" type="checkbox" name="stateful" data-wizard-group="containerSnapshot" ${wizard.containerSnapshot.stateful ? "checked" : ""} />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Creating..." : "Create";
+      bodyMarkup = `
+        <div>Confirm snapshot.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Container</strong>
+            <span>${containerName || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>Name</strong>
+            <span>${wizard.containerSnapshot.name || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>Stateful</strong>
+            <span>${wizard.containerSnapshot.stateful ? "yes" : "no"}</span>
+          </div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "exec") {
+    const containerName = wizard.context.container || "";
+    steps = ["Command", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div>Run a command inside ${containerName || "container"}.</div>
+        <div class="wizard-field">
+          <label for="wiz-exec-cmd">Command (space separated)</label>
+          <input id="wiz-exec-cmd" name="command" data-wizard-group="exec" value="${wizard.exec.command}" placeholder="ls -la /" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-exec-user">User (optional)</label>
+          <input id="wiz-exec-user" name="user" data-wizard-group="exec" value="${wizard.exec.user}" placeholder="root" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-exec-cwd">Workdir (optional)</label>
+          <input id="wiz-exec-cwd" name="workdir" data-wizard-group="exec" value="${wizard.exec.workdir}" placeholder="/var/www/html" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-exec-env">Environment (key=value per line)</label>
+          <textarea id="wiz-exec-env" name="environment" data-wizard-group="exec" rows="3" placeholder="APP_ENV=prod&#10;DEBUG=0">${wizard.exec.environment}</textarea>
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Running..." : "Run";
+      bodyMarkup = `
+        <div>Confirm exec.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Container</strong>
+            <span>${containerName || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>Command</strong>
+            <span>${wizard.exec.command || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>User</strong>
+            <span>${wizard.exec.user || "default"}</span>
+          </div>
+          <div>
+            <strong>Workdir</strong>
+            <span>${wizard.exec.workdir || "default"}</span>
+          </div>
+        </div>
+      `;
+    }
   } else if (wizard.mode === "host-create") {
     const host = wizard.host;
     steps = ["Identity", "SSH", "Confirm"];
@@ -1798,6 +1965,17 @@ function parseParametersInput(raw) {
     }
   }
   return params;
+}
+
+function parseEnvBlock(raw) {
+  const params = parseParametersInput(raw);
+  const result = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (key) {
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 async function apiRequest(path, options = {}) {
@@ -2253,7 +2431,7 @@ async function loadMonitoring(options = {}) {
   state.monitoringLoading = true;
   renderPreview();
   try {
-    const payload = await apiRequest("/api/monitoring/resources");
+    const payload = await apiRequest("/api/monitoring/resources?include_history=1&history_samples=24");
     state.monitoring = payload || null;
     if (options.log) {
       logEvent("success", "Monitoring snapshot refreshed");
@@ -2275,10 +2453,16 @@ async function loadFirewall(options = {}) {
   try {
     const statusPayload = await apiRequest("/api/firewall/status");
     const rulesPayload = await apiRequest("/api/firewall/rules");
+    const diffPayload = await apiRequest("/api/firewall/rules/diff", {
+      method: "POST",
+      body: JSON.stringify({ baseline: state.firewallPreviousRules }),
+    });
     state.firewall = {
       backend: statusPayload.backend || null,
       active: statusPayload.active,
       rules: (rulesPayload && rulesPayload.rules) || [],
+      added: diffPayload.added || [],
+      removed: diffPayload.removed || [],
     };
     if (options.log) {
       logEvent("success", "Firewall status refreshed");
@@ -2381,6 +2565,55 @@ async function handleAction(actionId, node, params = {}) {
     return;
   }
 
+  if (actionId === "container-start" || actionId === "container-stop" || actionId === "container-restart") {
+    const containerName = node && node.context ? node.context.container : null;
+    if (!containerName) {
+      logEvent("error", "No container selected");
+      return;
+    }
+    const path =
+      actionId === "container-start"
+        ? `/api/containers/${containerName}/start`
+        : actionId === "container-stop"
+        ? `/api/containers/${containerName}/stop`
+        : `/api/containers/${containerName}/restart`;
+    const response = await apiRequest(path, { method: "POST" });
+    logEvent("success", response.message || `${actionId.replace("container-", "")} sent to ${containerName}`);
+    await loadGraph({ skipProbe: true });
+    return;
+  }
+
+  if (actionId === "container-snapshot") {
+    const containerName = node && node.context ? node.context.container : null;
+    if (!containerName) {
+      logEvent("error", "No container selected");
+      return;
+    }
+    openWizard("container-snapshot", containerName);
+    return;
+  }
+
+  if (actionId === "container-logs") {
+    const containerName = node && node.context ? node.context.container : null;
+    if (!containerName) {
+      logEvent("error", "No container selected");
+      return;
+    }
+    const response = await apiRequest(`/api/containers/${encodeURIComponent(containerName)}/logs`);
+    const snippet = (response.logs || "").split("\n").slice(-20).join("\n");
+    logEvent("success", `Logs for ${containerName} (tail):\n${snippet}`);
+    return;
+  }
+
+  if (actionId === "container-exec") {
+    const containerName = node && node.context ? node.context.container : null;
+    if (!containerName) {
+      logEvent("error", "No container selected");
+      return;
+    }
+    openWizard("exec", containerName);
+    return;
+  }
   if (actionId === "monitoring-refresh") {
     await loadMonitoring({ log: true });
     return;
@@ -2390,8 +2623,14 @@ async function handleAction(actionId, node, params = {}) {
     openWizard("firewall", null, { firewallMode: "open" });
     return;
   }
-
   if (actionId === "firewall-close") {
+    const preload = {
+      mode: "close",
+      port: params.port || "",
+      protocol: params.protocol || "tcp",
+      source: params.source || "",
+    };
+    state.wizard.firewall = { ...state.wizard.firewall, ...preload };
     openWizard("firewall", null, { firewallMode: "close" });
     return;
   }
@@ -2663,6 +2902,8 @@ async function handleWizardAction(action) {
       network: 2,
       firewall: 2,
       "vm-snapshot": 2,
+      "container-snapshot": 2,
+      exec: 2,
     };
     const steps = stepCounts[state.wizard.mode] || 1;
     if (state.wizard.step < steps - 1) {
@@ -2902,6 +3143,45 @@ async function handleWizardAction(action) {
         state.wizard.active = false;
         state.wizard.mode = null;
         await loadVms();
+      } else if (state.wizard.mode === "container-snapshot") {
+        const containerName = state.wizard.context.container;
+        const snapName = state.wizard.containerSnapshot.name.trim();
+        if (!containerName) {
+          throw new Error("Container is required");
+        }
+        if (!snapName) {
+          throw new Error("Snapshot name is required");
+        }
+        const response = await apiRequest(`/api/containers/${encodeURIComponent(containerName)}/snapshot`, {
+          method: "POST",
+          body: JSON.stringify({ snapshot_name: snapName, stateful: Boolean(state.wizard.containerSnapshot.stateful) }),
+        });
+        logEvent("success", response.message || `Snapshot ${snapName} created for ${containerName}`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+      } else if (state.wizard.mode === "exec") {
+        const containerName = state.wizard.context.container;
+        if (!containerName) {
+          throw new Error("Container is required");
+        }
+        const commandText = state.wizard.exec.command.trim();
+        if (!commandText) {
+          throw new Error("Command is required");
+        }
+        const command = commandText.split(/\s+/);
+        const environment = parseEnvBlock(state.wizard.exec.environment);
+        const response = await apiRequest(`/api/containers/${encodeURIComponent(containerName)}/exec`, {
+          method: "POST",
+          body: JSON.stringify({
+            command,
+            user: state.wizard.exec.user || undefined,
+            workdir: state.wizard.exec.workdir || undefined,
+            environment: environment && Object.keys(environment).length ? environment : undefined,
+          }),
+        });
+        logEvent("success", response.output ? `Exec output: ${response.output.slice(0, 200)}...` : "Command executed");
+        state.wizard.active = false;
+        state.wizard.mode = null;
       } else if (state.wizard.mode === "filemanager") {
         const containerName = state.wizard.context.container;
         if (!containerName) {
@@ -3019,6 +3299,10 @@ function bindEvents() {
       state.wizard.firewall[target.name] = value;
     } else if (group === "vmSnapshot") {
       state.wizard.vmSnapshot[target.name] = value;
+    } else if (group === "containerSnapshot") {
+      state.wizard.containerSnapshot[target.name] = target.type === "checkbox" ? target.checked : value;
+    } else if (group === "exec") {
+      state.wizard.exec[target.name] = value;
     } else {
       state.wizard.form[target.name] = value;
     }

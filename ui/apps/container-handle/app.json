@@ -8,6 +8,21 @@
   "order": 10,
   "actions": [
     {
+      "id": "container-start",
+      "label": "Start",
+      "variant": "primary"
+    },
+    {
+      "id": "container-stop",
+      "label": "Stop",
+      "variant": "ghost"
+    },
+    {
+      "id": "container-restart",
+      "label": "Restart",
+      "variant": "ghost"
+    },
+    {
       "id": "open-ssh",
       "label": "Open SSH",
       "variant": "ghost"
@@ -20,6 +35,21 @@
     {
       "id": "backup-container",
       "label": "Backup",
+      "variant": "ghost"
+    },
+    {
+      "id": "container-snapshot",
+      "label": "Snapshot",
+      "variant": "ghost"
+    },
+    {
+      "id": "container-logs",
+      "label": "Logs",
+      "variant": "ghost"
+    },
+    {
+      "id": "container-exec",
+      "label": "Exec",
       "variant": "ghost"
     },
     {
