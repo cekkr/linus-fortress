@@ -247,7 +247,9 @@ class FortressClient:
         self.base_url = config.get("server_url")
         if not self.base_url:
             raise FortressCLIError("server_url missing in config. Re-run setup.")
-        self.verify_tls = config.get("verify_tls", True)
+        self.ca_bundle = config.get("ca_bundle")
+        # requests accepts True/False or a CA bundle path
+        self.verify_tls = self.ca_bundle or config.get("verify_tls", True)
         self.timeout = config.get("timeout", DEFAULT_TIMEOUT)
 
     def _resolve_auth(self, override: Optional[str] = None) -> Dict[str, str]:
@@ -335,10 +337,15 @@ def setup_command(args: argparse.Namespace) -> None:
         server_url = prompt("Server base URL (e.g. https://host:8443)")
 
     verify_tls = existing_config.get("verify_tls", True)
+    ca_bundle = existing_config.get("ca_bundle")
     if args.insecure:
         verify_tls = False
     elif args.secure:
         verify_tls = True
+    if args.ca_bundle is not None:
+        ca_bundle = args.ca_bundle if args.ca_bundle else None
+        if ca_bundle:
+            verify_tls = True
 
     if keys_regenerated and existing_config.get("stored"):
         print("Warning: keypair regenerated; clearing stored secrets. Re-enter API key/token.")
@@ -371,6 +378,7 @@ def setup_command(args: argparse.Namespace) -> None:
     config = {
         "server_url": server_url,
         "verify_tls": verify_tls,
+        "ca_bundle": ca_bundle,
         "timeout": args.timeout or existing_config.get("timeout", DEFAULT_TIMEOUT),
         "stored": stored,
         "keys": {
@@ -1160,6 +1168,10 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--show-passphrase", action="store_true", help="Print passphrase used for new keys (only when regenerated)")
     setup_parser.add_argument("--secure", action="store_true", help="Enforce TLS verification")
     setup_parser.add_argument("--insecure", action="store_true", help="Disable TLS verification (not recommended)")
+    setup_parser.add_argument(
+        "--ca-bundle",
+        help="Path to custom CA bundle or pinned certificate PEM (implies --secure). Use empty string to clear.",
+    )
     setup_parser.add_argument("--key-passphrase", help="Passphrase for new keys (non-interactive environments)")
     setup_parser.set_defaults(func=setup_command)
 

@@ -120,6 +120,11 @@ Quick start:
 - `./run-client.sh --webui` to generate a local WebUI env file and print steps to run the UI locally against a remote API.
 - `./run-client.sh --issue-token` to create a delegated token after setup (requires an API key or a token with `api_user_admin`).
 - `./run-client.sh --reset-keys` to regenerate the CLI RSA keypair.
+- TLS helpers:
+  - Default for public hosts is strict TLS verification; Let's Encrypt works out-of-the-box.
+  - `--pin-cert` fetches the server cert and stores it under `~/.fortress-cli/api-ca.pem` (preferred for self-signed).
+  - `--ca-bundle /path/to/ca.pem` reuses an existing CA bundle (stored in CLI config and exported to the WebUI via `NODE_EXTRA_CA_CERTS`).
+  - Use `--insecure` only if you explicitly want to skip verification.
 During `--webui`, the script also prompts to bootstrap a local UI admin (use `--no-bootstrap-admin` to skip).
 Tip: `fortress-cli setup --show-keys` prints the key paths (and `--show-passphrase` prints the passphrase when keys are regenerated).
 
@@ -138,7 +143,8 @@ Tip: `fortress-cli setup --show-keys` prints the key paths (and `--show-passphra
 
 ### 2) Client (your laptop)
 CLI:
-- `./run-client.sh --insecure` if the server uses self-signed TLS, otherwise omit `--insecure`.
+- For public domains/IPs, just run `./run-client.sh --server <host>` (strict TLS by default).
+- For self-signed TLS, prefer `./run-client.sh --server <host> --pin-cert` to pin the certificate, or reuse a bundle with `--ca-bundle <pem>`. Fall back to `--insecure` only if pinning is not possible.
 - Point to the remote API (a bare IP/hostname is enough; it expands to `https://<addr>:8443`).
 - Use the master API key (or a delegated token with `api_user_admin`) to create delegated tokens.
 

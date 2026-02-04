@@ -21,6 +21,11 @@ TOKEN_LABEL=""
 TOKEN_PERMS=""
 PASS_PHRASE="${FORTRESS_PASSPHRASE:-}"
 BOOTSTRAP_UI_ADMIN="auto"
+FORTRESS_HOME="${FORTRESS_HOME:-${HOME}/.fortress-cli}"
+CA_BUNDLE_PATH="${FORTRESS_CA_BUNDLE:-${FORTRESS_HOME}/api-ca.pem}"
+PIN_CERT_MODE="auto"
+PINNED_CA_BUNDLE=""
+ACTIVE_CA_BUNDLE=""
 
 usage() {
   cat <<'EOF'
@@ -39,6 +44,9 @@ Options:
   --token-label NAME Label for the delegated token (default: client).
   --token-perms LIST Comma-separated permissions for the token.
   --passphrase PASS  CLI key passphrase (or set FORTRESS_PASSPHRASE).
+  --pin-cert         Fetch and pin the API TLS certificate for verification (useful for self-signed).
+  --ca-bundle PATH   Use an existing CA bundle for API verification (implies --secure).
+  --no-pin-cert      Disable automatic pin prompt (default is auto-prompt for public hosts).
   --bootstrap-admin  Prompt to bootstrap the local UI admin (default in --webui).
   --no-bootstrap-admin Skip UI admin bootstrap prompt.
   --insecure         Disable TLS verification (self-signed certs).
@@ -111,6 +119,116 @@ generate_password() {
     fi
   done
   printf '%s' "${password:0:length}"
+}
+
+parse_host_port() {
+  local url=$1
+  python - "$url" <<'PY'
+import sys
+import urllib.parse
+
+raw = sys.argv[1]
+if "://" not in raw:
+    raw = "https://" + raw
+parsed = urllib.parse.urlparse(raw)
+host = parsed.hostname or ""
+port = parsed.port or (443 if parsed.scheme == "https" else 80)
+print(host)
+print(port)
+PY
+}
+
+is_public_host() {
+  local host=$1
+  python - "$host" <<'PY'
+import ipaddress
+import sys
+
+host = sys.argv[1]
+try:
+    ip = ipaddress.ip_address(host)
+    print("1" if not (ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local or ip.is_multicast) else "0")
+except ValueError:
+    # Assume DNS names are public unless they end with .local or lack a dot
+    if host.endswith(".local") or "." not in host:
+        print("0")
+    else:
+        print("1")
+PY
+}
+
+ensure_ca_dir() {
+  local path=$1
+  local dir
+  dir="$(dirname "${path}")"
+  mkdir -p "${dir}"
+}
+
+fetch_server_cert_bundle() {
+  local host=$1
+  local port=$2
+  local dest=$3
+  if command -v openssl >/dev/null 2>&1; then
+    if ! openssl s_client -showcerts -servername "${host}" -connect "${host}:${port}" </dev/null 2>/dev/null \
+      | awk '/BEGIN CERTIFICATE/{flag=1}flag{print}/END CERTIFICATE/{if(flag){print;flag=0}}' > "${dest}"; then
+      return 1
+    fi
+    if [[ ! -s "${dest}" ]]; then
+      return 1
+    fi
+    return 0
+  fi
+  # Python fallback: grabs leaf cert only
+  python - "$host" "$port" "$dest" <<'PY'
+import ssl
+import socket
+import sys
+
+host, port, dest = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+context = ssl.create_default_context()
+context.check_hostname = False
+context.verify_mode = ssl.CERT_NONE
+with socket.create_connection((host, port), timeout=10) as sock:
+    with context.wrap_socket(sock, server_hostname=host) as ssock:
+        der = ssock.getpeercert(True)
+        pem = ssl.DER_cert_to_PEM_cert(der)
+        with open(dest, "w", encoding="utf-8") as fh:
+            fh.write(pem)
+PY
+}
+
+maybe_pin_server_cert() {
+  local url=$1
+  if [[ "${PIN_CERT_MODE}" == "off" ]]; then
+    return 0
+  fi
+  read -r host port < <(parse_host_port "${url}")
+  if [[ -z "${host}" ]]; then
+    return 0
+  fi
+  local public="0"
+  public=$(is_public_host "${host}" || echo "0")
+  local should_pin="0"
+  if [[ "${PIN_CERT_MODE}" == "on" ]]; then
+    should_pin="1"
+  elif [[ "${PIN_CERT_MODE}" == "auto" && "${public}" == "1" && -t 0 ]]; then
+    if prompt_yes_no "Pin TLS cert from ${host}:${port} for verification?" "Y"; then
+      should_pin="1"
+    fi
+  fi
+  if [[ "${should_pin}" != "1" ]]; then
+    return 0
+  fi
+  ensure_ca_dir "${CA_BUNDLE_PATH}"
+  log "Fetching TLS certificate from ${host}:${port}..."
+  if ! fetch_server_cert_bundle "${host}" "${port}" "${CA_BUNDLE_PATH}"; then
+    log "Failed to fetch certificate; continuing without pinning."
+    return 0
+  fi
+  PINNED_CA_BUNDLE="${CA_BUNDLE_PATH}"
+  ACTIVE_CA_BUNDLE="${CA_BUNDLE_PATH}"
+  VERIFY_TLS="secure"
+  log "Pinned certificate to ${PINNED_CA_BUNDLE} (set REQUESTS_CA_BUNDLE to reuse)."
 }
 
 TOKEN_TYPE=""
@@ -282,6 +400,9 @@ write_ui_env_file() {
     if [[ "${VERIFY_TLS}" == "insecure" ]]; then
       printf 'FORTRESS_UI_INSECURE_TLS=1\n'
     fi
+    if [[ -n "${ACTIVE_CA_BUNDLE}" ]]; then
+      printf 'NODE_EXTRA_CA_CERTS=%s\n' "$(quote_env "${ACTIVE_CA_BUNDLE}")"
+    fi
   } > "${env_path}"
   chmod 600 "${env_path}"
 }
@@ -327,6 +448,23 @@ parse_args() {
         ;;
       --passphrase)
         PASS_PHRASE="${2:-}"
+        shift 2
+        ;;
+      --pin-cert)
+        PIN_CERT_MODE="on"
+        shift
+        ;;
+      --no-pin-cert)
+        PIN_CERT_MODE="off"
+        shift
+        ;;
+      --ca-bundle)
+        CA_BUNDLE_PATH="${2:-}"
+        ACTIVE_CA_BUNDLE="${CA_BUNDLE_PATH}"
+        VERIFY_TLS="secure"
+        if [[ -n "${CA_BUNDLE_PATH}" && ! -f "${CA_BUNDLE_PATH}" ]]; then
+          log "Warning: CA bundle not found at ${CA_BUNDLE_PATH}; requests may fail until it exists."
+        fi
         shift 2
         ;;
       --bootstrap-admin)
@@ -444,12 +582,21 @@ run_cli_setup() {
   else
     SERVER_URL=$(normalize_server_url "${SERVER_URL}")
   fi
+  local host port public_host
+  read -r host port < <(parse_host_port "${SERVER_URL}")
+  public_host=$(is_public_host "${host}" || echo "0")
+  if [[ "${VERIFY_TLS}" == "auto" && "${public_host}" == "1" ]]; then
+    VERIFY_TLS="secure"
+  fi
   if [[ "${VERIFY_TLS}" == "auto" && -t 0 ]]; then
     if prompt_yes_no "Allow self-signed TLS for the API?" "N"; then
       VERIFY_TLS="insecure"
     else
       VERIFY_TLS="secure"
     fi
+  fi
+  if [[ "${VERIFY_TLS}" != "insecure" || "${PIN_CERT_MODE}" == "on" ]]; then
+    maybe_pin_server_cert "${SERVER_URL}"
   fi
   if [[ -z "${API_KEY}" && -z "${USER_TOKEN}" && -t 0 ]]; then
     local token_input
@@ -476,9 +623,23 @@ run_cli_setup() {
   if [[ -n "${USER_TOKEN}" ]]; then
     setup_args+=("--user-token" "${USER_TOKEN}")
   fi
+  if [[ -n "${ACTIVE_CA_BUNDLE}" ]]; then
+    setup_args+=("--ca-bundle" "${ACTIVE_CA_BUNDLE}")
+  fi
+  local setup_env=()
+  if [[ -n "${ACTIVE_CA_BUNDLE}" ]]; then
+    setup_env+=("REQUESTS_CA_BUNDLE=${ACTIVE_CA_BUNDLE}")
+  fi
   log "Running fortress-cli setup..."
-  "${setup_args[@]}"
+  if [[ ${#setup_env[@]} -gt 0 ]]; then
+    env "${setup_env[@]}" "${setup_args[@]}"
+  else
+    "${setup_args[@]}"
+  fi
   log "CLI ready. Example: ./fortress-cli.py status"
+  if [[ -n "${ACTIVE_CA_BUNDLE}" ]]; then
+    log "TLS: using CA bundle at ${ACTIVE_CA_BUNDLE} (stored in fortress-cli config)"
+  fi
   if [[ "${ISSUE_TOKEN}" == "1" ]]; then
     if [[ -z "${PASS_PHRASE}" && -t 0 ]]; then
       PASS_PHRASE=$(prompt_secret "CLI key passphrase (leave blank to prompt later)")
@@ -502,6 +663,7 @@ guide_webui_setup() {
   if [[ ! -d "${UI_DIR}" ]]; then
     fail "UI directory not found at ${UI_DIR}"
   fi
+  ensure_python_deps
   if ! command -v "${NODE_BIN}" >/dev/null 2>&1; then
     log "Warning: node not found; install Node.js before running the WebUI."
   fi
@@ -517,12 +679,23 @@ guide_webui_setup() {
     SERVER_URL=$(normalize_server_url "${SERVER_URL}")
   fi
 
+  local host port public_host
+  read -r host port < <(parse_host_port "${SERVER_URL}")
+  public_host=$(is_public_host "${host}" || echo "0")
+  if [[ "${VERIFY_TLS}" == "auto" && "${public_host}" == "1" ]]; then
+    VERIFY_TLS="secure"
+  fi
+
   if [[ "${VERIFY_TLS}" == "auto" ]]; then
     if prompt_yes_no "Allow self-signed TLS for the API?" "N"; then
       VERIFY_TLS="insecure"
     else
       VERIFY_TLS="secure"
     fi
+  fi
+
+  if [[ "${VERIFY_TLS}" != "insecure" || "${PIN_CERT_MODE}" == "on" ]]; then
+    maybe_pin_server_cert "${SERVER_URL}"
   fi
 
   if [[ -z "${API_KEY}" && -z "${USER_TOKEN}" ]]; then
@@ -539,6 +712,9 @@ guide_webui_setup() {
     write_ui_env_file "${env_path}"
     wrote_env="1"
     log "Wrote ${env_path} (chmod 600)."
+    if [[ -n "${ACTIVE_CA_BUNDLE}" ]]; then
+      log "WebUI will trust TLS using NODE_EXTRA_CA_CERTS=${ACTIVE_CA_BUNDLE}"
+    fi
   else
     log "Skipping env file write."
   fi
@@ -552,6 +728,9 @@ guide_webui_setup() {
     log "4) ${NPM_BIN} start"
   else
     log "3) Export FORTRESS_API_URL and any FORTRESS_UI_* vars"
+    if [[ -n "${ACTIVE_CA_BUNDLE}" ]]; then
+      log "   Also export NODE_EXTRA_CA_CERTS=${ACTIVE_CA_BUNDLE} for self-signed/pinned TLS"
+    fi
     log "4) ${NPM_BIN} start"
   fi
   log "5) Open http://${UI_HOST}:${UI_PORT} in your browser"
