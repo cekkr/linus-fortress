@@ -821,13 +821,48 @@ maybe_harden_ssh() {
   fi
 }
 
+resolve_node_bin() {
+  local for_service=${1:-0}
+  local candidate=""
+  if [[ -n "${FORTRESS_NODE_BIN:-}" && -x "${FORTRESS_NODE_BIN}" ]]; then
+    printf '%s' "${FORTRESS_NODE_BIN}"
+    return 0
+  fi
+  if [[ "${for_service}" == "1" ]]; then
+    if [[ -x /root/.nvm/versions/node/current/bin/node ]]; then
+      printf '%s' "/root/.nvm/versions/node/current/bin/node"
+      return 0
+    fi
+    local nvm_latest=""
+    nvm_latest=$(ls -1 /root/.nvm/versions/node/v*/bin/node 2>/dev/null | sort -V | tail -1 || true)
+    if [[ -n "${nvm_latest}" && -x "${nvm_latest}" ]]; then
+      printf '%s' "${nvm_latest}"
+      return 0
+    fi
+  fi
+  if [[ "${for_service}" == "1" ]]; then
+    for candidate in /usr/bin/node /usr/local/bin/node /bin/node /snap/bin/node; do
+      if [[ -x "${candidate}" ]]; then
+        printf '%s' "${candidate}"
+        return 0
+      fi
+    done
+  fi
+  candidate=$(command -v node || true)
+  if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+    printf '%s' "${candidate}"
+    return 0
+  fi
+  return 1
+}
+
 start_ui_nohup() {
   if [[ ! -d "${UI_DIR}" ]]; then
     log "UI directory not found; skipping admin UI."
     return 0
   fi
   local node_bin
-  node_bin=$(command -v node || true)
+  node_bin=$(resolve_node_bin 0 || true)
   if [[ -z "$node_bin" ]]; then
     fail "node not found; install Node.js or disable the UI."
   fi
@@ -850,7 +885,7 @@ start_screen_sessions() {
   fi
   local node_bin=""
   if [[ "${FORTRESS_UI_ENABLED:-}" == "1" ]]; then
-    node_bin=$(command -v node || true)
+    node_bin=$(resolve_node_bin 0 || true)
     if [[ -z "$node_bin" ]]; then
       fail "node not found; install Node.js or disable the UI."
     fi
@@ -1264,9 +1299,15 @@ main() {
       fail "systemctl not found; cannot install service."
     fi
     local node_bin
-    node_bin=$(command -v node || true)
+    node_bin=$(resolve_node_bin 1 || true)
     if [[ -z "$node_bin" && "${ui_enabled}" == "1" ]]; then
       fail "node not found; install Node.js or disable the UI."
+    fi
+    if [[ -n "${node_bin}" ]]; then
+      set_env_var "FORTRESS_NODE_BIN" "${node_bin}"
+    fi
+    if [[ "${ui_enabled}" == "1" && "${node_bin}" == /root/.nvm/* ]]; then
+      log "Warning: node resolved to ${node_bin}; systemd may not execute binaries under /root/.nvm. Install system node or set FORTRESS_NODE_BIN."
     fi
     write_systemd_service "${node_bin:-/usr/bin/node}"
     log "Service mode enabled. Use 'systemctl status fortress' to inspect."

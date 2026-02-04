@@ -90,6 +90,7 @@ When the API/UI bind to a non-loopback address, the script opens the correspondi
 If `--mode service` is selected and the repo lives under `/root` or `/home` (or on a `noexec` mount), the script offers to relocate the clone to `/opt/linus-fortress` to avoid systemd/SELinux execution failures.
 On first run, the script can also generate a delegated token for copy/paste into the CLI or WebUI configuration.
 Debug responses (default enabled) can be toggled with `./run-server.sh --debug-enable` or `./run-server.sh --debug-disable`.
+If systemd fails to start the UI due to a Node.js path (common when `node` points to `/root/.nvm/...`), install system Node.js and/or set `FORTRESS_NODE_BIN=/usr/bin/node` before re-running `./run-server.sh --mode service`.
 
 Host assumptions:
 - Linux distro with `apt`, `dnf`, or `yum` (Ubuntu/Debian or AlmaLinux/RHEL-like).
