@@ -459,13 +459,19 @@ body {
 }
 
 .wizard-field input,
-.wizard-field select {
+.wizard-field select,
+.wizard-field textarea {
   padding: 8px 10px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.3);
   background: rgba(0, 0, 0, 0.2);
   color: #f5f9e6;
   font-size: 12px;
+}
+
+.wizard-field textarea {
+  min-height: 96px;
+  resize: vertical;
 }
 
 .wizard-field input[type="checkbox"] {

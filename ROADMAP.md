@@ -49,6 +49,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 
 ## Path 8: Lizard UI (app-based web manager) (short term)
 - Done: Add UI auth flow with server-side sessions backed by delegated tokens (no tokens in the browser).
+- Done: Wire Routing, Recipes, Host Packages, and Hosts apps with live API calls and wizards.
 - Expand container actions: start/stop/restart, snapshots, exec, user/group management, and port exposure flows.
 - Implement step-by-step wizards for container creation, routing, recipe apply, and backup/restore.
 - Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.

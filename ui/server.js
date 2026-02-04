@@ -44,11 +44,11 @@ function loadEnvFileSync(filePath, force = false) {
 }
 
 const envPath = process.env.FORTRESS_UI_ENV_FILE || path.join(__dirname, ".env.local");
-loadEnvFileSync(envPath, true);
+loadEnvFileSync(envPath, false);
 if (process.env.FORTRESS_UI_ENV_FILE === undefined) {
   const altEnv = path.join(process.cwd(), ".env.local");
   if (altEnv !== envPath) {
-    loadEnvFileSync(altEnv, true);
+    loadEnvFileSync(altEnv, false);
   }
 }
 
@@ -1440,6 +1440,22 @@ app.post(
   })
 );
 
+app.post(
+  "/api/packages/remove",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/packages/remove", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/packages/update",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/packages/update", req.body || {});
+    res.json(payload);
+  })
+);
+
 app.get(
   "/api/recipes",
   asyncHandler(async (req, res) => {
@@ -1465,9 +1481,33 @@ app.post(
 );
 
 app.post(
+  "/api/recipes/seed",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/recipes/seed", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/recipes/plan",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/recipes/plan", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
   "/api/recipes/apply",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequestFor(req, "POST", "/recipes/apply", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/routing",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", "/routing");
     res.json(payload);
   })
 );
@@ -1476,6 +1516,88 @@ app.post(
   "/api/routing",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequestFor(req, "POST", "/routing/add", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/routing/refresh",
+  asyncHandler(async (req, res) => {
+    const domain = (req.query && req.query.domain) || (req.body && req.body.domain);
+    const apiPath = domain ? `/routing/refresh?domain=${encodeURIComponent(domain)}` : "/routing/refresh";
+    const payload = await fortressRequestFor(req, "POST", apiPath);
+    res.json(payload);
+  })
+);
+
+app.delete(
+  "/api/routing/:domain",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "DELETE", `/routing/${req.params.domain}`);
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/hosts",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", "/hosts");
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/hosts/:name",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/hosts/${req.params.name}`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/hosts",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/hosts", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.put(
+  "/api/hosts/:name",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "PUT", `/hosts/${req.params.name}`, req.body || {});
+    res.json(payload);
+  })
+);
+
+app.delete(
+  "/api/hosts/:name",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "DELETE", `/hosts/${req.params.name}`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/hosts/:name/probe",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", `/hosts/${req.params.name}/probe`, req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/hosts/:name/provision",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", `/hosts/${req.params.name}/provision`, req.body || {});
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/hosts/:name/states",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/hosts/${req.params.name}/states`);
     res.json(payload);
   })
 );

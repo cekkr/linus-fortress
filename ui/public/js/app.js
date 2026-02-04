@@ -5,6 +5,12 @@ const state = {
   selectedId: null,
   containers: [],
   containerIndex: new Map(),
+  routes: [],
+  routesLoading: false,
+  recipes: [],
+  recipesLoading: false,
+  hosts: [],
+  hostsLoading: false,
   fortress: { status: "unknown" },
   auth: {
     active: false,
@@ -41,6 +47,7 @@ const state = {
     },
     routing: {
       domain: "",
+      container_name: "",
       container_port: "80",
       container_interface: "eth0",
       listen_address: "0.0.0.0",
@@ -53,6 +60,31 @@ const state = {
       redirect_http: true,
       tls_email: "",
       tls_staging: false,
+    },
+    packages: {
+      mode: "install",
+      target: "",
+      packages: "",
+      update_index: true,
+      full_upgrade: false,
+    },
+    recipe: {
+      name: "",
+      target: "",
+      parameters: "",
+      dry_run: false,
+      include_dependencies: true,
+      update_index: true,
+    },
+    host: {
+      name: "",
+      host: "",
+      username: "",
+      port: "22",
+      key_path: "",
+      password: "",
+      os_type: "",
+      notes: "",
     },
     filemanager: {
       username: "",
@@ -384,6 +416,7 @@ function resetCreateWizard() {
 function resetRoutingWizard(containerName) {
   state.wizard.routing = {
     domain: "",
+    container_name: containerName || (state.containers[0] ? state.containers[0].name : ""),
     container_port: "80",
     container_interface: "eth0",
     listen_address: "0.0.0.0",
@@ -408,7 +441,44 @@ function resetFilemanagerWizard() {
   };
 }
 
-function openWizard(mode, contextContainer) {
+function resetPackagesWizard(mode, targetContainer) {
+  state.wizard.packages = {
+    mode: mode || "install",
+    target: targetContainer || "",
+    packages: "",
+    update_index: true,
+    full_upgrade: false,
+  };
+  state.wizard.context.container = targetContainer || null;
+}
+
+function resetRecipeWizard(targetContainer) {
+  state.wizard.recipe = {
+    name: "",
+    target: targetContainer || "",
+    parameters: "",
+    dry_run: false,
+    include_dependencies: true,
+    update_index: true,
+  };
+  state.wizard.context.container = targetContainer || null;
+}
+
+function resetHostWizard() {
+  state.wizard.host = {
+    name: "",
+    host: "",
+    username: "",
+    port: "22",
+    key_path: "",
+    password: "",
+    os_type: "",
+    notes: "",
+  };
+  state.wizard.context.container = null;
+}
+
+function openWizard(mode, contextContainer, options = {}) {
   state.wizard.active = true;
   state.wizard.mode = mode;
   state.wizard.step = 0;
@@ -422,6 +492,12 @@ function openWizard(mode, contextContainer) {
   } else if (mode === "filemanager") {
     resetFilemanagerWizard();
     state.wizard.context.container = contextContainer || null;
+  } else if (mode === "packages") {
+    resetPackagesWizard(options.packageMode || "install", contextContainer || null);
+  } else if (mode === "recipe-apply") {
+    resetRecipeWizard(contextContainer || null);
+  } else if (mode === "host-create") {
+    resetHostWizard();
   }
   renderWizard();
 }
@@ -495,10 +571,152 @@ function renderGrid() {
   elements.grid.innerHTML = children.map(renderCard).join("");
 }
 
+function renderRoutingPreview(node) {
+  let body = "";
+  if (state.routesLoading) {
+    body = `<div>Loading routes...</div>`;
+  } else if (!state.routes.length) {
+    body = `<div>No routes configured yet. Use Add Route to create one.</div>`;
+  } else {
+    body = state.routes
+      .map((route) => {
+        const enabledPill = route.enabled ? `<span class="pill running">enabled</span>` : `<span class="pill stopped">disabled</span>`;
+        const tlsMode = route.tls && route.tls.mode ? route.tls.mode : "http";
+        const tlsPill = `<span class="pill">${tlsMode}</span>`;
+        const targetLabel = route.container_name
+          ? `${route.container_name}:${route.container_port}`
+          : `host:${route.container_port || 80}`;
+        const listenLabel = `${route.listen_address || "0.0.0.0"}:${route.listen_port || 80}`;
+        return `
+          <div class="event-item">
+            <div><strong>${route.domain}</strong> → ${targetLabel}</div>
+            <div class="card-meta">
+              ${enabledPill}
+              ${tlsPill}
+              <span class="pill">${listenLabel}</span>
+            </div>
+            <div class="card-actions">
+              <button class="action ghost" data-action-id="route-refresh" data-domain="${route.domain}" data-node-id="${node.id}">Refresh</button>
+              <button class="action danger ghost" data-action-id="route-delete" data-domain="${route.domain}" data-node-id="${node.id}">Delete</button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+  }
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>${node.description || ""}</div>
+    ${body}
+  `;
+}
+
+function renderRecipesPreview(node) {
+  let body = "";
+  if (state.recipesLoading) {
+    body = `<div>Loading recipes...</div>`;
+  } else if (!state.recipes.length) {
+    body = `<div>No recipes found. Use Seed LAMP to populate defaults.</div>`;
+  } else {
+    body = state.recipes
+      .map((recipe) => {
+        const deps = Array.isArray(recipe.dependencies) ? recipe.dependencies.length : recipe.dependencies_count || 0;
+        const packagesCount = recipe.packages_count || 0;
+        const commandsCount = recipe.commands_count || 0;
+        const paramsCount = Array.isArray(recipe.parameter_keys) ? recipe.parameter_keys.length : 0;
+        return `
+          <div class="event-item">
+            <div><strong>${recipe.name}</strong> — ${recipe.description || "No description"}</div>
+            <div class="card-meta">
+              <span class="pill">${deps} deps</span>
+              <span class="pill">${packagesCount} packages</span>
+              <span class="pill">${commandsCount} commands</span>
+              <span class="pill">${paramsCount} params</span>
+            </div>
+            <div class="card-actions">
+              <button class="action ghost" data-action-id="recipes-apply" data-recipe="${recipe.name}" data-node-id="${node.id}">Apply</button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+  }
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>${node.description || ""}</div>
+    ${body}
+  `;
+}
+
+function renderPackagesPreview(node) {
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>${node.description || ""}</div>
+    <div class="event-item">
+      Host-level package management uses apt/dnf/yum. Choose Install, Remove, or Update to run against the host or any container.
+    </div>
+  `;
+}
+
+function renderHostsPreview(node) {
+  let body = "";
+  if (state.hostsLoading) {
+    body = `<div>Loading hosts...</div>`;
+  } else if (!state.hosts.length) {
+    body = `<div>No hosts registered yet. Add a host to begin provisioning and probes.</div>`;
+  } else {
+    body = state.hosts
+      .map((host) => {
+        const installedPill = host.installed ? `<span class="pill running">installed</span>` : `<span class="pill stopped">new</span>`;
+        const osPill = host.os_type ? `<span class="pill">${host.os_type}</span>` : "";
+        const updatedPill = host.updated_at ? `<span class="pill">${host.updated_at}</span>` : "";
+        const sshLabel = host.ssh_host ? `${host.ssh_host}${host.ssh_port ? `:${host.ssh_port}` : ""}` : "ssh not set";
+        return `
+          <div class="event-item">
+            <div><strong>${host.name}</strong> — ${sshLabel}</div>
+            <div class="card-meta">
+              ${installedPill}
+              ${osPill}
+              ${updatedPill}
+            </div>
+            <div class="card-actions">
+              <button class="action ghost" data-action-id="host-probe" data-host="${host.name}" data-node-id="${node.id}">Probe</button>
+              <button class="action ghost" data-action-id="host-provision" data-host="${host.name}" data-node-id="${node.id}">Provision</button>
+              <button class="action danger ghost" data-action-id="host-delete" data-host="${host.name}" data-node-id="${node.id}">Delete</button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+  }
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>${node.description || ""}</div>
+    ${body}
+  `;
+}
+
 function renderPreview() {
   const node = getNode(state.selectedId || state.rootId);
   if (!node) {
     elements.preview.textContent = "Select an app to preview.";
+    return;
+  }
+
+  if (node.id === "routing") {
+    renderRoutingPreview(node);
+    return;
+  }
+  if (node.id === "recipes") {
+    renderRecipesPreview(node);
+    return;
+  }
+  if (node.id === "packages") {
+    renderPackagesPreview(node);
+    return;
+  }
+  if (node.id === "hosts") {
+    renderHostsPreview(node);
     return;
   }
 
@@ -690,11 +908,34 @@ function renderWizard() {
     }
   } else if (wizard.mode === "routing") {
     const routing = wizard.routing;
-    const containerName = wizard.context.container || "container";
+    const containerName = routing.container_name || wizard.context.container || "";
+    const containerSelectDisabled = wizard.context.container ? "disabled" : "";
+    const containerOptions = state.containers
+      .map(
+        (container) =>
+          `<option value="${container.name}" ${container.name === containerName ? "selected" : ""}>${container.name}</option>`
+      )
+      .join("");
+    const containerSelect = containerOptions
+      ? `
+        <div class="wizard-field">
+          <label for="wiz-container-name">Container</label>
+          <select id="wiz-container-name" name="container_name" data-wizard-group="routing" ${containerSelectDisabled}>
+            ${containerOptions}
+          </select>
+        </div>
+      `
+      : `
+        <div class="wizard-field">
+          <label>Container</label>
+          <div class="event-item error">No containers available. Create one first.</div>
+        </div>
+      `;
     steps = ["Domain", "TLS", "Confirm"];
     if (wizard.step === 0) {
       bodyMarkup = `
-        <div>Route traffic for ${containerName}.</div>
+        <div>Route traffic for ${containerName || "a container"}.</div>
+        ${containerSelect}
         <div class="wizard-field">
           <label for="wiz-domain">Domain</label>
           <input id="wiz-domain" name="domain" data-wizard-group="routing" value="${routing.domain}" placeholder="app.example.com" />
@@ -768,7 +1009,7 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Container</strong>
-            <span>${containerName}</span>
+            <span>${containerName || "(missing)"}</span>
           </div>
           <div>
             <strong>Domain</strong>
@@ -790,6 +1031,99 @@ function renderWizard() {
             <strong>TLS Port</strong>
             <span>${routing.tls_port}</span>
           </div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "packages") {
+    const pkg = wizard.packages;
+    const actionLabel = pkg.mode === "remove" ? "Remove" : pkg.mode === "update" ? "Update" : "Install";
+    steps = ["Details", "Confirm"];
+    const targetOptions = [
+      `<option value="" ${pkg.target ? "" : "selected"}>Host (this server)</option>`,
+      ...state.containers.map(
+        (container) =>
+          `<option value="${container.name}" ${pkg.target === container.name ? "selected" : ""}>${container.name}</option>`
+      ),
+    ].join("");
+    if (wizard.step === 0) {
+      const packagesField =
+        pkg.mode === "update"
+          ? ""
+          : `
+        <div class="wizard-field">
+          <label for="wiz-packages">Packages (space or comma separated)</label>
+          <input id="wiz-packages" name="packages" data-wizard-group="packages" value="${pkg.packages}" placeholder="htop curl" />
+        </div>
+      `;
+      const updateField =
+        pkg.mode === "install"
+          ? `
+        <div class="wizard-field">
+          <label for="wiz-update-index">Refresh package index first</label>
+          <input id="wiz-update-index" type="checkbox" name="update_index" data-wizard-group="packages" ${pkg.update_index ? "checked" : ""} />
+        </div>
+      `
+          : "";
+      const fullUpgradeField =
+        pkg.mode === "update"
+          ? `
+        <div class="wizard-field">
+          <label for="wiz-full-upgrade">Full upgrade (dist-upgrade)</label>
+          <input id="wiz-full-upgrade" type="checkbox" name="full_upgrade" data-wizard-group="packages" ${pkg.full_upgrade ? "checked" : ""} />
+        </div>
+      `
+          : "";
+      bodyMarkup = `
+        <div>${actionLabel} packages on host or container.</div>
+        <div class="wizard-field">
+          <label for="wiz-package-target">Target</label>
+          <select id="wiz-package-target" name="target" data-wizard-group="packages">
+            ${targetOptions}
+          </select>
+        </div>
+        ${packagesField}
+        ${updateField}
+        ${fullUpgradeField}
+      `;
+    } else {
+      nextLabel = wizard.busy ? `${actionLabel}...` : actionLabel;
+      const targetLabel = pkg.target ? `container ${pkg.target}` : "host";
+      const packagesLabel = pkg.mode === "update" ? "(all packages)" : pkg.packages || "(none)";
+      bodyMarkup = `
+        <div>Confirm package ${pkg.mode}.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Mode</strong>
+            <span>${pkg.mode}</span>
+          </div>
+          <div>
+            <strong>Target</strong>
+            <span>${targetLabel}</span>
+          </div>
+          <div>
+            <strong>Packages</strong>
+            <span>${packagesLabel}</span>
+          </div>
+          ${
+            pkg.mode === "install"
+              ? `
+          <div>
+            <strong>Update index</strong>
+            <span>${pkg.update_index ? "yes" : "no"}</span>
+          </div>
+          `
+              : ""
+          }
+          ${
+            pkg.mode === "update"
+              ? `
+          <div>
+            <strong>Full upgrade</strong>
+            <span>${pkg.full_upgrade ? "yes" : "no"}</span>
+          </div>
+          `
+              : ""
+          }
         </div>
       `;
     }
@@ -825,6 +1159,162 @@ function renderWizard() {
           <div>
             <strong>Install Path</strong>
             <span>${filemanager.install_path}</span>
+          </div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "recipe-apply") {
+    const recipe = wizard.recipe;
+    const recipeOptions = state.recipes
+      .map((item) => `<option value="${item.name}" ${item.name === recipe.name ? "selected" : ""}>${item.name}</option>`)
+      .join("");
+    const targetOptions = [
+      `<option value="" ${recipe.target ? "" : "selected"}>Host (this server)</option>`,
+      ...state.containers.map(
+        (container) => `<option value="${container.name}" ${recipe.target === container.name ? "selected" : ""}>${container.name}</option>`
+      ),
+    ].join("");
+    steps = ["Target", "Parameters", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div>Select a recipe and where to run it.</div>
+        <div class="wizard-field">
+          <label for="wiz-recipe-name">Recipe</label>
+          <select id="wiz-recipe-name" name="name" data-wizard-group="recipe">
+            ${
+              recipeOptions
+                ? recipeOptions
+                : `<option value="">No recipes found (seed LAMP to get started)</option>`
+            }
+          </select>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-recipe-target">Target</label>
+          <select id="wiz-recipe-target" name="target" data-wizard-group="recipe">
+            ${targetOptions}
+          </select>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-recipe-deps">Include dependencies</label>
+          <input id="wiz-recipe-deps" type="checkbox" name="include_dependencies" data-wizard-group="recipe" ${
+            recipe.include_dependencies ? "checked" : ""
+          } />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-recipe-update-index">Refresh package index</label>
+          <input id="wiz-recipe-update-index" type="checkbox" name="update_index" data-wizard-group="recipe" ${
+            recipe.update_index ? "checked" : ""
+          } />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-recipe-dry-run">Plan only (dry run)</label>
+          <input id="wiz-recipe-dry-run" type="checkbox" name="dry_run" data-wizard-group="recipe" ${
+            recipe.dry_run ? "checked" : ""
+          } />
+        </div>
+      `;
+    } else if (wizard.step === 1) {
+      bodyMarkup = `
+        <div>Optional parameters (key=value per line or JSON object).</div>
+        <div class="wizard-field">
+          <label for="wiz-recipe-params">Parameters</label>
+          <textarea id="wiz-recipe-params" name="parameters" data-wizard-group="recipe" rows="4" placeholder="db_user=app_user&#10;db_password=secret">${recipe.parameters}</textarea>
+        </div>
+      `;
+    } else {
+      const actionVerb = recipe.dry_run ? "Plan" : "Apply";
+      nextLabel = wizard.busy ? `${actionVerb}...` : actionVerb;
+      bodyMarkup = `
+        <div>Confirm recipe ${actionVerb.toLowerCase()}.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Recipe</strong>
+            <span>${recipe.name || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>Target</strong>
+            <span>${recipe.target ? `container ${recipe.target}` : "host"}</span>
+          </div>
+          <div>
+            <strong>Include deps</strong>
+            <span>${recipe.include_dependencies ? "yes" : "no"}</span>
+          </div>
+          <div>
+            <strong>Update index</strong>
+            <span>${recipe.update_index ? "yes" : "no"}</span>
+          </div>
+          <div>
+            <strong>Dry run</strong>
+            <span>${recipe.dry_run ? "yes" : "no"}</span>
+          </div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "host-create") {
+    const host = wizard.host;
+    steps = ["Identity", "SSH", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-host-name">Host name</label>
+          <input id="wiz-host-name" name="name" data-wizard-group="host" value="${host.name}" placeholder="edge-01" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-host-os">OS type (optional)</label>
+          <input id="wiz-host-os" name="os_type" data-wizard-group="host" value="${host.os_type || ""}" placeholder="ubuntu" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-host-notes">Notes</label>
+          <input id="wiz-host-notes" name="notes" data-wizard-group="host" value="${host.notes || ""}" placeholder="ssh user has sudo" />
+        </div>
+      `;
+    } else if (wizard.step === 1) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-host-address">SSH host</label>
+          <input id="wiz-host-address" name="host" data-wizard-group="host" value="${host.host}" placeholder="192.0.2.10" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-host-user">SSH username</label>
+          <input id="wiz-host-user" name="username" data-wizard-group="host" value="${host.username}" placeholder="fortress" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-host-port">SSH port</label>
+          <input id="wiz-host-port" name="port" data-wizard-group="host" value="${host.port}" placeholder="22" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-host-key">SSH key path (optional)</label>
+          <input id="wiz-host-key" name="key_path" data-wizard-group="host" value="${host.key_path || ""}" placeholder="/home/user/.ssh/id_rsa" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-host-pass">SSH password (optional)</label>
+          <input id="wiz-host-pass" type="password" name="password" data-wizard-group="host" value="${host.password || ""}" placeholder="••••••" />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Creating..." : "Create";
+      bodyMarkup = `
+        <div>Confirm host record.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Name</strong>
+            <span>${host.name || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>OS</strong>
+            <span>${host.os_type || "unknown"}</span>
+          </div>
+          <div>
+            <strong>SSH</strong>
+            <span>${host.username || "(user)"}@${host.host || "(host)"}:${host.port || "22"}</span>
+          </div>
+          <div>
+            <strong>Key path</strong>
+            <span>${host.key_path || "none"}</span>
+          </div>
+          <div>
+            <strong>Notes</strong>
+            <span>${host.notes || "none"}</span>
           </div>
         </div>
       `;
@@ -866,6 +1356,25 @@ function renderAll() {
 function selectNode(id) {
   state.selectedId = id;
   renderAll();
+  hydrateNode(id).catch(() => {});
+}
+
+async function hydrateNode(id) {
+  const nodeId = id || state.selectedId;
+  if (!nodeId) {
+    return;
+  }
+  try {
+    if (nodeId === "routing") {
+      await loadRoutes();
+    } else if (nodeId === "recipes") {
+      await loadRecipes();
+    } else if (nodeId === "hosts") {
+      await loadHosts();
+    }
+  } catch (err) {
+    // Errors already logged.
+  }
 }
 
 function logEvent(type, message) {
@@ -873,6 +1382,51 @@ function logEvent(type, message) {
   state.events.unshift({ type, message, time });
   state.events = state.events.slice(0, 6);
   renderEvents();
+}
+
+function parsePackagesInput(raw) {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(/[\s,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseParametersInput(raw) {
+  if (raw === null || raw === undefined) {
+    return {};
+  }
+  const text = String(raw).trim();
+  if (!text) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (err) {
+    // Fall through to key=value parsing.
+  }
+  const params = {};
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const idx = trimmed.indexOf("=");
+    if (idx === -1) {
+      continue;
+    }
+    const key = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
+    if (key) {
+      params[key] = value;
+    }
+  }
+  return params;
 }
 
 async function apiRequest(path, options = {}) {
@@ -1189,16 +1743,20 @@ async function ensureRecipe(recipe) {
   }
 }
 
-async function applyRecipe(recipeName, containerName, parameters) {
+async function applyRecipe(recipeName, containerName, parameters, options = {}) {
+  const payload = {
+    recipe_name: recipeName,
+    container_name: containerName || options.container_name || undefined,
+    parameters: parameters || options.parameters || undefined,
+    include_dependencies:
+      options.include_dependencies !== undefined ? options.include_dependencies : true,
+    update_index: options.update_index !== undefined ? options.update_index : true,
+    dry_run: Boolean(options.dry_run),
+    probe_services: options.probe_services !== undefined ? options.probe_services : true,
+  };
   return apiRequest("/api/recipes/apply", {
     method: "POST",
-    body: JSON.stringify({
-      recipe_name: recipeName,
-      container_name: containerName,
-      parameters: parameters || undefined,
-      include_dependencies: true,
-      update_index: true,
-    }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -1257,11 +1815,226 @@ async function autoProbeContainers() {
   await loadGraph({ skipProbe: true });
 }
 
-async function handleAction(actionId, node) {
+async function loadRoutes(options = {}) {
+  state.routesLoading = true;
+  renderPreview();
+  try {
+    const payload = await apiRequest("/api/routing");
+    state.routes = payload && Array.isArray(payload.routes) ? payload.routes : [];
+    if (options.log) {
+      logEvent("success", "Routes refreshed");
+    }
+    return state.routes;
+  } catch (err) {
+    logEvent("error", err.message || "Failed to load routes");
+    throw err;
+  } finally {
+    state.routesLoading = false;
+    renderPreview();
+  }
+}
+
+async function refreshRoute(domain) {
+  const path = domain ? `/api/routing/refresh?domain=${encodeURIComponent(domain)}` : "/api/routing/refresh";
+  const response = await apiRequest(path, { method: "POST" });
+  logEvent("success", response.message || (domain ? `Route refreshed for ${domain}` : "Routes refreshed"));
+  await loadRoutes();
+  return response;
+}
+
+async function deleteRoute(domain) {
+  const response = await apiRequest(`/api/routing/${encodeURIComponent(domain)}`, { method: "DELETE" });
+  logEvent("success", response.message || `Route removed for ${domain}`);
+  await loadRoutes();
+  return response;
+}
+
+async function loadRecipes(options = {}) {
+  state.recipesLoading = true;
+  renderPreview();
+  try {
+    const payload = await apiRequest("/api/recipes");
+    state.recipes = payload && Array.isArray(payload.recipes) ? payload.recipes : [];
+    if (options.log) {
+      logEvent("success", "Recipes refreshed");
+    }
+    return state.recipes;
+  } catch (err) {
+    logEvent("error", err.message || "Failed to load recipes");
+    throw err;
+  } finally {
+    state.recipesLoading = false;
+    renderPreview();
+  }
+}
+
+async function seedRecipes(overwrite = false) {
+  const response = await apiRequest("/api/recipes/seed", {
+    method: "POST",
+    body: JSON.stringify({ bundle: "lamp", overwrite }),
+  });
+  logEvent("success", response.message || "Recipes seeded");
+  await loadRecipes();
+  return response;
+}
+
+async function loadHosts(options = {}) {
+  state.hostsLoading = true;
+  renderPreview();
+  try {
+    const payload = await apiRequest("/api/hosts");
+    state.hosts = payload && Array.isArray(payload.hosts) ? payload.hosts : [];
+    if (options.log) {
+      logEvent("success", "Hosts refreshed");
+    }
+    return state.hosts;
+  } catch (err) {
+    logEvent("error", err.message || "Failed to load hosts");
+    throw err;
+  } finally {
+    state.hostsLoading = false;
+    renderPreview();
+  }
+}
+
+async function probeHost(name) {
+  const response = await apiRequest(`/api/hosts/${encodeURIComponent(name)}/probe`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  logEvent("success", `Probe updated for ${name}`);
+  await loadHosts();
+  return response;
+}
+
+async function provisionHost(name) {
+  const response = await apiRequest(`/api/hosts/${encodeURIComponent(name)}/provision`, {
+    method: "POST",
+    body: JSON.stringify({ profile: "ubuntu" }),
+  });
+  logEvent("success", response.message || `Provisioning triggered for ${name}`);
+  await loadHosts();
+  return response;
+}
+
+async function deleteHost(name) {
+  const response = await apiRequest(`/api/hosts/${encodeURIComponent(name)}`, { method: "DELETE" });
+  logEvent("success", response.message || `Host ${name} removed`);
+  await loadHosts();
+  return response;
+}
+
+async function handleAction(actionId, node, params = {}) {
   if (actionId === "refresh") {
     state.probedContainers.clear();
     await loadGraph();
     logEvent("success", "Synced fortress state");
+    return;
+  }
+
+  if (actionId === "routing-add") {
+    openWizard("routing");
+    return;
+  }
+
+  if (actionId === "routing-refresh") {
+    await refreshRoute();
+    return;
+  }
+
+  if (actionId === "route-refresh") {
+    const domain = params.domain;
+    if (!domain) {
+      logEvent("error", "Route domain missing");
+      return;
+    }
+    await refreshRoute(domain);
+    return;
+  }
+
+  if (actionId === "route-delete") {
+    const domain = params.domain;
+    if (!domain) {
+      logEvent("error", "Route domain missing");
+      return;
+    }
+    const confirmed = window.confirm(`Remove routing for ${domain}?`);
+    if (!confirmed) {
+      return;
+    }
+    await deleteRoute(domain);
+    return;
+  }
+
+  if (actionId === "recipes-refresh") {
+    await loadRecipes({ log: true });
+    return;
+  }
+
+  if (actionId === "recipes-seed") {
+    await seedRecipes(false);
+    return;
+  }
+
+  if (actionId === "recipes-apply") {
+    const contextContainer = node && node.context ? node.context.container : null;
+    await loadRecipes();
+    openWizard("recipe-apply", contextContainer);
+    if (params.recipe) {
+      state.wizard.recipe.name = params.recipe;
+      renderWizard();
+    }
+    return;
+  }
+
+  if (actionId === "packages-install" || actionId === "packages-remove" || actionId === "packages-update") {
+    const mode = actionId === "packages-remove" ? "remove" : actionId === "packages-update" ? "update" : "install";
+    const contextContainer = node && node.context ? node.context.container : null;
+    openWizard("packages", contextContainer, { packageMode: mode });
+    return;
+  }
+
+  if (actionId === "hosts-refresh") {
+    await loadHosts({ log: true });
+    return;
+  }
+
+  if (actionId === "hosts-create") {
+    openWizard("host-create");
+    return;
+  }
+
+  if (actionId === "host-probe") {
+    const hostName = params.host;
+    if (!hostName) {
+      logEvent("error", "Host name missing");
+      return;
+    }
+    await probeHost(hostName);
+    return;
+  }
+
+  if (actionId === "host-provision") {
+    const hostName = params.host;
+    if (!hostName) {
+      logEvent("error", "Host name missing");
+      return;
+    }
+    await provisionHost(hostName);
+    return;
+  }
+
+  if (actionId === "host-delete") {
+    const hostName = params.host;
+    if (!hostName) {
+      logEvent("error", "Host name missing");
+      return;
+    }
+    const confirmed = window.confirm(`Delete host ${hostName}?`);
+    if (!confirmed) {
+      return;
+    }
+    await deleteHost(hostName);
     return;
   }
 
@@ -1369,6 +2142,9 @@ async function handleWizardAction(action) {
       "create-container": 3,
       routing: 3,
       filemanager: 2,
+      packages: 2,
+      "recipe-apply": 3,
+      "host-create": 3,
     };
     const steps = stepCounts[state.wizard.mode] || 1;
     if (state.wizard.step < steps - 1) {
@@ -1401,7 +2177,7 @@ async function handleWizardAction(action) {
         await loadGraph();
       } else if (state.wizard.mode === "routing") {
         const routing = state.wizard.routing;
-        const containerName = state.wizard.context.container;
+        const containerName = routing.container_name || state.wizard.context.container;
         if (!containerName) {
           throw new Error("Container is required for routing");
         }
@@ -1450,6 +2226,100 @@ async function handleWizardAction(action) {
         logEvent("success", `Routing applied for ${payload.domain}`);
         state.wizard.active = false;
         state.wizard.mode = null;
+        await loadRoutes();
+      } else if (state.wizard.mode === "packages") {
+        const pkg = state.wizard.packages;
+        const mode = pkg.mode;
+        const target = pkg.target && pkg.target.trim() ? pkg.target.trim() : "";
+        const packages = pkg.packages ? parsePackagesInput(pkg.packages) : [];
+        if (mode !== "update" && packages.length === 0) {
+          throw new Error("At least one package is required");
+        }
+        let response;
+        if (mode === "install") {
+          response = await apiRequest("/api/packages/install", {
+            method: "POST",
+            body: JSON.stringify({
+              packages,
+              container_name: target || undefined,
+              update_index: Boolean(pkg.update_index),
+            }),
+          });
+        } else if (mode === "remove") {
+          response = await apiRequest("/api/packages/remove", {
+            method: "POST",
+            body: JSON.stringify({
+              packages,
+              container_name: target || undefined,
+            }),
+          });
+        } else {
+          response = await apiRequest("/api/packages/update", {
+            method: "POST",
+            body: JSON.stringify({
+              container_name: target || undefined,
+              full_upgrade: Boolean(pkg.full_upgrade),
+            }),
+          });
+        }
+        logEvent("success", response.message || `Packages ${mode} on ${target || "host"}`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+      } else if (state.wizard.mode === "recipe-apply") {
+        const recipe = state.wizard.recipe;
+        const recipeName = recipe.name ? recipe.name.trim() : "";
+        if (!recipeName) {
+          throw new Error("Recipe name is required");
+        }
+        const target = recipe.target && recipe.target.trim() ? recipe.target.trim() : "";
+        const parameters = parseParametersInput(recipe.parameters);
+        const response = await applyRecipe(recipeName, target || null, parameters, {
+          include_dependencies: Boolean(recipe.include_dependencies),
+          update_index: Boolean(recipe.update_index),
+          dry_run: Boolean(recipe.dry_run),
+          probe_services: true,
+        });
+        logEvent(
+          "success",
+          response.message ||
+            (recipe.dry_run ? `Plan generated for ${recipeName}` : `Recipe ${recipeName} applied`)
+        );
+        if (target) {
+          await probeContainerServices(target, { updateLabels: true, log: false });
+          await loadGraph({ skipProbe: true });
+        }
+        state.wizard.active = false;
+        state.wizard.mode = null;
+      } else if (state.wizard.mode === "host-create") {
+        const host = state.wizard.host;
+        const payload = {
+          name: host.name ? host.name.trim() : "",
+          os_type: host.os_type ? host.os_type.trim() : undefined,
+          notes: host.notes ? host.notes.trim() : undefined,
+        };
+        if (!payload.name) {
+          throw new Error("Host name is required");
+        }
+        const sshHost = host.host ? host.host.trim() : "";
+        const sshUser = host.username ? host.username.trim() : "";
+        if (!sshHost || !sshUser) {
+          throw new Error("SSH host and username are required");
+        }
+        payload.ssh = {
+          host: sshHost,
+          username: sshUser,
+          port: Number.parseInt(host.port, 10) || 22,
+          key_path: host.key_path ? host.key_path.trim() : undefined,
+          password: host.password || undefined,
+        };
+        const response = await apiRequest("/api/hosts", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        logEvent("success", response.message || `Host ${payload.name} created`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+        await loadHosts();
       } else if (state.wizard.mode === "filemanager") {
         const containerName = state.wizard.context.container;
         if (!containerName) {
@@ -1495,6 +2365,9 @@ async function loadGraph(options = {}) {
     state.selectedId = state.rootId;
   }
   renderAll();
+  if (["routing", "recipes", "hosts"].includes(state.selectedId)) {
+    await hydrateNode(state.selectedId);
+  }
   if (!options.skipProbe) {
     autoProbeContainers().catch(() => {});
   }
@@ -1507,8 +2380,11 @@ function bindEvents() {
       event.stopPropagation();
       const nodeId = action.getAttribute("data-node-id");
       const node = nodeId ? getNode(nodeId) : getNode(state.selectedId);
+      const params = { ...action.dataset };
+      delete params.actionId;
+      delete params.nodeId;
       try {
-        await handleAction(action.getAttribute("data-action-id"), node);
+        await handleAction(action.getAttribute("data-action-id"), node, params);
       } catch (err) {
         logEvent("error", err.message || "Action failed");
       }
@@ -1549,6 +2425,12 @@ function bindEvents() {
       }
     } else if (group === "filemanager") {
       state.wizard.filemanager[target.name] = value;
+    } else if (group === "packages") {
+      state.wizard.packages[target.name] = value;
+    } else if (group === "recipe") {
+      state.wizard.recipe[target.name] = value;
+    } else if (group === "host") {
+      state.wizard.host[target.name] = value;
     } else {
       state.wizard.form[target.name] = value;
     }

@@ -5,5 +5,16 @@
   "icon": "route",
   "parent": "home",
   "order": 3,
-  "badge": "Soon"
+  "actions": [
+    {
+      "id": "routing-add",
+      "label": "Add Route",
+      "variant": "primary"
+    },
+    {
+      "id": "routing-refresh",
+      "label": "Refresh Routes",
+      "variant": "ghost"
+    }
+  ]
 }

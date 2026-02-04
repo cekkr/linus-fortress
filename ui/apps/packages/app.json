@@ -5,5 +5,21 @@
   "icon": "stack",
   "parent": "home",
   "order": 6,
-  "badge": "Soon"
+  "actions": [
+    {
+      "id": "packages-install",
+      "label": "Install",
+      "variant": "primary"
+    },
+    {
+      "id": "packages-remove",
+      "label": "Remove",
+      "variant": "ghost"
+    },
+    {
+      "id": "packages-update",
+      "label": "Update",
+      "variant": "ghost"
+    }
+  ]
 }

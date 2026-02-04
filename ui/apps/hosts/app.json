@@ -5,5 +5,16 @@
   "icon": "tower",
   "parent": "home",
   "order": 7,
-  "badge": "Soon"
+  "actions": [
+    {
+      "id": "hosts-create",
+      "label": "Add Host",
+      "variant": "primary"
+    },
+    {
+      "id": "hosts-refresh",
+      "label": "Reload",
+      "variant": "ghost"
+    }
+  ]
 }

@@ -5,5 +5,21 @@
   "icon": "wand",
   "parent": "home",
   "order": 4,
-  "badge": "Soon"
+  "actions": [
+    {
+      "id": "recipes-refresh",
+      "label": "Reload",
+      "variant": "ghost"
+    },
+    {
+      "id": "recipes-seed",
+      "label": "Seed LAMP",
+      "variant": "ghost"
+    },
+    {
+      "id": "recipes-apply",
+      "label": "Apply Recipe",
+      "variant": "primary"
+    }
+  ]
 }
