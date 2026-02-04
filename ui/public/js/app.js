@@ -5,6 +5,12 @@ const state = {
   selectedId: null,
   containers: [],
   containerIndex: new Map(),
+  monitoring: null,
+  monitoringLoading: false,
+  firewall: { backend: null, rules: [] },
+  firewallLoading: false,
+  vms: [],
+  vmsLoading: false,
   routes: [],
   routesLoading: false,
   recipes: [],
@@ -75,6 +81,22 @@ const state = {
       dry_run: false,
       include_dependencies: true,
       update_index: true,
+    },
+    network: {
+      container_name: "",
+      protocol: "tcp",
+      bind_address: "0.0.0.0",
+      host_port: "",
+      container_port: "",
+      target_interface: "eth0",
+      target_address: "",
+      open_firewall: true,
+    },
+    firewall: {
+      mode: "open",
+      port: "",
+      protocol: "tcp",
+      source: "",
     },
     host: {
       name: "",
@@ -478,6 +500,30 @@ function resetHostWizard() {
   state.wizard.context.container = null;
 }
 
+function resetNetworkWizard(containerName) {
+  state.wizard.network = {
+    container_name: containerName || "",
+    protocol: "tcp",
+    bind_address: "0.0.0.0",
+    host_port: "",
+    container_port: "",
+    target_interface: "eth0",
+    target_address: "",
+    open_firewall: true,
+  };
+  state.wizard.context.container = containerName || null;
+}
+
+function resetFirewallWizard(mode = "open") {
+  state.wizard.firewall = {
+    mode,
+    port: "",
+    protocol: "tcp",
+    source: "",
+  };
+  state.wizard.context.container = null;
+}
+
 function openWizard(mode, contextContainer, options = {}) {
   state.wizard.active = true;
   state.wizard.mode = mode;
@@ -498,6 +544,10 @@ function openWizard(mode, contextContainer, options = {}) {
     resetRecipeWizard(contextContainer || null);
   } else if (mode === "host-create") {
     resetHostWizard();
+  } else if (mode === "network") {
+    resetNetworkWizard(contextContainer || null);
+  } else if (mode === "firewall") {
+    resetFirewallWizard(options.firewallMode || "open");
   }
   renderWizard();
 }
@@ -658,6 +708,109 @@ function renderPackagesPreview(node) {
   `;
 }
 
+function renderMonitoringPreview(node) {
+  if (state.monitoringLoading) {
+    elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>Loading monitoring snapshot...</div>`;
+    return;
+  }
+  const snapshot = state.monitoring;
+  if (!snapshot) {
+    elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>No snapshot yet. Click Refresh.</div>`;
+    return;
+  }
+  const host = snapshot.host || {};
+  const alerts = snapshot.alerts || {};
+  const hostAlerts = (alerts.host || []).length;
+  const containerAlerts = alerts.containers || {};
+  const containerRows = Object.entries(snapshot.containers || {}).map(
+    ([name, data]) => `
+      <div class="event-item">
+        <div><strong>${name}</strong> — CPU ${data.cpu_percent ?? "?"}% / RAM ${data.memory_percent ?? "?"}% / Disk ${data.disk_percent ?? "?"}%</div>
+        <div class="card-meta">
+          ${containerAlerts[name] && containerAlerts[name].length ? `<span class="pill danger">${containerAlerts[name].length} alerts</span>` : `<span class="pill running">ok</span>`}
+          ${data.process_count ? `<span class="pill">${data.process_count} procs</span>` : ""}
+        </div>
+      </div>
+    `
+  );
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>Host CPU ${host.cpu_percent ?? "?"}% • RAM ${host.memory_percent ?? "?"}% • Disk ${host.disk_percent ?? "?"}%</div>
+    <div class="card-meta">
+      ${hostAlerts ? `<span class="pill danger">${hostAlerts} host alerts</span>` : `<span class="pill running">host ok</span>`}
+      <span class="pill">${Object.keys(containerAlerts).length} container alerts tracked</span>
+    </div>
+    ${containerRows.join("")}
+  `;
+}
+
+function renderFirewallPreview(node) {
+  if (state.firewallLoading) {
+    elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>Loading firewall...</div>`;
+    return;
+  }
+  const fw = state.firewall || {};
+  const rules = Array.isArray(fw.rules) ? fw.rules : [];
+  const body =
+    rules.length === 0
+      ? `<div>No firewall rules loaded. Use Open Port to add one.</div>`
+      : rules
+          .map(
+            (rule) => `
+      <div class="event-item">
+        <div><strong>${rule.port}/${rule.protocol}</strong> — ${rule.source || "any"}</div>
+        <div class="card-meta">
+          <span class="pill">${rule.action || "allow"}</span>
+          <span class="pill">${rule.interface || "all ifaces"}</span>
+        </div>
+      </div>
+    `
+          )
+          .join("");
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>Backend: ${fw.backend || "unknown"} • Active: ${fw.active ? "yes" : "no"}</div>
+    ${body}
+  `;
+}
+
+function renderVmsPreview(node) {
+  if (state.vmsLoading) {
+    elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>Loading VMs...</div>`;
+    return;
+  }
+  const vms = Array.isArray(state.vms) ? state.vms : [];
+  const body =
+    vms.length === 0
+      ? `<div>No VMs defined yet.</div>`
+      : vms
+          .map((vm) => {
+            const status = vm.status || vm.state || "unknown";
+            const pill = `<span class="pill ${status.includes("running") ? "running" : "stopped"}">${status}</span>`;
+            return `
+          <div class="event-item">
+            <div><strong>${vm.name}</strong> — ${vm.profile || vm.provider || "vm"}</div>
+            <div class="card-meta">
+              ${pill}
+              ${vm.memory_mb ? `<span class="pill">${vm.memory_mb} MB</span>` : ""}
+              ${vm.disk_gb ? `<span class="pill">${vm.disk_gb} GB</span>` : ""}
+            </div>
+            <div class="card-actions">
+              <button class="action ghost" data-action-id="vm-start" data-vm="${vm.name}" data-node-id="${node.id}">Start</button>
+              <button class="action ghost" data-action-id="vm-stop" data-vm="${vm.name}" data-node-id="${node.id}">Stop</button>
+              <button class="action ghost" data-action-id="vm-status" data-vm="${vm.name}" data-node-id="${node.id}">Status</button>
+            </div>
+          </div>
+        `;
+          })
+          .join("");
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>${node.description || ""}</div>
+    ${body}
+  `;
+}
+
 function renderHostsPreview(node) {
   let body = "";
   if (state.hostsLoading) {
@@ -717,6 +870,18 @@ function renderPreview() {
   }
   if (node.id === "hosts") {
     renderHostsPreview(node);
+    return;
+  }
+  if (node.id === "monitoring") {
+    renderMonitoringPreview(node);
+    return;
+  }
+  if (node.id === "firewall") {
+    renderFirewallPreview(node);
+    return;
+  }
+  if (node.id === "vms") {
+    renderVmsPreview(node);
     return;
   }
 
@@ -1250,6 +1415,135 @@ function renderWizard() {
         </div>
       `;
     }
+  } else if (wizard.mode === "network") {
+    const net = wizard.network;
+    const containerName = net.container_name || wizard.context.container || "";
+    steps = ["Mapping", "Confirm"];
+    if (wizard.step === 0) {
+      const containerOptions = state.containers
+        .map(
+          (container) =>
+            `<option value="${container.name}" ${container.name === containerName ? "selected" : ""}>${container.name}</option>`
+        )
+        .join("");
+      bodyMarkup = `
+        <div>Expose a host port to ${containerName || "a container"}.</div>
+        <div class="wizard-field">
+          <label for="wiz-net-container">Container</label>
+          <select id="wiz-net-container" name="container_name" data-wizard-group="network">
+            ${containerOptions}
+          </select>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-net-protocol">Protocol</label>
+          <select id="wiz-net-protocol" name="protocol" data-wizard-group="network">
+            <option value="tcp" ${net.protocol === "tcp" ? "selected" : ""}>TCP</option>
+            <option value="udp" ${net.protocol === "udp" ? "selected" : ""}>UDP</option>
+          </select>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-net-container-port">Container port</label>
+          <input id="wiz-net-container-port" name="container_port" data-wizard-group="network" value="${net.container_port}" placeholder="80" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-net-host-port">Host port</label>
+          <input id="wiz-net-host-port" name="host_port" data-wizard-group="network" value="${net.host_port}" placeholder="8080" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-net-bind">Bind address</label>
+          <input id="wiz-net-bind" name="bind_address" data-wizard-group="network" value="${net.bind_address}" placeholder="0.0.0.0" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-net-target-iface">Container interface</label>
+          <input id="wiz-net-target-iface" name="target_interface" data-wizard-group="network" value="${net.target_interface}" placeholder="eth0" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-net-target-addr">Container address (optional)</label>
+          <input id="wiz-net-target-addr" name="target_address" data-wizard-group="network" value="${net.target_address}" placeholder="" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-net-fw">Open firewall</label>
+          <input id="wiz-net-fw" type="checkbox" name="open_firewall" data-wizard-group="network" ${net.open_firewall ? "checked" : ""} />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Exposing..." : "Expose";
+      const hostPort = net.host_port || net.container_port;
+      bodyMarkup = `
+        <div>Confirm port exposure.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Container</strong>
+            <span>${containerName || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>Mapping</strong>
+            <span>${net.bind_address}:${hostPort || "(host port)"} → ${net.target_interface || "eth0"}:${net.container_port || "(container port)"}</span>
+          </div>
+          <div>
+            <strong>Protocol</strong>
+            <span>${net.protocol}</span>
+          </div>
+          <div>
+            <strong>Open firewall</strong>
+            <span>${net.open_firewall ? "yes" : "no"}</span>
+          </div>
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "firewall") {
+    const fw = wizard.firewall;
+    const actionLabel = fw.mode === "close" ? "Close" : "Open";
+    steps = ["Rule", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-fw-mode">Action</label>
+          <select id="wiz-fw-mode" name="mode" data-wizard-group="firewall">
+            <option value="open" ${fw.mode === "open" ? "selected" : ""}>Open</option>
+            <option value="close" ${fw.mode === "close" ? "selected" : ""}>Close</option>
+          </select>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-fw-port">Port</label>
+          <input id="wiz-fw-port" name="port" data-wizard-group="firewall" value="${fw.port}" placeholder="443" />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-fw-protocol">Protocol</label>
+          <select id="wiz-fw-protocol" name="protocol" data-wizard-group="firewall">
+            <option value="tcp" ${fw.protocol === "tcp" ? "selected" : ""}>TCP</option>
+            <option value="udp" ${fw.protocol === "udp" ? "selected" : ""}>UDP</option>
+          </select>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-fw-source">Source (CIDR, optional)</label>
+          <input id="wiz-fw-source" name="source" data-wizard-group="firewall" value="${fw.source}" placeholder="0.0.0.0/0" />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? `${actionLabel}ing...` : actionLabel;
+      bodyMarkup = `
+        <div>Confirm firewall rule.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>Action</strong>
+            <span>${fw.mode}</span>
+          </div>
+          <div>
+            <strong>Port</strong>
+            <span>${fw.port}</span>
+          </div>
+          <div>
+            <strong>Protocol</strong>
+            <span>${fw.protocol}</span>
+          </div>
+          <div>
+            <strong>Source</strong>
+            <span>${fw.source || "any"}</span>
+          </div>
+        </div>
+      `;
+    }
   } else if (wizard.mode === "host-create") {
     const host = wizard.host;
     steps = ["Identity", "SSH", "Confirm"];
@@ -1371,6 +1665,12 @@ async function hydrateNode(id) {
       await loadRecipes();
     } else if (nodeId === "hosts") {
       await loadHosts();
+    } else if (nodeId === "monitoring") {
+      await loadMonitoring();
+    } else if (nodeId === "firewall") {
+      await loadFirewall();
+    } else if (nodeId === "vms") {
+      await loadVms();
     }
   } catch (err) {
     // Errors already logged.
@@ -1878,6 +2178,83 @@ async function seedRecipes(overwrite = false) {
   return response;
 }
 
+async function loadMonitoring(options = {}) {
+  state.monitoringLoading = true;
+  renderPreview();
+  try {
+    const payload = await apiRequest("/api/monitoring/resources");
+    state.monitoring = payload || null;
+    if (options.log) {
+      logEvent("success", "Monitoring snapshot refreshed");
+    }
+    return state.monitoring;
+  } catch (err) {
+    logEvent("error", err.message || "Failed to load monitoring");
+    throw err;
+  } finally {
+    state.monitoringLoading = false;
+    renderPreview();
+  }
+}
+
+async function loadFirewall(options = {}) {
+  state.firewallLoading = true;
+  renderPreview();
+  try {
+    const statusPayload = await apiRequest("/api/firewall/status");
+    const rulesPayload = await apiRequest("/api/firewall/rules");
+    state.firewall = {
+      backend: statusPayload.backend || null,
+      active: statusPayload.active,
+      rules: (rulesPayload && rulesPayload.rules) || [],
+    };
+    if (options.log) {
+      logEvent("success", "Firewall status refreshed");
+    }
+    return state.firewall;
+  } catch (err) {
+    logEvent("error", err.message || "Failed to load firewall");
+    throw err;
+  } finally {
+    state.firewallLoading = false;
+    renderPreview();
+  }
+}
+
+async function loadVms(options = {}) {
+  state.vmsLoading = true;
+  renderPreview();
+  try {
+    const payload = await apiRequest("/api/vms");
+    state.vms = payload && Array.isArray(payload.vms) ? payload.vms : [];
+    if (options.log) {
+      logEvent("success", "VMs refreshed");
+    }
+    return state.vms;
+  } catch (err) {
+    logEvent("error", err.message || "Failed to load VMs");
+    throw err;
+  } finally {
+    state.vmsLoading = false;
+    renderPreview();
+  }
+}
+
+async function vmAction(name, action) {
+  const path = action === "start" ? `/api/vms/${encodeURIComponent(name)}/start` : `/api/vms/${encodeURIComponent(name)}/stop`;
+  const response = await apiRequest(path, { method: "POST" });
+  logEvent("success", response.message || `VM ${action}: ${name}`);
+  await loadVms();
+  return response;
+}
+
+async function refreshVmStatus(name) {
+  const response = await apiRequest(`/api/vms/${encodeURIComponent(name)}/status`);
+  logEvent("success", `Status for ${name}: ${response.status || "ok"}`);
+  await loadVms();
+  return response;
+}
+
 async function loadHosts(options = {}) {
   state.hostsLoading = true;
   renderPreview();
@@ -1929,6 +2306,45 @@ async function handleAction(actionId, node, params = {}) {
     state.probedContainers.clear();
     await loadGraph();
     logEvent("success", "Synced fortress state");
+    return;
+  }
+
+  if (actionId === "monitoring-refresh") {
+    await loadMonitoring({ log: true });
+    return;
+  }
+
+  if (actionId === "firewall-open") {
+    openWizard("firewall", null, { firewallMode: "open" });
+    return;
+  }
+
+  if (actionId === "firewall-close") {
+    openWizard("firewall", null, { firewallMode: "close" });
+    return;
+  }
+
+  if (actionId === "firewall-refresh") {
+    await loadFirewall({ log: true });
+    return;
+  }
+
+  if (actionId === "vms-refresh") {
+    await loadVms({ log: true });
+    return;
+  }
+
+  if (actionId === "vm-start" || actionId === "vm-stop" || actionId === "vm-status") {
+    const name = params.vm;
+    if (!name) {
+      logEvent("error", "VM name missing");
+      return;
+    }
+    if (actionId === "vm-status") {
+      await refreshVmStatus(name);
+    } else {
+      await vmAction(name, actionId === "vm-start" ? "start" : "stop");
+    }
     return;
   }
 
@@ -2063,6 +2479,11 @@ async function handleAction(actionId, node, params = {}) {
     return;
   }
 
+  if (actionId === "network-expose") {
+    openWizard("network", contextContainer);
+    return;
+  }
+
   if (actionId === "probe-services") {
     await probeContainerServices(contextContainer, { updateLabels: true, log: true });
     await loadGraph({ skipProbe: true });
@@ -2145,6 +2566,8 @@ async function handleWizardAction(action) {
       packages: 2,
       "recipe-apply": 3,
       "host-create": 3,
+      network: 2,
+      firewall: 2,
     };
     const steps = stepCounts[state.wizard.mode] || 1;
     if (state.wizard.step < steps - 1) {
@@ -2320,6 +2743,53 @@ async function handleWizardAction(action) {
         state.wizard.active = false;
         state.wizard.mode = null;
         await loadHosts();
+      } else if (state.wizard.mode === "network") {
+        const net = state.wizard.network;
+        const containerName = net.container_name || state.wizard.context.container;
+        if (!containerName) {
+          throw new Error("Container is required");
+        }
+        const containerPort = Number.parseInt(net.container_port, 10) || null;
+        const hostPort = Number.parseInt(net.host_port || net.container_port, 10) || null;
+        if (!containerPort || !hostPort) {
+          throw new Error("Container and host ports are required");
+        }
+        const exposure = {
+          protocol: net.protocol || "tcp",
+          bind_address: net.bind_address || "0.0.0.0",
+          host_ports: [hostPort],
+          container_port: containerPort,
+          target_interface: net.target_interface || "eth0",
+          target_address: net.target_address || undefined,
+          open_firewall: Boolean(net.open_firewall),
+        };
+        await apiRequest("/api/containers/expose", {
+          method: "POST",
+          body: JSON.stringify({ container_name: containerName, exposures: [exposure] }),
+        });
+        logEvent("success", `Port ${hostPort} exposed to ${containerName}:${containerPort}`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+      } else if (state.wizard.mode === "firewall") {
+        const fw = state.wizard.firewall;
+        const port = Number.parseInt(fw.port, 10);
+        if (!port) {
+          throw new Error("Port is required");
+        }
+        const payload = {
+          port,
+          protocol: fw.protocol || "tcp",
+          source: fw.source || undefined,
+        };
+        const path = fw.mode === "close" ? "/api/firewall/close" : "/api/firewall/open";
+        const response = await apiRequest(path, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        logEvent("success", response.message || `Firewall ${fw.mode} ${port}/${payload.protocol}`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+        await loadFirewall();
       } else if (state.wizard.mode === "filemanager") {
         const containerName = state.wizard.context.container;
         if (!containerName) {
@@ -2365,7 +2835,7 @@ async function loadGraph(options = {}) {
     state.selectedId = state.rootId;
   }
   renderAll();
-  if (["routing", "recipes", "hosts"].includes(state.selectedId)) {
+  if (["routing", "recipes", "hosts", "monitoring", "firewall", "vms"].includes(state.selectedId)) {
     await hydrateNode(state.selectedId);
   }
   if (!options.skipProbe) {
@@ -2431,6 +2901,10 @@ function bindEvents() {
       state.wizard.recipe[target.name] = value;
     } else if (group === "host") {
       state.wizard.host[target.name] = value;
+    } else if (group === "network") {
+      state.wizard.network[target.name] = value;
+    } else if (group === "firewall") {
+      state.wizard.firewall[target.name] = value;
     } else {
       state.wizard.form[target.name] = value;
     }

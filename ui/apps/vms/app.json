@@ -5,5 +5,11 @@
   "icon": "hex",
   "parent": "home",
   "order": 8,
-  "badge": "Soon"
+  "actions": [
+    {
+      "id": "vms-refresh",
+      "label": "Refresh",
+      "variant": "ghost"
+    }
+  ]
 }

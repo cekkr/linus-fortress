@@ -5,5 +5,16 @@
   "icon": "wand",
   "scope": "container",
   "order": 5,
-  "badge": "Soon"
+  "actions": [
+    {
+      "id": "recipes-apply",
+      "label": "Apply Recipe",
+      "variant": "primary"
+    },
+    {
+      "id": "recipes-seed",
+      "label": "Seed LAMP",
+      "variant": "ghost"
+    }
+  ]
 }

@@ -1456,6 +1456,14 @@ app.post(
   })
 );
 
+app.post(
+  "/api/containers/expose",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/containers/expose", req.body || {});
+    res.json(payload);
+  })
+);
+
 app.get(
   "/api/recipes",
   asyncHandler(async (req, res) => {
@@ -1534,6 +1542,105 @@ app.delete(
   "/api/routing/:domain",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequestFor(req, "DELETE", `/routing/${req.params.domain}`);
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/monitoring/resources",
+  asyncHandler(async (req, res) => {
+    const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+    const apiPath = `/monitoring/resources${qs}`;
+    const payload = await fortressRequestFor(req, "GET", apiPath);
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/firewall/status",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", "/firewall/status");
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/firewall/rules",
+  asyncHandler(async (req, res) => {
+    const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+    const payload = await fortressRequestFor(req, "GET", `/firewall/rules${qs}`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/firewall/open",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/firewall/open", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/firewall/close",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/firewall/close", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/vms",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", "/vms");
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/vms/:name",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/vms/${req.params.name}`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/vms/:name/start",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", `/vms/${req.params.name}/start`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/vms/:name/stop",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", `/vms/${req.params.name}/stop`);
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/vms/:name/status",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/vms/${req.params.name}/status`);
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/vms/:name/snapshots",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/vms/${req.params.name}/snapshots`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/vms/:name/snapshots",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", `/vms/${req.params.name}/snapshots`, req.body || {});
     res.json(payload);
   })
 );

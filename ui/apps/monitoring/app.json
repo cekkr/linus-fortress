@@ -5,5 +5,11 @@
   "icon": "pulse",
   "parent": "home",
   "order": 2,
-  "badge": "Soon"
+  "actions": [
+    {
+      "id": "monitoring-refresh",
+      "label": "Refresh",
+      "variant": "primary"
+    }
+  ]
 }

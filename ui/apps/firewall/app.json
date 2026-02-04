@@ -5,5 +5,21 @@
   "icon": "shield",
   "parent": "home",
   "order": 5,
-  "badge": "Soon"
+  "actions": [
+    {
+      "id": "firewall-open",
+      "label": "Open Port",
+      "variant": "primary"
+    },
+    {
+      "id": "firewall-close",
+      "label": "Close Port",
+      "variant": "ghost"
+    },
+    {
+      "id": "firewall-refresh",
+      "label": "Refresh Rules",
+      "variant": "ghost"
+    }
+  ]
 }

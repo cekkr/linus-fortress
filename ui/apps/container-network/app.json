@@ -5,5 +5,16 @@
   "icon": "radar",
   "scope": "container",
   "order": 3,
-  "badge": "Soon"
+  "actions": [
+    {
+      "id": "network-expose",
+      "label": "Expose Ports",
+      "variant": "primary"
+    },
+    {
+      "id": "open-routing",
+      "label": "HTTPS Routing",
+      "variant": "ghost"
+    }
+  ]
 }
