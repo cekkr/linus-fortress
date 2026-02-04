@@ -1433,6 +1433,105 @@ app.post(
 );
 
 app.post(
+  "/api/containers/:name/start",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/containers/start", {
+      container_name: req.params.name,
+      force: Boolean(req.body && req.body.force),
+    });
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/containers/:name/stop",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/containers/stop", {
+      container_name: req.params.name,
+      force: Boolean(req.body && req.body.force),
+    });
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/containers/:name/restart",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/containers/restart", {
+      container_name: req.params.name,
+      force: Boolean(req.body && req.body.force),
+    });
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/containers/:name/snapshots",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/containers/${req.params.name}/snapshots`);
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/containers/:name/snapshot",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/containers/snapshot", {
+      container_name: req.params.name,
+      snapshot_name: req.body && req.body.snapshot_name,
+      stateful: Boolean(req.body && req.body.stateful),
+    });
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/containers/:name/snapshots/:snapshot/restore",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/containers/snapshots/restore", {
+      container_name: req.params.name,
+      snapshot_name: req.params.snapshot,
+      stateful: Boolean(req.body && req.body.stateful),
+    });
+    res.json(payload);
+  })
+);
+
+app.delete(
+  "/api/containers/:name/snapshots/:snapshot",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(
+      req,
+      "DELETE",
+      `/containers/${req.params.name}/snapshots/${req.params.snapshot}`
+    );
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/containers/:name/exec",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/containers/exec", {
+      container_name: req.params.name,
+      command: req.body && Array.isArray(req.body.command) ? req.body.command : [],
+      user: req.body && req.body.user,
+      workdir: req.body && req.body.workdir,
+      environment: req.body && req.body.environment,
+    });
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/containers/:name/logs",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/containers/${req.params.name}/logs`);
+    res.json(payload);
+  })
+);
+
+app.post(
   "/api/packages/install",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequestFor(req, "POST", "/packages/install", req.body || {});

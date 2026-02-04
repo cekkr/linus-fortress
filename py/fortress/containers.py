@@ -196,6 +196,102 @@ def delete_container(name: str) -> None:
     run_command(["lxc", "delete", name, "--force"])
 
 
+def start_container(name: str) -> None:
+    run_command(["lxc", "start", name])
+
+
+def stop_container(name: str, force: bool = False) -> None:
+    cmd = ["lxc", "stop", name]
+    if force:
+        cmd.append("--force")
+    run_command(cmd)
+
+
+def restart_container(name: str, force: bool = False) -> None:
+    try:
+        stop_container(name, force=force)
+    finally:
+        start_container(name)
+
+
+def list_snapshots(name: str) -> List[str]:
+    info_json = run_command(["lxc", "info", name, "--format", "json"])
+    try:
+        info = json.loads(info_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to parse snapshot list: {exc}")
+    snapshots = info.get("Snapshots") or info.get("snapshots") or []
+    names: List[str] = []
+    for snap in snapshots:
+        if isinstance(snap, dict):
+            snap_name = snap.get("name") or snap.get("Name")
+            if snap_name:
+                names.append(snap_name)
+        elif isinstance(snap, str):
+            names.append(snap)
+    return names
+
+
+def create_snapshot(name: str, snapshot_name: str, stateful: bool = False) -> None:
+    cmd = ["lxc", "snapshot", name, snapshot_name]
+    if stateful:
+        cmd.append("--stateful")
+    run_command(cmd)
+
+
+def restore_snapshot(name: str, snapshot_name: str, stateful: bool = False) -> None:
+    cmd = ["lxc", "restore", name, snapshot_name]
+    if stateful:
+        cmd.append("--stateful")
+    run_command(cmd)
+
+
+def delete_snapshot(name: str, snapshot_name: str) -> None:
+    run_command(["lxc", "delete", f"{name}/{snapshot_name}"])
+
+
+def get_container_logs(name: str) -> str:
+    return run_command(["lxc", "info", name, "--show-log"])
+
+
+def exec_in_container_advanced(
+    container_name: str,
+    command: List[str],
+    *,
+    user: Optional[str] = None,
+    workdir: Optional[str] = None,
+    environment: Optional[Dict[str, str]] = None,
+) -> str:
+    if not command:
+        raise HTTPException(status_code=400, detail="Command is required")
+    base_cmd = ["lxc", "exec", container_name]
+    env = environment or {}
+    for key, value in env.items():
+        base_cmd.extend(["--env", f"{key}={value}"])
+    if workdir:
+        base_cmd.extend(["--cwd", workdir])
+    if user:
+        base_cmd.extend(["--user", user])
+    base_cmd.append("--")
+    base_cmd += command
+    details = sanitize_command_details(command)
+    try:
+        result = run_command(base_cmd)
+        _audit("container_exec", f"exec:{details['command']}", target=container_name, details=details)
+        return result
+    except HTTPException as exc:
+        error_details = dict(details)
+        error_details["error"] = exc.detail
+        _audit(
+            "container_exec",
+            f"exec:{details['command']}",
+            target=container_name,
+            details=error_details,
+            status="error",
+        )
+        raise
+
+
 def resolve_device_name(service: str, host_port: Optional[int], device_name: Optional[str]) -> str:
     port = host_port or SERVICE_DEFAULT_PORTS[service]
     return device_name or f"{service}-{port}"

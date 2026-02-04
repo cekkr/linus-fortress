@@ -1,6 +1,6 @@
 import uvicorn
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import os
 import re
 import shlex
@@ -104,7 +104,7 @@ from fortress.monitoring import (
     gather_resource_snapshot,
     record_resource_snapshot,
 )
-from fortress.storage import load_json_dict, save_json
+from fortress.storage import load_json, load_json_dict, save_json
 from fortress.vms import (
     VMCreateRequest,
     VMUpdateRequest,
@@ -328,6 +328,9 @@ class FirewallRule(BaseModel):
     protocol: Literal["tcp", "udp"] = "tcp"
     source: Optional[str] = None
 
+class FirewallRulesDiffRequest(BaseModel):
+    baseline: List[Dict[str, Any]] = Field(default_factory=list)
+
 class FirewallRuleEntry(BaseModel):
     port: int
     protocol: Literal["tcp", "udp"] = "tcp"
@@ -439,6 +442,8 @@ def monitoring_resources(
     anomaly_container_cpu_min_cores: float = DEFAULT_ANOMALY_THRESHOLDS["container_cpu"]["min_cores"],
     anomaly_container_network_multiplier: float = DEFAULT_ANOMALY_THRESHOLDS["container_network"]["multiplier"],
     anomaly_container_network_min_bytes_per_sec: int = int(DEFAULT_ANOMALY_THRESHOLDS["container_network"]["min_bytes_per_sec"]),
+    include_history: bool = False,
+    history_samples: int = 12,
 ):
     authorize("monitoring_resources", "read_status", x_api_key, x_user_token)
     host_thresholds = {
@@ -479,6 +484,13 @@ def monitoring_resources(
         baseline_samples=max(anomaly_baseline_samples, 0),
         anomaly_thresholds=anomaly_thresholds,
     )
+    if include_history:
+        try:
+            history = load_json(MONITORING_HISTORY_DB, default=[], label="Monitoring history")
+            if isinstance(history, list) and history_samples > 0:
+                snapshot["history_samples"] = history[-max(1, history_samples) :]
+        except Exception:
+            snapshot["history_samples"] = []
     alert_summary = {
         "host_alerts": len(snapshot.get("alerts", {}).get("host", [])),
         "containers": {name: len(alerts) for name, alerts in snapshot.get("alerts", {}).get("containers", {}).items()},
@@ -922,6 +934,32 @@ def firewall_rules_apply(
         "rollback_id": result.get("rollback_id"),
         "dry_run": payload.dry_run,
     }
+
+@app.post("/firewall/rules/diff")
+def firewall_rules_diff(
+    payload: FirewallRulesDiffRequest,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    authorize("firewall_rules_diff", "firewall_admin", x_api_key, x_user_token)
+    current = list_firewall_rules()
+    baseline = payload.baseline if isinstance(payload.baseline, list) else []
+
+    def normalize(rule: Dict[str, Any]) -> tuple:
+        return (
+            rule.get("port"),
+            (rule.get("protocol") or "tcp").lower(),
+            rule.get("source") or None,
+            rule.get("action") or "allow",
+            rule.get("direction") or "in",
+        )
+
+    current_set = {normalize(rule) for rule in current}
+    baseline_set = {normalize(rule) for rule in baseline}
+    added = [rule for rule in current if normalize(rule) not in baseline_set]
+    removed = [rule for rule in baseline if normalize(rule) not in current_set]
+    audit_api("firewall_rules_diff", details={"current": len(current), "added": len(added), "removed": len(removed)})
+    return {"current": current, "added": added, "removed": removed}
 
 @app.post("/firewall/rollback")
 def firewall_rollback(
