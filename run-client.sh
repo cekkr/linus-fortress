@@ -200,6 +200,7 @@ ui_base_url() {
 }
 
 bootstrap_ui_admin() {
+  local force=${1:-0}
   local base_url
   base_url=$(ui_base_url "${UI_HOST}" "${UI_PORT}")
   local username
@@ -217,15 +218,23 @@ bootstrap_ui_admin() {
     fi
   fi
   if ! command -v curl >/dev/null 2>&1; then
-    log "curl not found; run the bootstrap request manually once the UI is running:"
-    log "  curl -s -X POST ${base_url}/api/admin/bootstrap -H 'Content-Type: application/json' -d '{\"username\":\"${username}\",\"password\":\"${password}\"}'"
+    if [[ "${force}" == "1" ]]; then
+      log "curl not found; run the bootstrap request manually once the UI is running:"
+      log "  curl -s -X POST ${base_url}/api/admin/bootstrap -H 'Content-Type: application/json' -d '{\"username\":\"${username}\",\"password\":\"${password}\"}'"
+    else
+      log "curl not found; skipping bootstrap. Start the UI, then run: ./run-client.sh --webui --bootstrap-admin"
+    fi
     return 0
   fi
   local status
   status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "${base_url}/api/admin/session" || true)
   if [[ "${status}" != "200" ]]; then
-    log "UI not reachable at ${base_url}. Start the UI, then run:"
-    log "  curl -s -X POST ${base_url}/api/admin/bootstrap -H 'Content-Type: application/json' -d '{\"username\":\"${username}\",\"password\":\"${password}\"}'"
+    if [[ "${force}" == "1" ]]; then
+      log "UI not reachable at ${base_url}. Start the UI, then run:"
+      log "  curl -s -X POST ${base_url}/api/admin/bootstrap -H 'Content-Type: application/json' -d '{\"username\":\"${username}\",\"password\":\"${password}\"}'"
+    else
+      log "UI not reachable at ${base_url}. Start the UI first, then run: ./run-client.sh --webui --bootstrap-admin"
+    fi
     return 0
   fi
   local payload
@@ -552,11 +561,11 @@ guide_webui_setup() {
   fi
 
   if [[ "${BOOTSTRAP_UI_ADMIN}" == "auto" && -t 0 ]]; then
-    if prompt_yes_no "Bootstrap a local UI admin now?" "Y"; then
-      bootstrap_ui_admin
+    if prompt_yes_no "Bootstrap a local UI admin now? (UI must be running)" "Y"; then
+      bootstrap_ui_admin 0
     fi
   elif [[ "${BOOTSTRAP_UI_ADMIN}" == "1" ]]; then
-    bootstrap_ui_admin
+    bootstrap_ui_admin 1
   fi
 }
 
