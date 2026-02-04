@@ -511,6 +511,30 @@ body {
   background: rgba(216, 107, 92, 0.12);
 }
 
+.meter {
+  position: relative;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  margin: 6px 0;
+}
+
+.meter-fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  background: linear-gradient(90deg, #8ccf55, #3d7c3a);
+  transition: width 0.4s ease;
+}
+
+.meter-label {
+  position: relative;
+  z-index: 1;
+  font-size: 10px;
+  padding-left: 8px;
+  color: #1f2a1d;
+}
 .auth-overlay {
   position: fixed;
   inset: 0;

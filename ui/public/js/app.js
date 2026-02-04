@@ -9,6 +9,7 @@ const state = {
   monitoringLoading: false,
   firewall: { backend: null, rules: [] },
   firewallLoading: false,
+  firewallPreviousRules: [],
   vms: [],
   vmsLoading: false,
   routes: [],
@@ -97,6 +98,9 @@ const state = {
       port: "",
       protocol: "tcp",
       source: "",
+    },
+    vmSnapshot: {
+      name: "",
     },
     host: {
       name: "",
@@ -524,6 +528,13 @@ function resetFirewallWizard(mode = "open") {
   state.wizard.context.container = null;
 }
 
+function resetVmSnapshotWizard(vmName) {
+  state.wizard.vmSnapshot = {
+    name: "",
+  };
+  state.wizard.context.vm = vmName || null;
+}
+
 function openWizard(mode, contextContainer, options = {}) {
   state.wizard.active = true;
   state.wizard.mode = mode;
@@ -548,6 +559,8 @@ function openWizard(mode, contextContainer, options = {}) {
     resetNetworkWizard(contextContainer || null);
   } else if (mode === "firewall") {
     resetFirewallWizard(options.firewallMode || "open");
+  } else if (mode === "vm-snapshot") {
+    resetVmSnapshotWizard(options.vmName || null);
   }
   renderWizard();
 }
@@ -722,6 +735,15 @@ function renderMonitoringPreview(node) {
   const alerts = snapshot.alerts || {};
   const hostAlerts = (alerts.host || []).length;
   const containerAlerts = alerts.containers || {};
+  const chartBar = (value, label, max = 100) => {
+    const width = Math.max(0, Math.min(100, Math.round((Number(value) || 0) / max * 100)));
+    return `
+      <div class="meter">
+        <div class="meter-fill" style="width:${width}%;"></div>
+        <span class="meter-label">${label}: ${value ?? "?"}%</span>
+      </div>
+    `;
+  };
   const containerRows = Object.entries(snapshot.containers || {}).map(
     ([name, data]) => `
       <div class="event-item">
@@ -740,6 +762,9 @@ function renderMonitoringPreview(node) {
       ${hostAlerts ? `<span class="pill danger">${hostAlerts} host alerts</span>` : `<span class="pill running">host ok</span>`}
       <span class="pill">${Object.keys(containerAlerts).length} container alerts tracked</span>
     </div>
+    ${chartBar(host.cpu_percent, "CPU")}
+    ${chartBar(host.memory_percent, "RAM")}
+    ${chartBar(host.disk_percent, "Disk")}
     ${containerRows.join("")}
   `;
 }
@@ -751,6 +776,7 @@ function renderFirewallPreview(node) {
   }
   const fw = state.firewall || {};
   const rules = Array.isArray(fw.rules) ? fw.rules : [];
+  const prevCount = Array.isArray(state.firewallPreviousRules) ? state.firewallPreviousRules.length : 0;
   const body =
     rules.length === 0
       ? `<div>No firewall rules loaded. Use Open Port to add one.</div>`
@@ -763,6 +789,9 @@ function renderFirewallPreview(node) {
           <span class="pill">${rule.action || "allow"}</span>
           <span class="pill">${rule.interface || "all ifaces"}</span>
         </div>
+        <div class="card-actions">
+          <button class="action danger ghost" data-action-id="firewall-close" data-port="${rule.port}" data-protocol="${rule.protocol}" data-source="${rule.source || ""}" data-node-id="${node.id}">Close</button>
+        </div>
       </div>
     `
           )
@@ -770,6 +799,10 @@ function renderFirewallPreview(node) {
   elements.preview.innerHTML = `
     <div class="preview-title">${node.title}</div>
     <div>Backend: ${fw.backend || "unknown"} • Active: ${fw.active ? "yes" : "no"}</div>
+    <div class="card-meta">
+      <span class="pill">${rules.length} rules</span>
+      <span class="pill">${Math.max(rules.length - prevCount, 0)} new since last refresh</span>
+    </div>
     ${body}
   `;
 }
@@ -787,6 +820,15 @@ function renderVmsPreview(node) {
           .map((vm) => {
             const status = vm.status || vm.state || "unknown";
             const pill = `<span class="pill ${status.includes("running") ? "running" : "stopped"}">${status}</span>`;
+            const snapshotButtons =
+              Array.isArray(vm.snapshots) && vm.snapshots.length
+                ? vm.snapshots
+                    .map(
+                      (snap) =>
+                        `<button class="action ghost" data-action-id="vm-restore" data-vm="${vm.name}" data-snapshot="${snap}" data-node-id="${node.id}">Restore ${snap}</button>`
+                    )
+                    .join("")
+                : "";
             return `
           <div class="event-item">
             <div><strong>${vm.name}</strong> — ${vm.profile || vm.provider || "vm"}</div>
@@ -799,6 +841,8 @@ function renderVmsPreview(node) {
               <button class="action ghost" data-action-id="vm-start" data-vm="${vm.name}" data-node-id="${node.id}">Start</button>
               <button class="action ghost" data-action-id="vm-stop" data-vm="${vm.name}" data-node-id="${node.id}">Stop</button>
               <button class="action ghost" data-action-id="vm-status" data-vm="${vm.name}" data-node-id="${node.id}">Status</button>
+              <button class="action ghost" data-action-id="vm-snapshot" data-vm="${vm.name}" data-node-id="${node.id}">Snapshot</button>
+              ${snapshotButtons}
             </div>
           </div>
         `;
@@ -1544,6 +1588,33 @@ function renderWizard() {
         </div>
       `;
     }
+  } else if (wizard.mode === "vm-snapshot") {
+    const vmName = wizard.context.vm || "";
+    steps = ["Snapshot", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div>Create a snapshot for ${vmName || "VM"}.</div>
+        <div class="wizard-field">
+          <label for="wiz-vm-snap-name">Snapshot name</label>
+          <input id="wiz-vm-snap-name" name="name" data-wizard-group="vmSnapshot" value="${wizard.vmSnapshot.name}" placeholder="checkpoint-1" />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Creating..." : "Create";
+      bodyMarkup = `
+        <div>Confirm snapshot.</div>
+        <div class="preview-meta">
+          <div>
+            <strong>VM</strong>
+            <span>${vmName || "(missing)"}</span>
+          </div>
+          <div>
+            <strong>Name</strong>
+            <span>${wizard.vmSnapshot.name || "(missing)"}</span>
+          </div>
+        </div>
+      `;
+    }
   } else if (wizard.mode === "host-create") {
     const host = wizard.host;
     steps = ["Identity", "SSH", "Confirm"];
@@ -2199,6 +2270,7 @@ async function loadMonitoring(options = {}) {
 
 async function loadFirewall(options = {}) {
   state.firewallLoading = true;
+  state.firewallPreviousRules = Array.isArray(state.firewall.rules) ? state.firewall.rules.slice() : [];
   renderPreview();
   try {
     const statusPayload = await apiRequest("/api/firewall/status");
@@ -2345,6 +2417,28 @@ async function handleAction(actionId, node, params = {}) {
     } else {
       await vmAction(name, actionId === "vm-start" ? "start" : "stop");
     }
+    return;
+  }
+
+  if (actionId === "vm-snapshot") {
+    const name = params.vm || (node && node.context ? node.context.vm : null);
+    openWizard("vm-snapshot", null, { vmName: name });
+    return;
+  }
+
+  if (actionId === "vm-restore") {
+    const name = params.vm;
+    const snapshot = params.snapshot;
+    if (!name || !snapshot) {
+      logEvent("error", "VM and snapshot are required");
+      return;
+    }
+    const response = await apiRequest(`/api/vms/${encodeURIComponent(name)}/snapshots/${encodeURIComponent(snapshot)}/restore`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    logEvent("success", response.message || `Snapshot ${snapshot} restored for ${name}`);
+    await loadVms();
     return;
   }
 
@@ -2568,6 +2662,7 @@ async function handleWizardAction(action) {
       "host-create": 3,
       network: 2,
       firewall: 2,
+      "vm-snapshot": 2,
     };
     const steps = stepCounts[state.wizard.mode] || 1;
     if (state.wizard.step < steps - 1) {
@@ -2790,6 +2885,23 @@ async function handleWizardAction(action) {
         state.wizard.active = false;
         state.wizard.mode = null;
         await loadFirewall();
+      } else if (state.wizard.mode === "vm-snapshot") {
+        const vmName = state.wizard.context.vm;
+        const snapName = state.wizard.vmSnapshot.name.trim();
+        if (!vmName) {
+          throw new Error("VM is required");
+        }
+        if (!snapName) {
+          throw new Error("Snapshot name is required");
+        }
+        const response = await apiRequest(`/api/vms/${encodeURIComponent(vmName)}/snapshots`, {
+          method: "POST",
+          body: JSON.stringify({ snapshot_name: snapName }),
+        });
+        logEvent("success", response.message || `Snapshot ${snapName} created for ${vmName}`);
+        state.wizard.active = false;
+        state.wizard.mode = null;
+        await loadVms();
       } else if (state.wizard.mode === "filemanager") {
         const containerName = state.wizard.context.container;
         if (!containerName) {
@@ -2905,6 +3017,8 @@ function bindEvents() {
       state.wizard.network[target.name] = value;
     } else if (group === "firewall") {
       state.wizard.firewall[target.name] = value;
+    } else if (group === "vmSnapshot") {
+      state.wizard.vmSnapshot[target.name] = value;
     } else {
       state.wizard.form[target.name] = value;
     }

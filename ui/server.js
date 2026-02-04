@@ -1645,6 +1645,31 @@ app.post(
   })
 );
 
+app.post(
+  "/api/vms/:name/snapshots/:snapshot/restore",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(
+      req,
+      "POST",
+      `/vms/${req.params.name}/snapshots/${req.params.snapshot}/restore`,
+      req.body || {}
+    );
+    res.json(payload);
+  })
+);
+
+app.delete(
+  "/api/vms/:name/snapshots/:snapshot",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(
+      req,
+      "DELETE",
+      `/vms/${req.params.name}/snapshots/${req.params.snapshot}`
+    );
+    res.json(payload);
+  })
+);
+
 app.get(
   "/api/hosts",
   asyncHandler(async (req, res) => {

@@ -10,6 +10,21 @@
       "id": "vms-refresh",
       "label": "Refresh",
       "variant": "ghost"
+    },
+    {
+      "id": "vm-start",
+      "label": "Start",
+      "variant": "primary"
+    },
+    {
+      "id": "vm-stop",
+      "label": "Stop",
+      "variant": "ghost"
+    },
+    {
+      "id": "vm-snapshot",
+      "label": "Snapshot",
+      "variant": "ghost"
     }
   ]
 }
