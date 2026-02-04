@@ -209,3 +209,5 @@ __marimo__/
 .DS_Store
 ui/.env.local
 /ui/node_modules
+.restart-api.log
+.restart-ui.log
