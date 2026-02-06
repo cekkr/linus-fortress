@@ -8,6 +8,79 @@ from fortress.storage import load_json_dict, save_json
 RECIPE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 
+APACHE_CONFIG_CHECK = (
+    "if command -v apache2ctl >/dev/null 2>&1; then apache2ctl -t;"
+    " elif command -v httpd >/dev/null 2>&1; then httpd -t;"
+    ' else echo "apache binary not found"; exit 2; fi'
+)
+NGINX_CONFIG_CHECK = (
+    "if command -v nginx >/dev/null 2>&1; then nginx -t;"
+    ' else echo "nginx binary not found"; exit 2; fi'
+)
+PHP_RUNTIME_CHECK = (
+    "if command -v php >/dev/null 2>&1; then php -v >/dev/null 2>&1;"
+    ' else echo "php runtime not found"; exit 2; fi'
+)
+MYSQL_CONFIG_CHECK = (
+    "if command -v mysqld >/dev/null 2>&1; then mysqld --verbose --help >/dev/null 2>&1;"
+    " elif command -v mariadbd >/dev/null 2>&1; then mariadbd --verbose --help >/dev/null 2>&1;"
+    " elif command -v mysql >/dev/null 2>&1; then mysql --help >/dev/null 2>&1;"
+    ' else echo "mysql binaries not found"; exit 2; fi'
+)
+FILEMANAGER_CONFIG_CHECK = (
+    "if [ ! -f /var/www/html/filemanager/index.php ]; then"
+    ' echo "tinyfilemanager index.php not found"; exit 2;'
+    " fi;"
+    " if command -v php >/dev/null 2>&1; then"
+    " php -l /var/www/html/filemanager/index.php >/dev/null 2>&1;"
+    ' else echo "php runtime not found"; exit 2; fi'
+)
+
+LAMP_STACK_EXPANSION = ["lamp-apache", "lamp-mysql", "lamp-ftp", "lamp-filemanager"]
+
+LAMP_RECIPE_TARGETS: Dict[str, Dict[str, Any]] = {
+    "lamp-apache": {
+        "service_keys": ["apache"],
+        "service_processes": {"apache": ["apache2", "httpd"]},
+        "ports": [80],
+        "config_checks": [
+            {"id": "apache-config", "name": "Apache config syntax", "command": APACHE_CONFIG_CHECK},
+            {"id": "php-runtime", "name": "PHP runtime available", "command": PHP_RUNTIME_CHECK},
+        ],
+    },
+    "lamp-nginx": {
+        "service_keys": ["nginx"],
+        "service_processes": {"nginx": ["nginx"]},
+        "ports": [80],
+        "config_checks": [
+            {"id": "nginx-config", "name": "Nginx config syntax", "command": NGINX_CONFIG_CHECK},
+            {"id": "php-runtime", "name": "PHP runtime available", "command": PHP_RUNTIME_CHECK},
+        ],
+    },
+    "lamp-mysql": {
+        "service_keys": ["mysql"],
+        "service_processes": {"mysql": ["mysqld", "mariadbd"]},
+        "ports": [3306],
+        "config_checks": [
+            {"id": "mysql-config", "name": "MySQL/MariaDB configuration", "command": MYSQL_CONFIG_CHECK},
+        ],
+    },
+    "lamp-ftp": {
+        "service_keys": ["ftp"],
+        "service_processes": {"ftp": ["vsftpd"]},
+        "ports": [21],
+        "config_checks": [],
+    },
+    "lamp-filemanager": {
+        "service_keys": ["filemanager"],
+        "service_processes": {},
+        "ports": [],
+        "config_checks": [
+            {"id": "filemanager-php-lint", "name": "Tiny File Manager PHP lint", "command": FILEMANAGER_CONFIG_CHECK},
+        ],
+    },
+}
+
 
 class RecipeDefinition(BaseModel):
     name: str
@@ -36,6 +109,70 @@ class RecipeApplyRequest(BaseModel):
     update_index: bool = True
     dry_run: bool = False
     probe_services: bool = True
+
+
+def collect_lamp_health_targets(recipe_names: List[str]) -> Dict[str, Any]:
+    normalized: List[str] = []
+    for recipe in recipe_names:
+        candidate = str(recipe or "").strip().lower()
+        if candidate in LAMP_RECIPE_TARGETS and candidate not in normalized:
+            normalized.append(candidate)
+        if candidate == "lamp-stack":
+            for expanded in LAMP_STACK_EXPANSION:
+                if expanded not in normalized:
+                    normalized.append(expanded)
+    if not normalized:
+        return {
+            "detected": False,
+            "recipes": [],
+            "service_keys": [],
+            "service_processes": [],
+            "ports": [],
+            "config_checks": [],
+        }
+
+    service_keys: List[str] = []
+    service_processes: Dict[str, List[str]] = {}
+    ports: List[int] = []
+    config_checks: List[Dict[str, str]] = []
+    check_ids: set[str] = set()
+    for recipe in normalized:
+        target = LAMP_RECIPE_TARGETS[recipe]
+        for key in target.get("service_keys", []):
+            if key not in service_keys:
+                service_keys.append(key)
+        for key, processes in target.get("service_processes", {}).items():
+            current = service_processes.setdefault(key, [])
+            for process in processes:
+                if process not in current:
+                    current.append(process)
+        for port in target.get("ports", []):
+            if port not in ports:
+                ports.append(port)
+        for check in target.get("config_checks", []):
+            check_id = check.get("id")
+            if not check_id or check_id in check_ids:
+                continue
+            check_ids.add(check_id)
+            config_checks.append(
+                {
+                    "id": str(check_id),
+                    "name": str(check.get("name", check_id)),
+                    "command": str(check.get("command", "")),
+                }
+            )
+    serialized_processes = [
+        {"service": key, "processes": value}
+        for key, value in service_processes.items()
+    ]
+    return {
+        "detected": True,
+        "recipes": normalized,
+        "service_keys": service_keys,
+        "service_processes": serialized_processes,
+        "ports": ports,
+        "config_checks": config_checks,
+    }
 
 
 def validate_recipe_name(name: str) -> None:

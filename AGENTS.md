@@ -18,6 +18,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Master API key is optional (set via `FORTRESS_API_KEY`/`API_SECRET_KEY`) and should be disabled after bootstrap; delegated tokens are preferred long-term
 - New recipe automation endpoints (`/recipes`, `/recipes/{name}`, `/recipes/apply`, `/recipes/seed`, `/recipes/plan`) allow "nix-like" install blueprints with dependencies, packages, and commands (templated with `{{param}}`), stored in `/var/lib/fortress/recipes.json`
 - LAMP recipe bundle supports PHP version selection and optional DB bootstrap parameters (`db_root_password`, `db_name`, `db_user`, `db_password`)
+- LAMP recipe applies now include structured post-apply health checks (`probe.health_checks`) for service status, port probes, and config validation when targeting containers
 - A new fortress.audit module powers the SQLite-based command register that captures all API activity plus container exec behaviour for investigation
 - `py/fortress/recipes.py` holds recipe models, dependency resolution, and template rendering
 - `py/fortress/migrations.py` manages schema-registry migrations with plan/apply/rollback and a patch ledger
@@ -70,6 +71,7 @@ This file contains the directives for AIs and must be kept current with the mini
 |           `-- containers.py
 |-- schemas
 |   |-- api_users.json
+|   |-- container_images.json
 |   |-- hosts.json
 |   |-- monitoring_history.json
 |   |-- recipes.json

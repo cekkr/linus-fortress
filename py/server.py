@@ -49,6 +49,7 @@ from fortress.recipes import (
     RecipeDefinition,
     RecipeUpdate,
     RecipeApplyRequest,
+    collect_lamp_health_targets,
     load_recipes,
     save_recipes,
     resolve_recipe_plan,
@@ -196,6 +197,7 @@ MIGRATION_ENGINE = MigrationEngine(
         "routes": ROUTING_DB,
         "sites": SITES_DB,
         "monitoring_history": MONITORING_HISTORY_DB,
+        "container_images": POPULAR_IMAGES_DB,
     },
 )
 
@@ -1469,6 +1471,132 @@ def _format_recipe_plan(steps: List[Dict[str, Any]]) -> List[str]:
         )
     return rendered
 
+
+RECIPE_HEALTH_RC_MARKER = "__FORTRESS_HEALTH_RC__="
+
+
+def _run_container_health_command(container_name: str, command: str) -> Tuple[int, str]:
+    wrapped = f"set +e; ({command}) 2>&1; rc=$?; echo {RECIPE_HEALTH_RC_MARKER}$rc"
+    output = exec_in_container(container_name, ["sh", "-c", wrapped])
+    rc = 1
+    details: List[str] = []
+    for line in output.splitlines():
+        if line.startswith(RECIPE_HEALTH_RC_MARKER):
+            value = line[len(RECIPE_HEALTH_RC_MARKER) :].strip()
+            try:
+                rc = int(value)
+            except ValueError:
+                rc = 1
+            continue
+        details.append(line)
+    return rc, "\n".join(details).strip()
+
+
+def _build_service_process_probe_command(processes: List[str]) -> str:
+    names = " ".join(shlex.quote(name) for name in processes)
+    return (
+        f'for name in {names}; do '
+        'if command -v pgrep >/dev/null 2>&1; then '
+        'pgrep -x "$name" >/dev/null 2>&1 && { echo "$name"; exit 0; }; '
+        'else '
+        'ps -eo comm= | grep -x "$name" >/dev/null 2>&1 && { echo "$name"; exit 0; }; '
+        'fi; '
+        'done; '
+        'echo "no matching process found"; '
+        "exit 1"
+    )
+
+
+def _build_port_probe_command(port: int) -> str:
+    return (
+        f'if command -v ss >/dev/null 2>&1; then ss -ltn "sport = :{port}" | '
+        "awk 'NR > 1 {print; found=1} END {exit(found ? 0 : 1)}'; "
+        f"elif command -v netstat >/dev/null 2>&1; then netstat -ltn | awk '$4 ~ /:{port}$/ {{print; found=1}} END {{exit(found ? 0 : 1)}}'; "
+        'else echo "ss/netstat unavailable"; exit 2; fi'
+    )
+
+
+def _health_status_from_rc(rc: int) -> str:
+    if rc == 0:
+        return "pass"
+    if rc == 2:
+        return "skipped"
+    return "fail"
+
+
+def _collect_lamp_health_report(container_name: str, targets: Dict[str, Any]) -> Dict[str, Any]:
+    checks: List[Dict[str, Any]] = []
+    for item in targets.get("service_processes", []):
+        service = str(item.get("service", ""))
+        processes = [str(name) for name in item.get("processes", []) if name]
+        if not service or not processes:
+            continue
+        command = _build_service_process_probe_command(processes)
+        try:
+            rc, details = _run_container_health_command(container_name, command)
+        except HTTPException as exc:
+            rc, details = 1, str(exc.detail)
+        checks.append(
+            {
+                "type": "service_status",
+                "name": service,
+                "status": _health_status_from_rc(rc),
+                "details": details or None,
+            }
+        )
+
+    for port in targets.get("ports", []):
+        port_int = int(port)
+        command = _build_port_probe_command(port_int)
+        try:
+            rc, details = _run_container_health_command(container_name, command)
+        except HTTPException as exc:
+            rc, details = 1, str(exc.detail)
+        checks.append(
+            {
+                "type": "port_probe",
+                "name": str(port_int),
+                "status": _health_status_from_rc(rc),
+                "details": details or None,
+            }
+        )
+
+    for config_check in targets.get("config_checks", []):
+        check_id = str(config_check.get("id", "config"))
+        check_name = str(config_check.get("name", check_id))
+        command = str(config_check.get("command", "")).strip()
+        if not command:
+            continue
+        try:
+            rc, details = _run_container_health_command(container_name, command)
+        except HTTPException as exc:
+            rc, details = 1, str(exc.detail)
+        checks.append(
+            {
+                "type": "config_validation",
+                "id": check_id,
+                "name": check_name,
+                "status": _health_status_from_rc(rc),
+                "details": details or None,
+            }
+        )
+
+    summary = {"passed": 0, "failed": 0, "skipped": 0}
+    for check in checks:
+        status = check.get("status")
+        if status == "pass":
+            summary["passed"] += 1
+        elif status == "skipped":
+            summary["skipped"] += 1
+        else:
+            summary["failed"] += 1
+
+    return {
+        "recipes": targets.get("recipes", []),
+        "checks": checks,
+        "summary": summary,
+    }
+
 @app.get("/recipes")
 def list_recipes(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_list", "recipes_manage", x_api_key, x_user_token)
@@ -1653,10 +1781,18 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
             probe = probe_container_services(payload.container_name)
         except Exception as exc:
             probe = {"error": str(exc)}
+        lamp_targets = collect_lamp_health_targets(applied)
+        if lamp_targets.get("detected"):
+            probe["health_checks"] = _collect_lamp_health_report(payload.container_name, lamp_targets)
     audit_api(
         "recipes_apply_complete",
         target=payload.container_name or "host",
-        details={"recipe": payload.recipe_name, "applied": applied, "probe": bool(probe)},
+        details={
+            "recipe": payload.recipe_name,
+            "applied": applied,
+            "probe": bool(probe),
+            "health_failures": probe.get("health_checks", {}).get("summary", {}).get("failed"),
+        },
     )
     return {
         "message": "Recipe applied",

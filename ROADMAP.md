@@ -96,8 +96,9 @@ Acceptance criteria:
 - Success/failure returns a deterministic plan and a post-apply service probe report.
 Done:
 - LAMP recipes accept `php_version`, `db_root_password`, `db_name`, `db_user`, and `db_password` parameters for PHP/DB bootstrapping.
+- `/recipes/apply` now appends LAMP-aware `probe.health_checks` with service/process checks, port probes, and config validations.
 Next:
-- Add recipe health checks (service status + port probes) and config validation for LAMP applies.
+- Surface recipe health check results in the Lizard UI apply flow with severity badges/history.
 
 ### Path 10.3: WebUI admin authentication hardening
 Milestones:
@@ -150,9 +151,10 @@ Done: Add `/system/upgrade` API + CLI hook for package updates and migrations.
 Next: Add WebUI upgrade wizard with preflight checks and backup confirmation.
 Done:
 - Extend schema coverage to monitoring history.
+- Extend schema coverage to container image presets (`/var/lib/fortress/container_images.json`).
 Next:
 - Extend schema coverage to any new JSON stores (firewall state, UI admin store if adopted server-side).
-- Extend schema coverage to container image presets (`/var/lib/fortress/container_images.json`).
+- Add migration tests for future object-style JSON stores beyond `container_images`.
 
 Design: migration engine (schema registry + patch tracking)
 - Registry: keep `schemas/*.json` with `schema_version`, `schema_hash`, defaults, and `aliases` for renamed fields.

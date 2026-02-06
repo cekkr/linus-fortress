@@ -212,6 +212,10 @@ def migrate_store_payload(
     actions: List[str] = []
     changed_records = 0
     record_type = schema.get("record_type", "mapping")
+    if record_type == "object" and isinstance(payload, dict):
+        migrated, actions = migrate_record(payload, schema)
+        changed_records = 1 if actions else 0
+        return migrated, actions, changed_records
     if record_type == "list" and isinstance(payload, list):
         updated_list = []
         for record in payload:

@@ -1,0 +1,13 @@
+{
+  "store": "container_images",
+  "schema_version": "1",
+  "record_type": "object",
+  "fields": [
+    "popular"
+  ],
+  "defaults": {
+    "popular": []
+  },
+  "aliases": {},
+  "prune_unknown": false
+}

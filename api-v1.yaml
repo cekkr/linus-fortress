@@ -1622,25 +1622,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  recipe:
-                    type: string
-                  applied:
-                    type: array
-                    items:
-                      type: string
-                  container:
-                    type: string
-                  plan:
-                    type: array
-                    items:
-                      type: string
-                  probe:
-                    type: object
-                    additionalProperties: true
+                $ref: "#/components/schemas/RecipeApplyResponse"
   /recipes/plan:
     post:
       summary: Plan a recipe apply without executing
@@ -3381,6 +3363,71 @@ components:
         overwrite:
           type: boolean
           default: false
+    RecipeHealthSummary:
+      type: object
+      properties:
+        passed:
+          type: integer
+        failed:
+          type: integer
+        skipped:
+          type: integer
+    RecipeHealthCheck:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [service_status, port_probe, config_validation]
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, fail, skipped]
+        details:
+          type: string
+    RecipeHealthReport:
+      type: object
+      properties:
+        recipes:
+          type: array
+          items:
+            type: string
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeHealthCheck"
+        summary:
+          $ref: "#/components/schemas/RecipeHealthSummary"
+    RecipeApplyProbe:
+      type: object
+      properties:
+        health_checks:
+          $ref: "#/components/schemas/RecipeHealthReport"
+        error:
+          type: string
+      additionalProperties:
+        type: boolean
+    RecipeApplyResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        recipe:
+          type: string
+        applied:
+          type: array
+          items:
+            type: string
+        container:
+          type: string
+        plan:
+          type: array
+          items:
+            type: string
+        probe:
+          $ref: "#/components/schemas/RecipeApplyProbe"
     RecipePlanResponse:
       type: object
       properties:

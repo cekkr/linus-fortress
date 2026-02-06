@@ -51,6 +51,21 @@ class MigrationRecordTests(unittest.TestCase):
         self.assertEqual(changed, 1)
         self.assertEqual(migrated[0]["status"], "ok")
 
+    def test_migrate_store_payload_object(self) -> None:
+        schema = {
+            "fields": ["popular"],
+            "defaults": {"popular": []},
+            "aliases": {"images": "popular"},
+            "prune_unknown": False,
+            "record_type": "object",
+        }
+        payload = {"images": [{"name": "ubuntu:lts"}], "note": "legacy"}
+        migrated, actions, changed = migrate_store_payload(payload, schema)
+        self.assertEqual(changed, 1)
+        self.assertEqual(migrated["popular"], [{"name": "ubuntu:lts"}])
+        self.assertEqual(migrated["_legacy"]["note"], "legacy")
+        self.assertTrue(actions)
+
 
 class MigrationEngineTests(unittest.TestCase):
     def test_apply_updates_versions_even_when_no_changes(self) -> None:
@@ -112,6 +127,32 @@ class MigrationEngineTests(unittest.TestCase):
             with open(store_path, "r") as fh:
                 restored = json.load(fh)
             self.assertEqual(restored, original)
+
+    def test_apply_object_store_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = os.path.join(tmpdir, "schemas")
+            migrations_dir = os.path.join(tmpdir, "migrations")
+            os.makedirs(schema_dir, exist_ok=True)
+            store_path = os.path.join(tmpdir, "container_images.json")
+            with open(store_path, "w") as fh:
+                json.dump({}, fh)
+            schema = {
+                "store": "container_images",
+                "schema_version": "1",
+                "record_type": "object",
+                "fields": ["popular"],
+                "defaults": {"popular": []},
+                "aliases": {},
+                "prune_unknown": False,
+            }
+            with open(os.path.join(schema_dir, "container_images.json"), "w") as fh:
+                json.dump(schema, fh)
+            engine = MigrationEngine(schema_dir, migrations_dir, {"container_images": store_path})
+            result = engine.apply()
+            self.assertIn("container_images", result["applied"])
+            with open(store_path, "r") as fh:
+                migrated = json.load(fh)
+            self.assertEqual(migrated.get("popular"), [])
 
 
 if __name__ == "__main__":

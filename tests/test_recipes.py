@@ -6,6 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "p
 
 from fortress.recipes import (
     build_recipe_execution,
+    collect_lamp_health_targets,
     resolve_recipe_plan,
     validate_recipe_name,
 )
@@ -96,6 +97,36 @@ class RecipeExecutionTests(unittest.TestCase):
         }
         with self.assertRaises(ValueError):
             build_recipe_execution("app", recipes, include_dependencies=True, overrides={})
+
+
+class RecipeHealthTargetTests(unittest.TestCase):
+    def test_collect_lamp_health_targets_returns_expected_checks(self) -> None:
+        targets = collect_lamp_health_targets(["lamp-apache", "lamp-mysql"])
+        self.assertTrue(targets["detected"])
+        self.assertEqual(targets["recipes"], ["lamp-apache", "lamp-mysql"])
+        self.assertEqual(targets["service_keys"], ["apache", "mysql"])
+        self.assertEqual(targets["ports"], [80, 3306])
+        check_ids = [item["id"] for item in targets["config_checks"]]
+        self.assertIn("apache-config", check_ids)
+        self.assertIn("php-runtime", check_ids)
+        self.assertIn("mysql-config", check_ids)
+
+    def test_collect_lamp_health_targets_expands_lamp_stack(self) -> None:
+        targets = collect_lamp_health_targets(["lamp-stack"])
+        self.assertTrue(targets["detected"])
+        self.assertEqual(
+            targets["recipes"],
+            ["lamp-apache", "lamp-mysql", "lamp-ftp", "lamp-filemanager"],
+        )
+        self.assertIn("filemanager", targets["service_keys"])
+        check_ids = [item["id"] for item in targets["config_checks"]]
+        self.assertIn("filemanager-php-lint", check_ids)
+
+    def test_collect_lamp_health_targets_non_lamp_recipe(self) -> None:
+        targets = collect_lamp_health_targets(["base-python"])
+        self.assertFalse(targets["detected"])
+        self.assertEqual(targets["service_keys"], [])
+        self.assertEqual(targets["config_checks"], [])
 
 
 if __name__ == "__main__":

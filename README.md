@@ -764,6 +764,7 @@ Body:
 - Applies dependencies first, then installs packages and runs commands for each recipe in order.
 - Use `{{app_user}}` inside commands/packages to parameterize installs.
 - Response includes a deterministic `plan` list plus optional `probe` results when service checks are enabled.
+- LAMP recipes additionally include `probe.health_checks` with structured `service_status`, `port_probe`, and `config_validation` results plus pass/fail/skipped summary counters.
 
 Example dependency recipe:
 ```json
