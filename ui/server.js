@@ -1680,6 +1680,30 @@ app.post(
   })
 );
 
+app.get(
+  "/api/backup/list",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", "/backup/list");
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/migrations/status",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", "/migrations/status");
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/system/upgrade",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/system/upgrade", req.body || {});
+    res.json(payload);
+  })
+);
+
 app.post(
   "/api/containers/expose",
   asyncHandler(async (req, res) => {

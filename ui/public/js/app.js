@@ -24,8 +24,14 @@ const state = {
   routesLoading: false,
   recipes: [],
   recipesLoading: false,
+  recipeReports: new Map(),
+  recipeReportOrder: [],
   hosts: [],
   hostsLoading: false,
+  systemUpgrade: {
+    lastPreflight: null,
+    lastExecution: null,
+  },
   fortress: { status: "unknown" },
   auth: {
     active: false,
@@ -94,6 +100,16 @@ const state = {
       packages: "",
       update_index: true,
       full_upgrade: false,
+    },
+    upgrade: {
+      update_packages: true,
+      full_upgrade: false,
+      apply_migrations: true,
+      preflight: null,
+      migration_status: null,
+      backups: [],
+      backup_confirmation: false,
+      preflight_at: null,
     },
     recipe: {
       name: "",
@@ -544,6 +560,20 @@ function resetPackagesWizard(mode, targetContainer) {
   state.wizard.context.container = targetContainer || null;
 }
 
+function resetUpgradeWizard() {
+  state.wizard.upgrade = {
+    update_packages: true,
+    full_upgrade: false,
+    apply_migrations: true,
+    preflight: null,
+    migration_status: null,
+    backups: [],
+    backup_confirmation: false,
+    preflight_at: null,
+  };
+  state.wizard.context.container = null;
+}
+
 function resetRecipeWizard(targetContainer) {
   state.wizard.recipe = {
     name: "",
@@ -687,6 +717,8 @@ function openWizard(mode, contextContainer, options = {}) {
     state.wizard.context.container = contextContainer || null;
   } else if (mode === "packages") {
     resetPackagesWizard(options.packageMode || "install", contextContainer || null);
+  } else if (mode === "system-upgrade") {
+    resetUpgradeWizard();
   } else if (mode === "recipe-apply") {
     resetRecipeWizard(contextContainer || null);
   } else if (mode === "host-create") {
@@ -746,7 +778,7 @@ function renderStatusLine() {
 }
 
 function renderCard(node, index) {
-  const actions = Array.isArray(node.actions) ? node.actions.slice(0, 3) : [];
+  const actions = Array.isArray(node.actions) ? node.actions.slice(0, 4) : [];
   const status = node.meta && node.meta.status ? normalizeStatus(node.meta.status) : null;
   const badgeClass = node.badge ? node.badge.toLowerCase().replace(/[^a-z0-9]+/g, "-") : null;
   const selected = node.id === state.selectedId ? "selected" : "";
@@ -825,6 +857,10 @@ function renderRoutingPreview(node) {
 }
 
 function renderRecipesPreview(node) {
+  const scopedContainer =
+    node && node.context && node.context.container ? String(node.context.container) : "";
+  const latestReport = getLatestRecipeApplyReport(scopedContainer || null);
+  const reportMarkup = renderRecipeApplyReport(latestReport, scopedContainer);
   let body = "";
   if (state.recipesLoading) {
     body = `<div>Loading recipes...</div>`;
@@ -857,17 +893,75 @@ function renderRecipesPreview(node) {
   elements.preview.innerHTML = `
     <div class="preview-title">${node.title}</div>
     <div>${node.description || ""}</div>
+    ${
+      scopedContainer
+        ? `<div class="card-meta"><span class="pill">${escapeHtml(scopedContainer)}</span></div>`
+        : ""
+    }
+    ${reportMarkup}
     ${body}
   `;
 }
 
 function renderPackagesPreview(node) {
+  const lastPreflight = state.systemUpgrade.lastPreflight;
+  const lastExecution = state.systemUpgrade.lastExecution;
+  const preflightSummary =
+    lastPreflight && lastPreflight.preflight
+      ? (() => {
+          const plan = lastPreflight.preflight;
+          const migrations = Array.isArray(plan.migrations) ? plan.migrations : [];
+          const packageCommand =
+            plan.packages && Array.isArray(plan.packages.command)
+              ? plan.packages.command.join(" ")
+              : "";
+          return `
+            <div class="event-item">
+              <div><strong>Last preflight</strong> — ${escapeHtml(new Date(lastPreflight.at).toLocaleString())}</div>
+              <div class="card-meta">
+                <span class="pill">${lastPreflight.options.update_packages ? "packages:on" : "packages:off"}</span>
+                <span class="pill">${lastPreflight.options.apply_migrations ? "migrations:on" : "migrations:off"}</span>
+                <span class="pill">${migrations.length} migration changes</span>
+              </div>
+              ${
+                packageCommand
+                  ? `<pre>${escapeHtml(packageCommand)}</pre>`
+                  : ""
+              }
+            </div>
+          `;
+        })()
+      : "";
+  const executionSummary =
+    lastExecution && lastExecution.result
+      ? (() => {
+          const result = lastExecution.result;
+          const migrations = result && result.migrations && Array.isArray(result.migrations.applied)
+            ? result.migrations.applied
+            : [];
+          return `
+            <div class="event-item">
+              <div><strong>Last upgrade run</strong> — ${escapeHtml(new Date(lastExecution.at).toLocaleString())}</div>
+              <div class="card-meta">
+                <span class="pill running">${escapeHtml(result.message || "completed")}</span>
+                <span class="pill">${migrations.length} stores migrated</span>
+                <span class="pill">${lastExecution.options.update_packages ? "packages:on" : "packages:off"}</span>
+              </div>
+            </div>
+          `;
+        })()
+      : "";
   elements.preview.innerHTML = `
     <div class="preview-title">${node.title}</div>
     <div>${node.description || ""}</div>
     <div class="event-item">
       Host-level package management uses apt/dnf/yum. Choose Install, Remove, or Update to run against the host or any container.
     </div>
+    <div class="event-item">
+      Use <strong>System Upgrade</strong> to run a guided preflight and controlled package+migration upgrade with backup confirmation.
+    </div>
+    ${preflightSummary}
+    ${executionSummary}
   `;
 }
 
@@ -1222,7 +1316,7 @@ function renderPreview() {
     renderRoutingPreview(node);
     return;
   }
-  if (node.id === "recipes") {
+  if (node.id === "recipes" || node.id.endsWith(":container-recipes")) {
     renderRecipesPreview(node);
     return;
   }
@@ -1739,6 +1833,122 @@ function renderWizard() {
           `
               : ""
           }
+        </div>
+      `;
+    }
+  } else if (wizard.mode === "system-upgrade") {
+    const upgrade = wizard.upgrade;
+    const preflight = upgrade.preflight && typeof upgrade.preflight === "object" ? upgrade.preflight : null;
+    const migrationStatus =
+      upgrade.migration_status && typeof upgrade.migration_status === "object"
+        ? upgrade.migration_status
+        : null;
+    const backups = Array.isArray(upgrade.backups) ? upgrade.backups : [];
+    const migrationPlan = preflight && Array.isArray(preflight.migrations) ? preflight.migrations : [];
+    const packageCommand =
+      preflight &&
+      preflight.packages &&
+      preflight.packages.command &&
+      Array.isArray(preflight.packages.command)
+        ? preflight.packages.command.join(" ")
+        : "";
+    const pendingStores =
+      migrationStatus && Array.isArray(migrationStatus.stores)
+        ? migrationStatus.stores.filter((store) => store && store.pending).length
+        : null;
+    steps = ["Scope", "Preflight", "Backups", "Execute"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div>Plan a controlled host upgrade with dry-run preflight.</div>
+        <div class="wizard-field">
+          <label for="wiz-upgrade-packages">Update system packages</label>
+          <input id="wiz-upgrade-packages" type="checkbox" name="update_packages" data-wizard-group="upgrade" ${
+            upgrade.update_packages ? "checked" : ""
+          } />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-upgrade-full">Full upgrade (dist-upgrade)</label>
+          <input id="wiz-upgrade-full" type="checkbox" name="full_upgrade" data-wizard-group="upgrade" ${
+            upgrade.full_upgrade ? "checked" : ""
+          } ${upgrade.update_packages ? "" : "disabled"} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-upgrade-migrations">Apply schema migrations</label>
+          <input id="wiz-upgrade-migrations" type="checkbox" name="apply_migrations" data-wizard-group="upgrade" ${
+            upgrade.apply_migrations ? "checked" : ""
+          } />
+        </div>
+      `;
+    } else if (wizard.step === 1) {
+      const preflightMarkup = preflight
+        ? `
+          <div class="preview-meta">
+            <div><strong>Packages</strong><span>${upgrade.update_packages ? "enabled" : "skipped"}</span></div>
+            <div><strong>Migrations</strong><span>${upgrade.apply_migrations ? "enabled" : "skipped"}</span></div>
+            <div><strong>Migration changes</strong><span>${migrationPlan.length}</span></div>
+            <div><strong>Pending stores</strong><span>${pendingStores === null ? "n/a" : pendingStores}</span></div>
+          </div>
+          ${
+            packageCommand
+              ? `<div class="event-item"><strong>Package command</strong><pre>${escapeHtml(packageCommand)}</pre></div>`
+              : ""
+          }
+          ${
+            migrationPlan.length
+              ? `
+            <div class="event-item">
+              <strong>Migration plan</strong>
+              <div class="card-meta">${migrationPlan
+                .slice(0, 8)
+                .map(
+                  (entry) =>
+                    `<span class="pill">${escapeHtml(entry.store || "store")}:${escapeHtml(
+                      entry.to_schema || "?"
+                    )}</span>`
+                )
+                .join("")}</div>
+            </div>
+          `
+              : `<div class="event-item">No migration changes reported by preflight.</div>`
+          }
+        `
+        : `<div class="event-item error">Preflight data unavailable. Go back and retry.</div>`;
+      bodyMarkup = `
+        <div>Dry-run preflight summary before upgrade.</div>
+        ${preflightMarkup}
+      `;
+    } else if (wizard.step === 2) {
+      const backupPills = backups.length
+        ? backups
+            .slice(0, 8)
+            .map((backup) => `<span class="pill">${escapeHtml(backup)}</span>`)
+            .join("")
+        : `<span class="pill stopped">No backups listed</span>`;
+      bodyMarkup = `
+        <div>Confirm backup posture before applying system changes.</div>
+        <div class="event-item">
+          <strong>Detected backups</strong>
+          <div class="card-meta">
+            <span class="pill">${backups.length} backup archives</span>
+          </div>
+          <div class="card-meta">${backupPills}</div>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-upgrade-backup-confirm">I confirmed backup availability and restore readiness</label>
+          <input id="wiz-upgrade-backup-confirm" type="checkbox" name="backup_confirmation" data-wizard-group="upgrade" ${
+            upgrade.backup_confirmation ? "checked" : ""
+          } />
+        </div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Running..." : "Run Upgrade";
+      bodyMarkup = `
+        <div>Execute host upgrade with selected options.</div>
+        <div class="preview-meta">
+          <div><strong>Packages</strong><span>${upgrade.update_packages ? "yes" : "no"}</span></div>
+          <div><strong>Full upgrade</strong><span>${upgrade.update_packages && upgrade.full_upgrade ? "yes" : "no"}</span></div>
+          <div><strong>Migrations</strong><span>${upgrade.apply_migrations ? "yes" : "no"}</span></div>
+          <div><strong>Backups confirmed</strong><span>${upgrade.backup_confirmation ? "yes" : "no"}</span></div>
         </div>
       `;
     }
@@ -2421,7 +2631,7 @@ async function hydrateNode(id) {
   try {
     if (nodeId === "routing") {
       await loadRoutes();
-    } else if (nodeId === "recipes") {
+    } else if (nodeId === "recipes" || nodeId.endsWith(":container-recipes")) {
       await loadRecipes();
     } else if (nodeId === "hosts") {
       await loadHosts();
@@ -2523,6 +2733,162 @@ function parseMultiline(raw) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function statusPillClass(status) {
+  if (status === "pass") {
+    return "running";
+  }
+  if (status === "skipped") {
+    return "soon";
+  }
+  return "stopped";
+}
+
+function normalizeRecipeApplyReport(response, recipeName, target, dryRun = false) {
+  const payload = response && typeof response === "object" ? response : {};
+  const probe = payload.probe && typeof payload.probe === "object" ? payload.probe : {};
+  const healthChecks =
+    probe.health_checks && typeof probe.health_checks === "object" ? probe.health_checks : null;
+  const healthSummary =
+    healthChecks && healthChecks.summary && typeof healthChecks.summary === "object"
+      ? healthChecks.summary
+      : {};
+  const checks = healthChecks && Array.isArray(healthChecks.checks) ? healthChecks.checks : [];
+  const serviceProbes = Object.entries(probe).filter(
+    ([key, value]) => key !== "health_checks" && key !== "error" && typeof value === "boolean"
+  );
+  return {
+    recipe: payload.recipe || recipeName || "unknown",
+    target: target || "host",
+    message: payload.message || "",
+    dryRun: Boolean(dryRun),
+    plan: Array.isArray(payload.plan) ? payload.plan : [],
+    applied: Array.isArray(payload.applied) ? payload.applied : [],
+    error: probe && typeof probe.error === "string" ? probe.error : "",
+    serviceProbes,
+    health: {
+      recipes:
+        healthChecks && Array.isArray(healthChecks.recipes)
+          ? healthChecks.recipes.map((item) => String(item))
+          : [],
+      checks,
+      summary: {
+        passed: Number(healthSummary.passed) || 0,
+        failed: Number(healthSummary.failed) || 0,
+        skipped: Number(healthSummary.skipped) || 0,
+      },
+    },
+    at: new Date().toISOString(),
+  };
+}
+
+function rememberRecipeApplyReport(report) {
+  if (!report || !report.target) {
+    return;
+  }
+  const key = report.target;
+  state.recipeReports.set(key, report);
+  state.recipeReportOrder = [key, ...state.recipeReportOrder.filter((item) => item !== key)];
+}
+
+function getLatestRecipeApplyReport(target = null) {
+  if (target) {
+    return state.recipeReports.get(target) || null;
+  }
+  const latestKey = state.recipeReportOrder[0];
+  return latestKey ? state.recipeReports.get(latestKey) || null : null;
+}
+
+function recipeHealthSummaryLabel(report) {
+  if (!report || !report.health) {
+    return "";
+  }
+  const summary = report.health.summary || {};
+  const passed = Number(summary.passed) || 0;
+  const failed = Number(summary.failed) || 0;
+  const skipped = Number(summary.skipped) || 0;
+  if (passed === 0 && failed === 0 && skipped === 0) {
+    return "";
+  }
+  return `${passed} pass, ${failed} fail, ${skipped} skipped`;
+}
+
+function renderRecipeApplyReport(report, scopedTarget = "") {
+  if (!report) {
+    return "";
+  }
+  const summary = report.health && report.health.summary ? report.health.summary : {};
+  const passed = Number(summary.passed) || 0;
+  const failed = Number(summary.failed) || 0;
+  const skipped = Number(summary.skipped) || 0;
+  const checks = report.health && Array.isArray(report.health.checks) ? report.health.checks : [];
+  const serviceProbes = Array.isArray(report.serviceProbes) ? report.serviceProbes : [];
+  const scopeLabel = scopedTarget ? `container ${scopedTarget}` : report.target === "host" ? "host" : report.target;
+  const checksMarkup = checks.length
+    ? checks
+        .slice(0, 8)
+        .map((check) => {
+          const status = String(check.status || "fail").toLowerCase();
+          const type = String(check.type || "check");
+          const name = check.name || check.id || "unnamed check";
+          const details = check.details ? `<pre>${escapeHtml(check.details)}</pre>` : "";
+          return `
+            <div class="event-item">
+              <div class="card-meta">
+                <span class="pill ${statusPillClass(status)}">${escapeHtml(status)}</span>
+                <span class="pill">${escapeHtml(type)}</span>
+                <span>${escapeHtml(name)}</span>
+              </div>
+              ${details}
+            </div>
+          `;
+        })
+        .join("")
+    : "";
+  const serviceMarkup = serviceProbes.length
+    ? serviceProbes
+        .map(
+          ([service, available]) =>
+            `<span class="pill ${available ? "running" : "stopped"}">${escapeHtml(service)}:${available ? "ok" : "missing"}</span>`
+        )
+        .join("")
+    : "";
+
+  return `
+    <div class="event-item">
+      <div><strong>Last recipe run</strong> — ${escapeHtml(report.recipe)} on ${escapeHtml(scopeLabel)}</div>
+      <div class="card-meta">
+        <span class="pill">${report.dryRun ? "dry-run" : "applied"}</span>
+        <span class="pill">${escapeHtml(new Date(report.at).toLocaleString())}</span>
+        ${
+          passed || failed || skipped
+            ? `<span class="pill running">pass ${passed}</span><span class="pill stopped">fail ${failed}</span><span class="pill soon">skipped ${skipped}</span>`
+            : ""
+        }
+      </div>
+      ${
+        report.plan && report.plan.length
+          ? `<div class="card-meta"><span class="pill">${report.plan.length} planned steps</span><span class="pill">${report.applied.length} applied steps</span></div>`
+          : ""
+      }
+      ${report.error ? `<div class="event-item error">${escapeHtml(report.error)}</div>` : ""}
+      ${serviceMarkup ? `<div class="card-meta">${serviceMarkup}</div>` : ""}
+      ${checksMarkup}
+    </div>
+  `;
 }
 
 async function apiRequest(path, options = {}) {
@@ -2868,6 +3234,32 @@ async function installLampStack(containerName) {
   }
   await ensureRecipe(RECIPE_CATALOG[LAMP_STACK_NAME]);
   return applyRecipe(LAMP_STACK_NAME, containerName);
+}
+
+function buildSystemUpgradePayload(upgradeState, dryRun = false) {
+  return {
+    update_packages: Boolean(upgradeState.update_packages),
+    full_upgrade: Boolean(upgradeState.update_packages && upgradeState.full_upgrade),
+    apply_migrations: Boolean(upgradeState.apply_migrations),
+    dry_run: Boolean(dryRun),
+  };
+}
+
+async function fetchSystemUpgradePreflight(upgradeState) {
+  const payload = buildSystemUpgradePayload(upgradeState, true);
+  const [preflight, migrationStatusPayload, backupPayload] = await Promise.all([
+    apiRequest("/api/system/upgrade", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    apiRequest("/api/migrations/status").catch(() => null),
+    apiRequest("/api/backup/list").catch(() => ({ backups: [] })),
+  ]);
+  const migrationStatus =
+    migrationStatusPayload && typeof migrationStatusPayload === "object" ? migrationStatusPayload : null;
+  const backups =
+    backupPayload && Array.isArray(backupPayload.backups) ? backupPayload.backups : [];
+  return { preflight, migrationStatus, backups };
 }
 
 async function probeContainerServices(containerName, options = {}) {
@@ -3532,6 +3924,11 @@ async function handleAction(actionId, node, params = {}) {
     return;
   }
 
+  if (actionId === "system-upgrade") {
+    openWizard("system-upgrade");
+    return;
+  }
+
   if (actionId === "hosts-refresh") {
     await loadHosts({ log: true });
     return;
@@ -3737,6 +4134,7 @@ async function handleWizardAction(action, payload = {}) {
       routing: 3,
       filemanager: 2,
       packages: 2,
+      "system-upgrade": 4,
       "recipe-apply": 3,
       "host-create": 3,
       network: 2,
@@ -3750,6 +4148,98 @@ async function handleWizardAction(action, payload = {}) {
       "site-rollback": 2,
       "site-services": 2,
     };
+    if (state.wizard.mode === "system-upgrade") {
+      const upgrade = state.wizard.upgrade;
+      if (state.wizard.step === 0) {
+        state.wizard.busy = true;
+        state.wizard.error = null;
+        renderWizard();
+        try {
+          const preflightData = await fetchSystemUpgradePreflight(upgrade);
+          const timestamp = new Date().toISOString();
+          upgrade.preflight = preflightData.preflight;
+          upgrade.migration_status = preflightData.migrationStatus;
+          upgrade.backups = preflightData.backups;
+          upgrade.preflight_at = timestamp;
+          upgrade.backup_confirmation = false;
+          state.systemUpgrade.lastPreflight = {
+            at: timestamp,
+            options: buildSystemUpgradePayload(upgrade, true),
+            preflight: preflightData.preflight,
+            migration_status: preflightData.migrationStatus,
+            backups: preflightData.backups,
+          };
+          const migrationPlan =
+            preflightData.preflight && Array.isArray(preflightData.preflight.migrations)
+              ? preflightData.preflight.migrations
+              : [];
+          logEvent(
+            "success",
+            `Upgrade preflight ready (${migrationPlan.length} migration changes, ${preflightData.backups.length} backups listed)`
+          );
+          state.wizard.prevStep = state.wizard.step;
+          state.wizard.step = 1;
+          renderPreview();
+        } catch (err) {
+          state.wizard.error = err.message || "Upgrade preflight failed";
+        } finally {
+          state.wizard.busy = false;
+          renderWizard();
+        }
+        return;
+      }
+      if (state.wizard.step === 1) {
+        state.wizard.prevStep = state.wizard.step;
+        state.wizard.step = 2;
+        renderWizard();
+        return;
+      }
+      if (state.wizard.step === 2) {
+        if (!upgrade.backup_confirmation) {
+          state.wizard.error = "Backup confirmation is required before upgrade.";
+          renderWizard();
+          return;
+        }
+        state.wizard.prevStep = state.wizard.step;
+        state.wizard.step = 3;
+        renderWizard();
+        return;
+      }
+      state.wizard.busy = true;
+      state.wizard.error = null;
+      renderWizard();
+      try {
+        const payload = buildSystemUpgradePayload(upgrade, false);
+        const response = await apiRequest("/api/system/upgrade", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        state.systemUpgrade.lastExecution = {
+          at: new Date().toISOString(),
+          options: payload,
+          result: response,
+        };
+        const appliedMigrations =
+          response &&
+          response.migrations &&
+          Array.isArray(response.migrations.applied)
+            ? response.migrations.applied.length
+            : 0;
+        logEvent(
+          "success",
+          `System upgrade complete (${appliedMigrations} migrated stores)`
+        );
+        state.wizard.active = false;
+        state.wizard.mode = null;
+        renderPreview();
+      } catch (err) {
+        state.wizard.error = err.message || "System upgrade failed";
+      } finally {
+        state.wizard.busy = false;
+        renderWizard();
+      }
+      return;
+    }
     const steps = stepCounts[state.wizard.mode] || 1;
     if (state.wizard.step < steps - 1) {
       state.wizard.prevStep = state.wizard.step;
@@ -3884,11 +4374,22 @@ async function handleWizardAction(action, payload = {}) {
           dry_run: Boolean(recipe.dry_run),
           probe_services: true,
         });
+        const report = normalizeRecipeApplyReport(
+          response,
+          recipeName,
+          target || "host",
+          Boolean(recipe.dry_run)
+        );
+        rememberRecipeApplyReport(report);
+        const healthSummary = recipeHealthSummaryLabel(report);
+        const baseMessage =
+          response.message ||
+          (recipe.dry_run ? `Plan generated for ${recipeName}` : `Recipe ${recipeName} applied`);
         logEvent(
           "success",
-          response.message ||
-            (recipe.dry_run ? `Plan generated for ${recipeName}` : `Recipe ${recipeName} applied`)
+          healthSummary ? `${baseMessage} • Health: ${healthSummary}` : baseMessage
         );
+        renderPreview();
         if (target) {
           await probeContainerServices(target, { updateLabels: true, log: false });
           await loadGraph({ skipProbe: true });
@@ -4237,6 +4738,11 @@ function bindEvents() {
       state.wizard.filemanager[target.name] = value;
     } else if (group === "packages") {
       state.wizard.packages[target.name] = value;
+    } else if (group === "upgrade") {
+      state.wizard.upgrade[target.name] = value;
+      if (target.name === "update_packages" && !value) {
+        state.wizard.upgrade.full_upgrade = false;
+      }
     } else if (group === "recipe") {
       state.wizard.recipe[target.name] = value;
     } else if (group === "host") {

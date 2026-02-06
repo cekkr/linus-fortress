@@ -81,6 +81,8 @@ LAMP stack apps appear when a container is tagged with `user.lizard.stack=lamp` 
 Optional service hints can be supplied with `user.lizard.services=apache,mysql,ftp` (comma-separated) to remove the install badge.
 The UI can probe service availability via `POST /containers/probe` (permission `manage_containers`) and update the LXD labels automatically.
 The file manager install uses Tiny File Manager under `/var/www/html/filemanager` and prompts for `fm_user`/`fm_password`.
+Recipe apply results now surface `probe.health_checks` with pass/fail/skipped badges and per-check summaries in the recipes views.
+The Packages app includes a guided System Upgrade wizard that runs `/system/upgrade` preflight (`dry_run=true`) and requires backup confirmation before execution.
 
 ## Run Server Script
 

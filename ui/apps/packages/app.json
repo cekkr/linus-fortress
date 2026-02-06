@@ -20,6 +20,11 @@
       "id": "packages-update",
       "label": "Update",
       "variant": "ghost"
+    },
+    {
+      "id": "system-upgrade",
+      "label": "System Upgrade",
+      "variant": "primary"
     }
   ]
 }
