@@ -1570,7 +1570,7 @@ paths:
                 $ref: "#/components/schemas/RecipeExportResponse"
   /recipes/import:
     post:
-      summary: Import recipes from a bundle
+      summary: Import recipes from a bundle with checksum/signature verification
       tags: [Recipes]
       requestBody:
         required: true
@@ -2936,6 +2936,9 @@ components:
         include_history:
           type: boolean
           default: true
+        include_signature:
+          type: boolean
+          default: true
     RecipeBundle:
       type: object
       properties:
@@ -2947,6 +2950,16 @@ components:
           format: date-time
         count:
           type: integer
+        checksum_algorithm:
+          type: string
+          example: sha256
+        checksum:
+          type: string
+        signature_algorithm:
+          type: string
+          example: hmac-sha256
+        signature:
+          type: string
         recipes:
           type: array
           items:
@@ -2969,6 +2982,9 @@ components:
           type: boolean
           default: false
         preserve_history:
+          type: boolean
+          default: true
+        require_signature:
           type: boolean
           default: true
     RecipeImportResponse:

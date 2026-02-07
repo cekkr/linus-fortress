@@ -16,9 +16,9 @@ class CommandLogger:
 
     def _ensure_database(self):
         directory = os.path.dirname(self.db_path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
         try:
+            if directory:
+                os.makedirs(directory, exist_ok=True)
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
                     """
@@ -35,7 +35,7 @@ class CommandLogger:
                     )
                     """
                 )
-        except sqlite3.Error as exc:
+        except (OSError, sqlite3.Error) as exc:
             logging.error("Unable to initialize command log database: %s", exc)
 
     def log(
@@ -59,5 +59,5 @@ class CommandLogger:
                         """,
                         (actor, endpoint, category, action, target, payload, status),
                     )
-        except sqlite3.Error as exc:
+        except (OSError, sqlite3.Error) as exc:
             logging.error("Failed to persist audit log entry: %s", exc)

@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -10,6 +13,8 @@ RECIPE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 RECIPE_BUNDLE_FORMAT = "fortress.recipe-bundle.v1"
+RECIPE_BUNDLE_CHECKSUM_ALGORITHM = "sha256"
+RECIPE_BUNDLE_SIGNATURE_ALGORITHM = "hmac-sha256"
 RECIPE_VERSION_BUMPS = {"major", "minor", "patch", "none"}
 RECIPE_MUTABLE_FIELDS = {
     "description",
@@ -128,12 +133,14 @@ class RecipeApplyRequest(BaseModel):
 class RecipeExportRequest(BaseModel):
     names: Optional[List[str]] = None
     include_history: bool = True
+    include_signature: bool = True
 
 
 class RecipeImportRequest(BaseModel):
     bundle: Dict[str, Any]
     overwrite: bool = False
     preserve_history: bool = True
+    require_signature: bool = True
 
 
 def _utc_now() -> str:
@@ -400,10 +407,30 @@ def strip_recipe_history(record: Dict[str, Any]) -> Dict[str, Any]:
     return stripped
 
 
+def _bundle_payload_for_digest(bundle: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "format": bundle.get("format"),
+        "exported_at": bundle.get("exported_at"),
+        "count": bundle.get("count"),
+        "recipes": bundle.get("recipes", []),
+    }
+
+
+def _bundle_checksum(bundle: Dict[str, Any]) -> str:
+    payload = _bundle_payload_for_digest(bundle)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _bundle_signature(checksum: str, signing_key: str) -> str:
+    return hmac.new(signing_key.encode(), checksum.encode(), hashlib.sha256).hexdigest()
+
+
 def build_recipe_export_bundle(
     recipes: Dict[str, Dict[str, Any]],
     names: Optional[List[str]] = None,
     include_history: bool = True,
+    signing_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     if names:
         selected_names = sorted({str(name).strip() for name in names if str(name).strip()})
@@ -423,12 +450,50 @@ def build_recipe_export_bundle(
         if not include_history:
             normalized = strip_recipe_history(normalized)
         exported.append(normalized)
-    return {
+    bundle = {
         "format": RECIPE_BUNDLE_FORMAT,
         "exported_at": _utc_now(),
         "count": len(exported),
         "recipes": exported,
+        "checksum_algorithm": RECIPE_BUNDLE_CHECKSUM_ALGORITHM,
     }
+    bundle["checksum"] = _bundle_checksum(bundle)
+    if signing_key:
+        bundle["signature_algorithm"] = RECIPE_BUNDLE_SIGNATURE_ALGORITHM
+        bundle["signature"] = _bundle_signature(bundle["checksum"], signing_key)
+    return bundle
+
+
+def verify_recipe_bundle(
+    bundle: Dict[str, Any],
+    signing_key: Optional[str] = None,
+    require_signature: bool = True,
+) -> Dict[str, Any]:
+    if not isinstance(bundle, dict):
+        raise ValueError("Bundle must be an object")
+    checksum_algorithm = str(bundle.get("checksum_algorithm") or RECIPE_BUNDLE_CHECKSUM_ALGORITHM).strip().lower()
+    if checksum_algorithm != RECIPE_BUNDLE_CHECKSUM_ALGORITHM:
+        raise ValueError(f"Unsupported checksum algorithm '{checksum_algorithm}'")
+    checksum = str(bundle.get("checksum", "")).strip()
+    if not checksum:
+        raise ValueError("Bundle checksum is missing")
+    expected_checksum = _bundle_checksum(bundle)
+    if not hmac.compare_digest(checksum, expected_checksum):
+        raise ValueError("Bundle checksum mismatch")
+
+    signature = str(bundle.get("signature", "")).strip()
+    signature_algorithm = str(bundle.get("signature_algorithm") or RECIPE_BUNDLE_SIGNATURE_ALGORITHM).strip().lower()
+    if signature and signature_algorithm != RECIPE_BUNDLE_SIGNATURE_ALGORITHM:
+        raise ValueError(f"Unsupported signature algorithm '{signature_algorithm}'")
+    if require_signature and not signature:
+        raise ValueError("Bundle signature required")
+    if signature:
+        if not signing_key:
+            raise ValueError("Recipe bundle signing key is not configured on this server")
+        expected_signature = _bundle_signature(expected_checksum, signing_key)
+        if not hmac.compare_digest(signature, expected_signature):
+            raise ValueError("Bundle signature verification failed")
+    return {"checksum": expected_checksum, "signed": bool(signature)}
 
 
 def extract_recipe_bundle(bundle: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -455,6 +520,15 @@ def extract_recipe_bundle(bundle: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             iterator.append(dict(item))
     else:
         raise ValueError("Bundle must include 'recipes' as an array or object")
+
+    count_value = bundle.get("count")
+    if count_value is not None:
+        try:
+            expected_count = int(count_value)
+        except (TypeError, ValueError):
+            raise ValueError("Bundle count must be an integer")
+        if expected_count != len(iterator):
+            raise ValueError("Bundle count does not match recipe entries")
 
     for item in iterator:
         name = str(item.get("name", "")).strip()

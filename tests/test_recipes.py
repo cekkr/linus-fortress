@@ -16,6 +16,7 @@ from fortress.recipes import (
     resolve_recipe_plan,
     update_recipe_record,
     validate_recipe_name,
+    verify_recipe_bundle,
 )
 
 
@@ -189,6 +190,24 @@ class RecipeLifecycleTests(unittest.TestCase):
         self.assertEqual(bundle["count"], 1)
         self.assertEqual(bundle["recipes"][0]["name"], "base")
         self.assertEqual(bundle["recipes"][0]["history"], [])
+        self.assertTrue(bundle["checksum"])
+
+    def test_verify_recipe_bundle_checksum_detects_tampering(self) -> None:
+        recipes = {"base": create_recipe_record({"name": "base", "packages": ["python3"]})}
+        bundle = build_recipe_export_bundle(recipes, include_history=True)
+        verify = verify_recipe_bundle(bundle, require_signature=False)
+        self.assertFalse(verify["signed"])
+        bundle["recipes"][0]["packages"].append("curl")
+        with self.assertRaises(ValueError):
+            verify_recipe_bundle(bundle, require_signature=False)
+
+    def test_verify_recipe_bundle_signature(self) -> None:
+        recipes = {"base": create_recipe_record({"name": "base", "packages": ["python3"]})}
+        bundle = build_recipe_export_bundle(recipes, signing_key="bundle-secret")
+        verify = verify_recipe_bundle(bundle, signing_key="bundle-secret", require_signature=True)
+        self.assertTrue(verify["signed"])
+        with self.assertRaises(ValueError):
+            verify_recipe_bundle(bundle, signing_key="wrong-key", require_signature=True)
 
     def test_extract_recipe_bundle_and_import_record(self) -> None:
         bundle = {

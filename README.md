@@ -749,10 +749,11 @@ Body:
 #### `POST /recipes/export` (permission `recipes_manage`)
 Body:
 ```json
-{"names": ["lamp-apache"], "include_history": true}
+{"names": ["lamp-apache"], "include_history": true, "include_signature": true}
 ```
 - Exports recipes to a portable bundle payload (`format: fortress.recipe-bundle.v1`) for backup/transfer.
 - Omitting `names` exports all recipes.
+- Bundles include `checksum` by default; set `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` to enable HMAC signatures (and keep `include_signature=true`).
 
 #### `POST /recipes/import` (permission `recipes_manage`)
 Body:
@@ -760,16 +761,20 @@ Body:
 {
   "bundle": {
     "format": "fortress.recipe-bundle.v1",
+    "checksum": "<sha256>",
+    "signature": "<hmac-sha256>",
     "recipes": [
       {"name": "base-python", "packages": ["python3"], "version": "1.0.0"}
     ]
   },
   "overwrite": false,
-  "preserve_history": true
+  "preserve_history": true,
+  "require_signature": true
 }
 ```
 - Imports recipe bundles with dependency/cycle validation.
 - `overwrite=true` replaces existing definitions; `preserve_history=false` resets imported history to a single import event.
+- `require_signature=true` enforces signature verification; use `false` only for trusted unsigned bundles.
 
 #### `PUT /recipes/{name}` (permission `recipes_manage`)
 - Updates the recipe fields you provide; send empty arrays to clear lists.
@@ -870,6 +875,8 @@ Body:
 - Migration schemas default to `./schemas`; override with `FORTRESS_SCHEMA_DIR` if you relocate them.
 - Site backups default to `/var/lib/fortress/site_backups`; ensure the service user can read/write.
 - Configure secrets via env vars (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`) instead of hardcoding defaults.
+- Configure `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` to sign recipe export bundles and enforce signature verification on imports.
+- Optional runtime paths: `FORTRESS_LOG_PATH` overrides the API log file target and `FORTRESS_COMMAND_LOG_DB` overrides the SQLite audit DB path.
 - ACME HTTP-01 challenges are served from `/var/lib/fortress/acme-challenges`; override via `FORTRESS_ACME_CHALLENGE_DIR`.
 - Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), manage nginx reloads, invoke `certbot`, and run package commands (`apt-get`, `dnf`, or `yum`).
 
@@ -901,12 +908,15 @@ Recipe CLI examples:
 - Dry-run plan: `python fortress-cli.py recipes plan app-bootstrap --container web01`
 - Export recipes: `python fortress-cli.py recipes export --name lamp-stack`
 - Import recipes: `python fortress-cli.py recipes import --bundle-file ./recipes-bundle.json --overwrite`
+- Export unsigned bundle (only if needed): `python fortress-cli.py recipes export --name lamp-stack --no-signature`
+- Import unsigned bundle (trusted sources only): `python fortress-cli.py recipes import --bundle-file ./recipes-bundle.json --allow-unsigned`
 
 By default TLS certificates are verified; pass `--insecure` during `setup` only if you are pointing at a self-signed lab server. Use the CLI’s `info` command to inspect the stored metadata without revealing secrets.
 
 ## Testing
 
 - `python -m unittest discover -s tests`
+- `python -m unittest discover -s tests -p 'test_permissions_matrix.py'` for route-level permission matrix checks.
 
 ## Roadmap
 

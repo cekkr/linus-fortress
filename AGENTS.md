@@ -17,7 +17,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Security posture assumes strong adversaries; prefer least privilege, audit trails, and rollback on failure
 - Master API key is optional (set via `FORTRESS_API_KEY`/`API_SECRET_KEY`) and should be disabled after bootstrap; delegated tokens are preferred long-term
 - New recipe automation endpoints (`/recipes`, `/recipes/{name}`, `/recipes/apply`, `/recipes/seed`, `/recipes/plan`, `/recipes/export`, `/recipes/import`) allow "nix-like" install blueprints with dependencies, packages, and commands (templated with `{{param}}`), stored in `/var/lib/fortress/recipes.json`
-- Recipe definitions now track semantic `version`, lifecycle timestamps, and change `history` entries; export/import uses `fortress.recipe-bundle.v1` bundles
+- Recipe definitions now track semantic `version`, lifecycle timestamps, and change `history` entries; export/import uses `fortress.recipe-bundle.v1` bundles with checksum + optional HMAC signatures
 - LAMP recipe bundle supports PHP version selection and optional DB bootstrap parameters (`db_root_password`, `db_name`, `db_user`, `db_password`)
 - LAMP recipe applies now include structured post-apply health checks (`probe.health_checks`) for service status, port probes, and config validation when targeting containers
 - A new fortress.audit module powers the SQLite-based command register that captures all API activity plus container exec behaviour for investigation
@@ -26,7 +26,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/sites.py` centralizes website models and JSON store helpers for site lifecycle APIs
 - `py/fortress/hosts.py` tracks SSH-managed host records for provisioning/probing on non-VM machines; shared SSH/script helpers are in `py/fortress/remote.py`
 - fortress-cli.py now includes `recipes list|create|apply|plan|seed|export|import`, `firewall *`, `sites *`, `migrations *`, `system upgrade`, and `tls renew` helpers in addition to status/api-users/package/backup calls
-- Unit tests in `tests/test_recipes.py`, `tests/test_routing.py`, `tests/test_firewall.py`, `tests/test_migrations.py`, and `tests/test_sites.py` cover recipes, routing, firewall parsing, migrations, and site model validation
+- Unit/integration tests in `tests/test_recipes.py`, `tests/test_permissions_matrix.py`, `tests/test_routing.py`, `tests/test_firewall.py`, `tests/test_migrations.py`, and `tests/test_sites.py` cover recipes (including bundle signatures), permission matrix flows, routing, firewall parsing, migrations, and site model validation
 - `py/fortress/vms.py` centralizes VM registry + QEMU/VirtualBox lifecycle, snapshots, and SSH probe/provision helpers; provisioning scripts live in `scripts/provision`
 - api-v1.yaml documents the HTTP contract (OpenAPI 3.0.3) and README.md lists request bodies/permissions for each endpoint
 - Domain routing and LXD proxy helpers now support choosing container interfaces and host listen ports/addresses for finer TCP/IP exposure control between containers and the host
@@ -94,6 +94,7 @@ This file contains the directives for AIs and must be kept current with the mini
 `-- tests
     |-- test_firewall.py
     |-- test_migrations.py
+    |-- test_permissions_matrix.py
     |-- test_recipes.py
     |-- test_routing.py
     `-- test_sites.py

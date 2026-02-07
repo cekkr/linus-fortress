@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import secrets
+import sys
 import logging
 from typing import Optional, List, Dict, Literal, Union, Any, Tuple
 from datetime import datetime
@@ -60,6 +61,7 @@ from fortress.recipes import (
     save_recipes,
     prepare_import_recipe_record,
     resolve_recipe_plan,
+    verify_recipe_bundle,
     update_recipe_record,
     build_recipe_execution,
     validate_recipe_name,
@@ -168,7 +170,7 @@ NGINX_ENABLED_DIR = "/etc/nginx/sites-enabled"
 API_USERS_DB = "/var/lib/fortress/api_users.json"
 RECIPES_DB = "/var/lib/fortress/recipes.json"
 SHARED_STORAGE_DIR = "/var/lib/fortress/shares"
-COMMAND_LOG_DB = "/var/lib/fortress/command_log.db"
+COMMAND_LOG_DB = os.environ.get("FORTRESS_COMMAND_LOG_DB", "/var/lib/fortress/command_log.db")
 VMS_DB = "/var/lib/fortress/vms.json"
 HOSTS_DB = "/var/lib/fortress/hosts.json"
 ROUTING_DB = "/var/lib/fortress/routes.json"
@@ -182,14 +184,22 @@ FIREWALL_STATE_DIR = "/var/lib/fortress/firewall"
 FIREWALL_ROLLBACK_DIR = os.path.join(FIREWALL_STATE_DIR, "rollbacks")
 FIREWALL_DDOS_POLICY_PATH = os.path.join(FIREWALL_STATE_DIR, "ddos_policy.json")
 POPULAR_IMAGES_DB = "/var/lib/fortress/container_images.json"
+RECIPE_BUNDLE_SIGNING_KEY = os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEY")
 
 # Logging setup
-logging.basicConfig(filename='/var/log/fortress.log', level=logging.INFO, 
-                    format='%(asctime)s %(levelname)s: %(message)s')
+LOG_PATH = os.environ.get("FORTRESS_LOG_PATH", "/var/log/fortress.log")
+LOG_FORMAT = "%(asctime)s %(levelname)s: %(message)s"
+try:
+    logging.basicConfig(filename=LOG_PATH, level=logging.INFO, format=LOG_FORMAT)
+except OSError:
+    logging.basicConfig(stream=sys.stderr, level=logging.INFO, format=LOG_FORMAT)
+    logging.warning("Unable to write log file %s; falling back to stderr logging", LOG_PATH)
 
 MASTER_API_KEY = resolve_master_key(API_SECRET_KEY, DEFAULT_API_SECRET)
 if MASTER_API_KEY is None:
     logging.warning("Master API key disabled or defaulted; only delegated tokens accepted.")
+if RECIPE_BUNDLE_SIGNING_KEY is not None:
+    RECIPE_BUNDLE_SIGNING_KEY = RECIPE_BUNDLE_SIGNING_KEY.strip() or None
 
 app = FastAPI(title="VPS Fortress Manager")
 REQUEST_CONTEXT = ContextVar("REQUEST_CONTEXT", default={"actor": "system", "endpoint": "internal"})
@@ -1733,12 +1743,15 @@ def seed_recipes(payload: RecipeSeedRequest, x_api_key: Optional[str] = Header(d
 @app.post("/recipes/export")
 def export_recipes(payload: RecipeExportRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_export", "recipes_manage", x_api_key, x_user_token)
+    if payload.include_signature and not RECIPE_BUNDLE_SIGNING_KEY:
+        raise HTTPException(status_code=400, detail="Recipe bundle signing key is not configured on this server")
     recipes = _load_recipe_store()
     try:
         bundle = build_recipe_export_bundle(
             recipes,
             names=payload.names,
             include_history=payload.include_history,
+            signing_key=RECIPE_BUNDLE_SIGNING_KEY if payload.include_signature else None,
         )
     except ValueError as exc:
         detail = str(exc)
@@ -1752,6 +1765,7 @@ def export_recipes(payload: RecipeExportRequest, x_api_key: Optional[str] = Head
             "count": bundle.get("count", len(exported_names)),
             "recipes": exported_names,
             "include_history": payload.include_history,
+            "signed": bool(bundle.get("signature")),
         },
     )
     return {"bundle": bundle, "count": bundle.get("count", len(exported_names))}
@@ -1761,6 +1775,11 @@ def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Head
     authorize("recipes_import", "recipes_manage", x_api_key, x_user_token)
     recipes = _load_recipe_store()
     try:
+        verification = verify_recipe_bundle(
+            payload.bundle,
+            signing_key=RECIPE_BUNDLE_SIGNING_KEY,
+            require_signature=payload.require_signature,
+        )
         bundle_records = extract_recipe_bundle(payload.bundle)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1796,7 +1815,9 @@ def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Head
             "overwritten": overwritten,
             "skipped": skipped,
             "preserve_history": payload.preserve_history,
+            "require_signature": payload.require_signature,
             "overwrite": payload.overwrite,
+            "signed": verification.get("signed", False),
         },
     )
     return {

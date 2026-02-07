@@ -565,6 +565,7 @@ def recipes_command(args: argparse.Namespace) -> None:
         if payload is None:
             payload = {
                 "include_history": not args.no_history,
+                "include_signature": not args.no_signature,
             }
             if args.name:
                 payload["names"] = args.name
@@ -593,6 +594,7 @@ def recipes_command(args: argparse.Namespace) -> None:
                 "bundle": bundle_payload,
                 "overwrite": args.overwrite,
                 "preserve_history": not args.no_history,
+                "require_signature": not args.allow_unsigned,
             }
         result = client.request("POST", "/recipes/import", json_body=payload, auth_override=auth_override)
         print(json.dumps(result, indent=2))
@@ -1307,6 +1309,7 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_export = recipes_sub.add_parser("export", help="Export recipes as a bundle")
     recipes_export.add_argument("--name", action="append", help="Recipe name to export (repeatable)")
     recipes_export.add_argument("--no-history", action="store_true", help="Exclude change history from exported recipes")
+    recipes_export.add_argument("--no-signature", action="store_true", help="Skip bundle signature generation")
     recipes_export.add_argument("--json", help="Inline JSON payload")
     recipes_export.add_argument("--json-file", help="Path to JSON file used as payload")
     recipes_export.set_defaults(func=recipes_command)
@@ -1315,6 +1318,7 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_import.add_argument("--bundle-json", help="Inline bundle JSON string")
     recipes_import.add_argument("--overwrite", action="store_true", help="Overwrite existing recipes with imported definitions")
     recipes_import.add_argument("--no-history", action="store_true", help="Reset imported history to a single import entry")
+    recipes_import.add_argument("--allow-unsigned", action="store_true", help="Allow importing bundles without signature verification")
     recipes_import.add_argument("--json", help="Inline JSON payload")
     recipes_import.add_argument("--json-file", help="Path to JSON file used as payload")
     recipes_import.set_defaults(func=recipes_command)
