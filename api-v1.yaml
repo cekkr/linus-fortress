@@ -1518,7 +1518,7 @@ paths:
                   message:
                     type: string
                   recipe:
-                    $ref: "#/components/schemas/RecipeDefinition"
+                    $ref: "#/components/schemas/RecipeRecord"
   /recipes/seed:
     post:
       summary: Seed curated recipe bundles
@@ -1543,6 +1543,48 @@ paths:
                     type: array
                     items:
                       type: string
+                  overwritten:
+                    type: array
+                    items:
+                      type: string
+                  skipped:
+                    type: array
+                    items:
+                      type: string
+  /recipes/export:
+    post:
+      summary: Export recipes as a portable bundle
+      tags: [Recipes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecipeExportRequest"
+      responses:
+        "200":
+          description: Exported bundle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeExportResponse"
+  /recipes/import:
+    post:
+      summary: Import recipes from a bundle
+      tags: [Recipes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecipeImportRequest"
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeImportResponse"
   /recipes/{name}:
     get:
       summary: Retrieve a recipe by name
@@ -1562,7 +1604,7 @@ paths:
                 type: object
                 properties:
                   recipe:
-                    $ref: "#/components/schemas/RecipeDefinition"
+                    $ref: "#/components/schemas/RecipeRecord"
     put:
       summary: Update an existing recipe
       tags: [Recipes]
@@ -1589,7 +1631,7 @@ paths:
                   message:
                     type: string
                   recipe:
-                    $ref: "#/components/schemas/RecipeDefinition"
+                    $ref: "#/components/schemas/RecipeRecord"
     delete:
       summary: Delete a recipe
       tags: [Recipes]
@@ -2766,6 +2808,42 @@ components:
           type: array
           items:
             type: string
+    RecipeHistoryEntry:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        action:
+          type: string
+        from_version:
+          type: string
+        to_version:
+          type: string
+        changed_fields:
+          type: array
+          items:
+            type: string
+        note:
+          type: string
+    RecipeRecord:
+      allOf:
+        - $ref: "#/components/schemas/RecipeDefinition"
+        - type: object
+          properties:
+            version:
+              type: string
+              example: "1.2.3"
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            history:
+              type: array
+              items:
+                $ref: "#/components/schemas/RecipeHistoryEntry"
     RecipeUpdate:
       type: object
       properties:
@@ -2791,6 +2869,12 @@ components:
           type: array
           items:
             type: string
+        version_bump:
+          type: string
+          enum: [major, minor, patch, none]
+          default: patch
+        change_note:
+          type: string
     RecipeApplyRequest:
       type: object
       required:
@@ -2835,6 +2919,77 @@ components:
           type: array
           items:
             type: string
+        version:
+          type: string
+        history_count:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+    RecipeExportRequest:
+      type: object
+      properties:
+        names:
+          type: array
+          items:
+            type: string
+        include_history:
+          type: boolean
+          default: true
+    RecipeBundle:
+      type: object
+      properties:
+        format:
+          type: string
+          example: fortress.recipe-bundle.v1
+        exported_at:
+          type: string
+          format: date-time
+        count:
+          type: integer
+        recipes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeRecord"
+    RecipeExportResponse:
+      type: object
+      properties:
+        bundle:
+          $ref: "#/components/schemas/RecipeBundle"
+        count:
+          type: integer
+    RecipeImportRequest:
+      type: object
+      required:
+        - bundle
+      properties:
+        bundle:
+          $ref: "#/components/schemas/RecipeBundle"
+        overwrite:
+          type: boolean
+          default: false
+        preserve_history:
+          type: boolean
+          default: true
+    RecipeImportResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        imported:
+          type: array
+          items:
+            type: string
+        overwritten:
+          type: array
+          items:
+            type: string
+        skipped:
+          type: array
+          items:
+            type: string
+        total_changed:
+          type: integer
     HostSSHConfig:
       type: object
       properties:

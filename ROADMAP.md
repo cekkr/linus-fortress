@@ -31,8 +31,9 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Validate the permission matrix across endpoints and scopes.
 
 ## Path 5: Recipes lifecycle management (mid term)
-- Add export/import bundles for recipes.
-- Track semantic versions and change history for recipe updates.
+- Done: Add export/import bundles for recipes.
+- Done: Track semantic versions and change history for recipe updates.
+- Next: Add signed/verified recipe bundles (checksum + optional signature) before import.
 
 ## Path 6: External server cloning and migration (mid term)
 - Add a secure "clone external server" workflow using FTP/SFTP and database credentials (MySQL, MongoDB, etc.).

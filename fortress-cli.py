@@ -560,6 +560,43 @@ def recipes_command(args: argparse.Namespace) -> None:
         result = client.request("POST", "/recipes/seed", json_body=payload, auth_override=auth_override)
         print(json.dumps(result, indent=2))
         return
+    if args.subcommand == "export":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            payload = {
+                "include_history": not args.no_history,
+            }
+            if args.name:
+                payload["names"] = args.name
+        result = client.request("POST", "/recipes/export", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "import":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            bundle_payload: Optional[Dict[str, Any]] = None
+            if args.bundle_file:
+                try:
+                    bundle_payload = json.loads(Path(args.bundle_file).read_text())
+                except FileNotFoundError as exc:
+                    raise FortressCLIError(f"Bundle file not found: {args.bundle_file}") from exc
+                except json.JSONDecodeError as exc:
+                    raise FortressCLIError(f"Invalid bundle JSON file {args.bundle_file}: {exc}") from exc
+            elif args.bundle_json:
+                try:
+                    bundle_payload = json.loads(args.bundle_json)
+                except json.JSONDecodeError as exc:
+                    raise FortressCLIError(f"Invalid --bundle-json payload: {exc}") from exc
+            if bundle_payload is None:
+                raise FortressCLIError("Provide --bundle-file/--bundle-json or use --json/--json-file")
+            payload = {
+                "bundle": bundle_payload,
+                "overwrite": args.overwrite,
+                "preserve_history": not args.no_history,
+            }
+        result = client.request("POST", "/recipes/import", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
     raise FortressCLIError("Unsupported recipes subcommand")
 
 
@@ -1267,6 +1304,20 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_seed.add_argument("--json", help="Inline JSON payload")
     recipes_seed.add_argument("--json-file", help="Path to JSON file used as payload")
     recipes_seed.set_defaults(func=recipes_command)
+    recipes_export = recipes_sub.add_parser("export", help="Export recipes as a bundle")
+    recipes_export.add_argument("--name", action="append", help="Recipe name to export (repeatable)")
+    recipes_export.add_argument("--no-history", action="store_true", help="Exclude change history from exported recipes")
+    recipes_export.add_argument("--json", help="Inline JSON payload")
+    recipes_export.add_argument("--json-file", help="Path to JSON file used as payload")
+    recipes_export.set_defaults(func=recipes_command)
+    recipes_import = recipes_sub.add_parser("import", help="Import recipes from a bundle")
+    recipes_import.add_argument("--bundle-file", help="Path to bundle JSON file from recipes export")
+    recipes_import.add_argument("--bundle-json", help="Inline bundle JSON string")
+    recipes_import.add_argument("--overwrite", action="store_true", help="Overwrite existing recipes with imported definitions")
+    recipes_import.add_argument("--no-history", action="store_true", help="Reset imported history to a single import entry")
+    recipes_import.add_argument("--json", help="Inline JSON payload")
+    recipes_import.add_argument("--json-file", help="Path to JSON file used as payload")
+    recipes_import.set_defaults(func=recipes_command)
 
     firewall_parser = subparsers.add_parser("firewall", help="Manage host firewall rules")
     firewall_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")

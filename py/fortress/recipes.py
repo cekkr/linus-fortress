@@ -1,5 +1,6 @@
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -7,6 +8,17 @@ from fortress.storage import load_json_dict, save_json
 
 RECIPE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+RECIPE_BUNDLE_FORMAT = "fortress.recipe-bundle.v1"
+RECIPE_VERSION_BUMPS = {"major", "minor", "patch", "none"}
+RECIPE_MUTABLE_FIELDS = {
+    "description",
+    "dependencies",
+    "packages",
+    "commands",
+    "parameters",
+    "required_parameters",
+}
 
 APACHE_CONFIG_CHECK = (
     "if command -v apache2ctl >/dev/null 2>&1; then apache2ctl -t;"
@@ -99,6 +111,8 @@ class RecipeUpdate(BaseModel):
     commands: Optional[List[str]] = None
     parameters: Optional[Dict[str, str]] = None
     required_parameters: Optional[List[str]] = None
+    version_bump: Optional[Literal["major", "minor", "patch", "none"]] = "patch"
+    change_note: Optional[str] = None
 
 
 class RecipeApplyRequest(BaseModel):
@@ -109,6 +123,393 @@ class RecipeApplyRequest(BaseModel):
     update_index: bool = True
     dry_run: bool = False
     probe_services: bool = True
+
+
+class RecipeExportRequest(BaseModel):
+    names: Optional[List[str]] = None
+    include_history: bool = True
+
+
+class RecipeImportRequest(BaseModel):
+    bundle: Dict[str, Any]
+    overwrite: bool = False
+    preserve_history: bool = True
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_iso_timestamp(value: Optional[Any], fallback: Optional[str] = None) -> str:
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw:
+            candidate = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+            try:
+                parsed = datetime.fromisoformat(candidate)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            except ValueError:
+                pass
+    return fallback or _utc_now()
+
+
+def _normalize_string_list(values: Any, unique: bool = False) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for item in values:
+        value = str(item).strip()
+        if not value:
+            continue
+        if unique:
+            if value in seen:
+                continue
+            seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _normalize_string_dict(values: Any) -> Dict[str, str]:
+    if not isinstance(values, dict):
+        return {}
+    normalized: Dict[str, str] = {}
+    for key, value in values.items():
+        key_str = str(key).strip()
+        if not key_str:
+            continue
+        normalized[key_str] = "" if value is None else str(value)
+    return normalized
+
+
+def normalize_semver(version: Optional[Any], default: str = "1.0.0") -> str:
+    candidate = default if version is None else str(version).strip()
+    if not candidate:
+        candidate = default
+    if not SEMVER_PATTERN.match(candidate):
+        raise ValueError("Version must follow semantic versioning (major.minor.patch)")
+    return candidate
+
+
+def bump_semver(version: str, bump: str = "patch") -> str:
+    base = normalize_semver(version)
+    operation = (bump or "patch").strip().lower()
+    if operation not in RECIPE_VERSION_BUMPS:
+        raise ValueError("version_bump must be one of: major, minor, patch, none")
+    major, minor, patch = [int(part) for part in base.split(".")]
+    if operation == "major":
+        return f"{major + 1}.0.0"
+    if operation == "minor":
+        return f"{major}.{minor + 1}.0"
+    if operation == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+    return base
+
+
+def build_recipe_history_entry(
+    action: str,
+    to_version: str,
+    from_version: Optional[str] = None,
+    changed_fields: Optional[List[str]] = None,
+    note: Optional[str] = None,
+    timestamp: Optional[str] = None,
+) -> Dict[str, Any]:
+    entry: Dict[str, Any] = {
+        "timestamp": _normalize_iso_timestamp(timestamp),
+        "action": str(action or "update").strip() or "update",
+        "to_version": normalize_semver(to_version),
+    }
+    if from_version:
+        try:
+            entry["from_version"] = normalize_semver(from_version)
+        except ValueError:
+            pass
+    normalized_fields = _normalize_string_list(changed_fields or [], unique=True)
+    if normalized_fields:
+        entry["changed_fields"] = sorted(normalized_fields)
+    if note is not None:
+        note_text = str(note).strip()
+        if note_text:
+            entry["note"] = note_text
+    return entry
+
+
+def normalize_recipe_history(history: Any) -> List[Dict[str, Any]]:
+    if not isinstance(history, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        to_version_raw = item.get("to_version") or item.get("version")
+        if to_version_raw is None:
+            continue
+        try:
+            to_version = normalize_semver(to_version_raw)
+        except ValueError:
+            continue
+        from_version = item.get("from_version")
+        from_version_normalized: Optional[str] = None
+        if from_version is not None:
+            try:
+                from_version_normalized = normalize_semver(from_version)
+            except ValueError:
+                from_version_normalized = None
+        entry: Dict[str, Any] = {
+            "timestamp": _normalize_iso_timestamp(item.get("timestamp")),
+            "action": str(item.get("action") or "update").strip() or "update",
+            "to_version": to_version,
+        }
+        if from_version_normalized:
+            entry["from_version"] = from_version_normalized
+        fields = _normalize_string_list(item.get("changed_fields"), unique=True)
+        if fields:
+            entry["changed_fields"] = sorted(fields)
+        note = item.get("note")
+        if isinstance(note, str) and note.strip():
+            entry["note"] = note.strip()
+        normalized.append(entry)
+    normalized.sort(key=lambda entry: entry.get("timestamp", ""))
+    return normalized
+
+
+def merge_recipe_histories(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    seen: set[Tuple[Any, ...]] = set()
+    for entry in existing + incoming:
+        key = (
+            entry.get("timestamp"),
+            entry.get("action"),
+            entry.get("from_version"),
+            entry.get("to_version"),
+            tuple(entry.get("changed_fields", [])),
+            entry.get("note"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(entry)
+    merged.sort(key=lambda item: item.get("timestamp", ""))
+    return merged
+
+
+def normalize_recipe_record(
+    name: str,
+    recipe: Dict[str, Any],
+    init_history_action: Optional[str] = None,
+    init_history_note: Optional[str] = None,
+) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {
+        "name": name,
+        "description": str(recipe.get("description")) if recipe.get("description") is not None else None,
+        "dependencies": _normalize_string_list(recipe.get("dependencies"), unique=True),
+        "packages": _normalize_string_list(recipe.get("packages")),
+        "commands": _normalize_string_list(recipe.get("commands")),
+        "parameters": _normalize_string_dict(recipe.get("parameters")),
+        "required_parameters": _normalize_string_list(recipe.get("required_parameters"), unique=True),
+    }
+    try:
+        version = normalize_semver(recipe.get("version"), default="1.0.0")
+    except ValueError:
+        version = "1.0.0"
+    created_at = _normalize_iso_timestamp(recipe.get("created_at"))
+    updated_at = _normalize_iso_timestamp(recipe.get("updated_at"), fallback=created_at)
+    history = normalize_recipe_history(recipe.get("history"))
+    if not history and init_history_action:
+        history = [build_recipe_history_entry(init_history_action, to_version=version, note=init_history_note, timestamp=updated_at)]
+    normalized["version"] = version
+    normalized["created_at"] = created_at
+    normalized["updated_at"] = updated_at
+    normalized["history"] = history
+    return normalized
+
+
+def create_recipe_record(
+    recipe: Dict[str, Any],
+    action: str = "create",
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    name = str(recipe.get("name", "")).strip()
+    validate_recipe_name(name)
+    return normalize_recipe_record(name, recipe, init_history_action=action, init_history_note=note)
+
+
+def update_recipe_record(
+    name: str,
+    existing: Dict[str, Any],
+    updates: Dict[str, Any],
+    version_bump: str = "patch",
+    action: str = "update",
+    note: Optional[str] = None,
+) -> Tuple[Dict[str, Any], List[str]]:
+    current = normalize_recipe_record(
+        name,
+        existing,
+        init_history_action="metadata_initialized",
+        init_history_note="Recipe metadata was backfilled",
+    )
+    candidate = dict(current)
+    changed_fields: List[str] = []
+    for field, value in updates.items():
+        if field not in RECIPE_MUTABLE_FIELDS:
+            continue
+        if field == "description":
+            normalized_value = str(value) if value is not None else None
+        elif field in {"dependencies", "required_parameters"}:
+            normalized_value = _normalize_string_list(value, unique=True)
+        elif field in {"packages", "commands"}:
+            normalized_value = _normalize_string_list(value)
+        elif field == "parameters":
+            normalized_value = _normalize_string_dict(value)
+        else:
+            normalized_value = value
+        if candidate.get(field) != normalized_value:
+            changed_fields.append(field)
+            candidate[field] = normalized_value
+    if not changed_fields and not note:
+        return candidate, []
+
+    previous_version = current["version"]
+    next_version = previous_version
+    if changed_fields:
+        next_version = bump_semver(previous_version, version_bump)
+    timestamp = _utc_now()
+    history = list(current.get("history", []))
+    history.append(
+        build_recipe_history_entry(
+            action=action,
+            from_version=previous_version,
+            to_version=next_version,
+            changed_fields=changed_fields,
+            note=note,
+            timestamp=timestamp,
+        )
+    )
+    candidate["version"] = next_version
+    candidate["created_at"] = current.get("created_at", timestamp)
+    candidate["updated_at"] = timestamp
+    candidate["history"] = history
+    return candidate, sorted(changed_fields)
+
+
+def strip_recipe_history(record: Dict[str, Any]) -> Dict[str, Any]:
+    stripped = dict(record)
+    stripped["history"] = []
+    return stripped
+
+
+def build_recipe_export_bundle(
+    recipes: Dict[str, Dict[str, Any]],
+    names: Optional[List[str]] = None,
+    include_history: bool = True,
+) -> Dict[str, Any]:
+    if names:
+        selected_names = sorted({str(name).strip() for name in names if str(name).strip()})
+    else:
+        selected_names = sorted(recipes.keys())
+    exported: List[Dict[str, Any]] = []
+    for name in selected_names:
+        record = recipes.get(name)
+        if not record:
+            raise ValueError(f"Recipe '{name}' not found")
+        normalized = normalize_recipe_record(
+            name,
+            record,
+            init_history_action="metadata_initialized",
+            init_history_note="Recipe metadata was backfilled",
+        )
+        if not include_history:
+            normalized = strip_recipe_history(normalized)
+        exported.append(normalized)
+    return {
+        "format": RECIPE_BUNDLE_FORMAT,
+        "exported_at": _utc_now(),
+        "count": len(exported),
+        "recipes": exported,
+    }
+
+
+def extract_recipe_bundle(bundle: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(bundle, dict):
+        raise ValueError("Bundle must be an object")
+    bundle_format = bundle.get("format")
+    if bundle_format and bundle_format != RECIPE_BUNDLE_FORMAT:
+        raise ValueError(f"Unsupported bundle format '{bundle_format}'")
+    raw_recipes = bundle.get("recipes")
+    records: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw_recipes, dict):
+        iterator = []
+        for recipe_name, record in raw_recipes.items():
+            if not isinstance(record, dict):
+                raise ValueError(f"Recipe '{recipe_name}' payload must be an object")
+            payload = dict(record)
+            payload.setdefault("name", str(recipe_name))
+            iterator.append(payload)
+    elif isinstance(raw_recipes, list):
+        iterator = []
+        for item in raw_recipes:
+            if not isinstance(item, dict):
+                raise ValueError("Recipe bundle entries must be objects")
+            iterator.append(dict(item))
+    else:
+        raise ValueError("Bundle must include 'recipes' as an array or object")
+
+    for item in iterator:
+        name = str(item.get("name", "")).strip()
+        validate_recipe_name(name)
+        records[name] = item
+    return records
+
+
+def prepare_import_recipe_record(
+    name: str,
+    incoming: Dict[str, Any],
+    existing: Optional[Dict[str, Any]] = None,
+    preserve_history: bool = True,
+) -> Dict[str, Any]:
+    normalized_incoming = normalize_recipe_record(
+        name,
+        incoming,
+        init_history_action="import",
+        init_history_note="Imported from recipe bundle",
+    )
+    now = _utc_now()
+    history: List[Dict[str, Any]]
+    if existing:
+        normalized_existing = normalize_recipe_record(
+            name,
+            existing,
+            init_history_action="metadata_initialized",
+            init_history_note="Recipe metadata was backfilled",
+        )
+        base_history = list(normalized_existing.get("history", []))
+        incoming_history = list(normalized_incoming.get("history", [])) if preserve_history else []
+        history = merge_recipe_histories(base_history, incoming_history)
+        from_version = normalized_existing.get("version")
+        created_at = normalized_existing.get("created_at", now)
+        action = "import_overwrite"
+    else:
+        history = list(normalized_incoming.get("history", [])) if preserve_history else []
+        from_version = None
+        created_at = normalized_incoming.get("created_at", now)
+        action = "import"
+    history.append(
+        build_recipe_history_entry(
+            action=action,
+            from_version=from_version,
+            to_version=normalized_incoming.get("version", "1.0.0"),
+            note="Imported from recipe bundle",
+            timestamp=now,
+        )
+    )
+    normalized_incoming["created_at"] = created_at
+    normalized_incoming["updated_at"] = now
+    normalized_incoming["history"] = history
+    if not preserve_history:
+        normalized_incoming["history"] = history[-1:]
+    return normalized_incoming
 
 
 def collect_lamp_health_targets(recipe_names: List[str]) -> Dict[str, Any]:

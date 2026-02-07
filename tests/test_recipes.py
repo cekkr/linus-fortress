@@ -5,9 +5,16 @@ import unittest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "py")))
 
 from fortress.recipes import (
+    RECIPE_BUNDLE_FORMAT,
     build_recipe_execution,
+    build_recipe_export_bundle,
+    bump_semver,
     collect_lamp_health_targets,
+    create_recipe_record,
+    extract_recipe_bundle,
+    prepare_import_recipe_record,
     resolve_recipe_plan,
+    update_recipe_record,
     validate_recipe_name,
 )
 
@@ -127,6 +134,88 @@ class RecipeHealthTargetTests(unittest.TestCase):
         self.assertFalse(targets["detected"])
         self.assertEqual(targets["service_keys"], [])
         self.assertEqual(targets["config_checks"], [])
+
+
+class RecipeLifecycleTests(unittest.TestCase):
+    def test_bump_semver_variants(self) -> None:
+        self.assertEqual(bump_semver("1.2.3", "patch"), "1.2.4")
+        self.assertEqual(bump_semver("1.2.3", "minor"), "1.3.0")
+        self.assertEqual(bump_semver("1.2.3", "major"), "2.0.0")
+        self.assertEqual(bump_semver("1.2.3", "none"), "1.2.3")
+        with self.assertRaises(ValueError):
+            bump_semver("1.2.3", "invalid")
+
+    def test_create_recipe_record_initializes_metadata(self) -> None:
+        record = create_recipe_record(
+            {
+                "name": "app-bootstrap",
+                "dependencies": ["base"],
+                "commands": ["echo ok"],
+            }
+        )
+        self.assertEqual(record["name"], "app-bootstrap")
+        self.assertEqual(record["version"], "1.0.0")
+        self.assertTrue(record["created_at"])
+        self.assertTrue(record["updated_at"])
+        self.assertEqual(len(record["history"]), 1)
+        self.assertEqual(record["history"][0]["action"], "create")
+        self.assertEqual(record["history"][0]["to_version"], "1.0.0")
+
+    def test_update_recipe_record_bumps_version_and_tracks_fields(self) -> None:
+        base = create_recipe_record({"name": "base", "packages": ["python3"]})
+        updated, changed_fields = update_recipe_record(
+            "base",
+            base,
+            {"packages": ["python3", "curl"]},
+            version_bump="minor",
+            note="Add curl utility",
+        )
+        self.assertEqual(changed_fields, ["packages"])
+        self.assertEqual(updated["version"], "1.1.0")
+        self.assertEqual(len(updated["history"]), 2)
+        last = updated["history"][-1]
+        self.assertEqual(last["from_version"], "1.0.0")
+        self.assertEqual(last["to_version"], "1.1.0")
+        self.assertEqual(last["changed_fields"], ["packages"])
+        self.assertEqual(last["note"], "Add curl utility")
+
+    def test_build_recipe_export_bundle_subset_without_history(self) -> None:
+        recipes = {
+            "base": create_recipe_record({"name": "base", "packages": ["python3"]}),
+            "app": create_recipe_record({"name": "app", "dependencies": ["base"]}),
+        }
+        bundle = build_recipe_export_bundle(recipes, names=["base"], include_history=False)
+        self.assertEqual(bundle["format"], RECIPE_BUNDLE_FORMAT)
+        self.assertEqual(bundle["count"], 1)
+        self.assertEqual(bundle["recipes"][0]["name"], "base")
+        self.assertEqual(bundle["recipes"][0]["history"], [])
+
+    def test_extract_recipe_bundle_and_import_record(self) -> None:
+        bundle = {
+            "format": RECIPE_BUNDLE_FORMAT,
+            "recipes": [
+                {
+                    "name": "app",
+                    "dependencies": ["base"],
+                    "commands": ["echo app"],
+                    "version": "2.3.4",
+                }
+            ],
+        }
+        extracted = extract_recipe_bundle(bundle)
+        self.assertIn("app", extracted)
+        imported = prepare_import_recipe_record("app", extracted["app"], preserve_history=False)
+        self.assertEqual(imported["version"], "2.3.4")
+        self.assertEqual(len(imported["history"]), 1)
+        self.assertEqual(imported["history"][0]["action"], "import")
+
+    def test_prepare_import_recipe_record_overwrite_keeps_created_at(self) -> None:
+        existing = create_recipe_record({"name": "app", "commands": ["echo old"]})
+        incoming = {"name": "app", "commands": ["echo new"], "version": "1.5.0"}
+        merged = prepare_import_recipe_record("app", incoming, existing=existing, preserve_history=True)
+        self.assertEqual(merged["created_at"], existing["created_at"])
+        self.assertEqual(merged["version"], "1.5.0")
+        self.assertEqual(merged["history"][-1]["action"], "import_overwrite")
 
 
 if __name__ == "__main__":

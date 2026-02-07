@@ -49,10 +49,18 @@ from fortress.recipes import (
     RecipeDefinition,
     RecipeUpdate,
     RecipeApplyRequest,
+    RecipeExportRequest,
+    RecipeImportRequest,
+    build_recipe_export_bundle,
+    create_recipe_record,
     collect_lamp_health_targets,
+    extract_recipe_bundle,
     load_recipes,
+    normalize_recipe_record,
     save_recipes,
+    prepare_import_recipe_record,
     resolve_recipe_plan,
+    update_recipe_record,
     build_recipe_execution,
     validate_recipe_name,
     normalize_parameters,
@@ -1367,7 +1375,22 @@ def list_host_states(name: str, x_api_key: Optional[str] = Header(default=None),
 # --- RECIPE AUTOMATION ---
 
 def _load_recipe_store() -> Dict[str, Dict[str, Any]]:
-    return load_recipes(RECIPES_DB)
+    recipes = load_recipes(RECIPES_DB)
+    normalized: Dict[str, Dict[str, Any]] = {}
+    changed = False
+    for name, record in recipes.items():
+        normalized_record = normalize_recipe_record(
+            name,
+            record,
+            init_history_action="metadata_initialized",
+            init_history_note="Recipe metadata was backfilled",
+        )
+        normalized[name] = normalized_record
+        if normalized_record != record:
+            changed = True
+    if changed:
+        save_recipes(RECIPES_DB, normalized)
+    return normalized
 
 def _ensure_recipe_dependencies(recipes: Dict[str, Dict[str, Any]], dependencies: List[str], recipe_name: str):
     for dep in dependencies:
@@ -1375,6 +1398,18 @@ def _ensure_recipe_dependencies(recipes: Dict[str, Dict[str, Any]], dependencies
             raise HTTPException(status_code=400, detail="Recipe cannot depend on itself")
         if dep not in recipes:
             raise HTTPException(status_code=400, detail=f"Missing recipe dependency: {dep}")
+
+def _validate_recipe_graph(recipes: Dict[str, Dict[str, Any]], targets: Optional[List[str]] = None) -> None:
+    recipe_names = sorted(set(targets or recipes.keys()))
+    for recipe_name in recipe_names:
+        recipe = recipes.get(recipe_name)
+        if not recipe:
+            continue
+        _ensure_recipe_dependencies(recipes, recipe.get("dependencies", []), recipe_name)
+        try:
+            resolve_recipe_plan(recipe_name, recipes, include_dependencies=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
 FILEMANAGER_PHP = (
     r'$file=getenv("FM_FILE"); $user=getenv("FM_USER"); $pass=getenv("FM_PASS"); '
@@ -1610,6 +1645,9 @@ def list_recipes(x_api_key: Optional[str] = Header(default=None), x_user_token: 
             "packages_count": len(recipe.get("packages", [])),
             "commands_count": len(recipe.get("commands", [])),
             "parameter_keys": sorted(recipe.get("parameters", {}).keys()),
+            "version": recipe.get("version", "1.0.0"),
+            "history_count": len(recipe.get("history", [])),
+            "updated_at": recipe.get("updated_at"),
         })
     audit_api("recipes_list", details={"count": len(response)})
     return {"recipes": response}
@@ -1635,21 +1673,29 @@ def create_recipe(recipe: RecipeDefinition, x_api_key: Optional[str] = Header(de
     recipes = _load_recipe_store()
     if recipe.name in recipes:
         raise HTTPException(status_code=409, detail="Recipe already exists")
-    _ensure_recipe_dependencies(recipes, recipe.dependencies, recipe.name)
-    recipes[recipe.name] = recipe.dict()
+    try:
+        recipe_record = create_recipe_record(recipe.dict(), action="create")
+        _ensure_recipe_dependencies(recipes, recipe_record.get("dependencies", []), recipe.name)
+        staged = dict(recipes)
+        staged[recipe.name] = recipe_record
+        _validate_recipe_graph(staged, targets=[recipe.name])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    recipes[recipe.name] = recipe_record
     save_recipes(RECIPES_DB, recipes)
     audit_api(
         "recipes_create",
         target=recipe.name,
         details={
-            "dependencies": recipe.dependencies,
-            "packages": len(recipe.packages),
-            "commands": len(recipe.commands),
-            "parameter_keys": sorted(recipe.parameters.keys()),
-            "required_parameters": recipe.required_parameters,
+            "dependencies": recipe_record.get("dependencies", []),
+            "packages": len(recipe_record.get("packages", [])),
+            "commands": len(recipe_record.get("commands", [])),
+            "parameter_keys": sorted(recipe_record.get("parameters", {}).keys()),
+            "required_parameters": recipe_record.get("required_parameters", []),
+            "version": recipe_record.get("version"),
         },
     )
-    return {"message": f"Recipe {recipe.name} created", "recipe": recipes[recipe.name]}
+    return {"message": f"Recipe {recipe.name} created", "recipe": recipe_record}
 
 @app.post("/recipes/seed")
 def seed_recipes(payload: RecipeSeedRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
@@ -1659,16 +1705,107 @@ def seed_recipes(payload: RecipeSeedRequest, x_api_key: Optional[str] = Header(d
         raise HTTPException(status_code=400, detail="Unsupported bundle")
     recipes = _load_recipe_store()
     seeded: List[str] = []
+    overwritten: List[str] = []
     skipped: List[str] = []
     for name, definition in LAMP_RECIPE_BUNDLE.items():
         if name in recipes and not payload.overwrite:
             skipped.append(name)
             continue
-        recipes[name] = dict(definition)
+        if name in recipes:
+            updated, _changed_fields = update_recipe_record(
+                name,
+                recipes[name],
+                dict(definition),
+                version_bump="minor",
+                action="seed_overwrite",
+                note="Curated LAMP bundle overwrite",
+            )
+            overwritten.append(name)
+            recipes[name] = updated
+            continue
+        recipes[name] = create_recipe_record(dict(definition), action="seed", note="Curated LAMP bundle seed")
         seeded.append(name)
+    _validate_recipe_graph(recipes, targets=list(LAMP_RECIPE_BUNDLE.keys()))
     save_recipes(RECIPES_DB, recipes)
-    audit_api("recipes_seed", details={"bundle": bundle, "seeded": seeded, "skipped": skipped})
-    return {"message": "Recipes seeded", "recipes": seeded, "skipped": skipped}
+    audit_api("recipes_seed", details={"bundle": bundle, "seeded": seeded, "overwritten": overwritten, "skipped": skipped})
+    return {"message": "Recipes seeded", "recipes": seeded, "overwritten": overwritten, "skipped": skipped}
+
+@app.post("/recipes/export")
+def export_recipes(payload: RecipeExportRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_export", "recipes_manage", x_api_key, x_user_token)
+    recipes = _load_recipe_store()
+    try:
+        bundle = build_recipe_export_bundle(
+            recipes,
+            names=payload.names,
+            include_history=payload.include_history,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail:
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+    exported_names = [record.get("name") for record in bundle.get("recipes", []) if record.get("name")]
+    audit_api(
+        "recipes_export",
+        details={
+            "count": bundle.get("count", len(exported_names)),
+            "recipes": exported_names,
+            "include_history": payload.include_history,
+        },
+    )
+    return {"bundle": bundle, "count": bundle.get("count", len(exported_names))}
+
+@app.post("/recipes/import")
+def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    authorize("recipes_import", "recipes_manage", x_api_key, x_user_token)
+    recipes = _load_recipe_store()
+    try:
+        bundle_records = extract_recipe_bundle(payload.bundle)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    staged = dict(recipes)
+    imported: List[str] = []
+    overwritten: List[str] = []
+    skipped: List[str] = []
+    for name in sorted(bundle_records.keys()):
+        existing = staged.get(name)
+        if existing and not payload.overwrite:
+            skipped.append(name)
+            continue
+        try:
+            staged[name] = prepare_import_recipe_record(
+                name,
+                bundle_records[name],
+                existing=existing,
+                preserve_history=payload.preserve_history,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid recipe '{name}': {exc}")
+        if existing:
+            overwritten.append(name)
+        else:
+            imported.append(name)
+    _validate_recipe_graph(staged, targets=imported + overwritten)
+    if imported or overwritten:
+        save_recipes(RECIPES_DB, staged)
+    audit_api(
+        "recipes_import",
+        details={
+            "imported": imported,
+            "overwritten": overwritten,
+            "skipped": skipped,
+            "preserve_history": payload.preserve_history,
+            "overwrite": payload.overwrite,
+        },
+    )
+    return {
+        "message": "Recipes imported",
+        "imported": imported,
+        "overwritten": overwritten,
+        "skipped": skipped,
+        "total_changed": len(imported) + len(overwritten),
+    }
 
 @app.put("/recipes/{name}")
 def update_recipe(name: str, payload: RecipeUpdate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
@@ -1678,21 +1815,39 @@ def update_recipe(name: str, payload: RecipeUpdate, x_api_key: Optional[str] = H
         audit_api("recipes_update", target=name, details={"error": "not found"}, status="error")
         raise HTTPException(status_code=404, detail="Recipe not found")
     update_data = payload.dict(exclude_unset=True, exclude_none=True)
+    version_bump = update_data.pop("version_bump", "patch")
+    change_note = update_data.pop("change_note", None)
     if "dependencies" in update_data:
         _ensure_recipe_dependencies(recipes, update_data["dependencies"], name)
-    updated = dict(recipes[name])
-    updated.update(update_data)
-    updated["name"] = name
-    staged = dict(recipes)
-    staged[name] = updated
     try:
-        resolve_recipe_plan(name, staged, include_dependencies=True)
+        updated, changed_fields = update_recipe_record(
+            name,
+            recipes[name],
+            update_data,
+            version_bump=version_bump,
+            action="update",
+            note=change_note,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    staged = dict(recipes)
+    staged[name] = updated
+    _validate_recipe_graph(staged, targets=[name])
     recipes[name] = updated
-    save_recipes(RECIPES_DB, recipes)
-    audit_api("recipes_update", target=name, details={"fields": sorted(update_data.keys())})
-    return {"message": f"Recipe {name} updated", "recipe": recipes[name]}
+    if changed_fields or change_note:
+        save_recipes(RECIPES_DB, recipes)
+    audit_api(
+        "recipes_update",
+        target=name,
+        details={
+            "fields": changed_fields,
+            "version_bump": version_bump,
+            "version": updated.get("version"),
+            "change_note": bool(change_note),
+        },
+    )
+    message = f"Recipe {name} updated" if changed_fields or change_note else f"Recipe {name} unchanged"
+    return {"message": message, "recipe": recipes[name]}
 
 @app.delete("/recipes/{name}")
 def delete_recipe(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):

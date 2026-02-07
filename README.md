@@ -722,7 +722,7 @@ Body:
 Recipes are "nix-like" automation blueprints stored in `/var/lib/fortress/recipes.json`. Each recipe can install packages, run commands, and depend on other recipes. Command strings and package names support `{{param}}` placeholders resolved from the supplied parameters.
 
 #### `GET /recipes` (permission `recipes_manage`)
-- Lists available recipes with dependency counts and parameter keys.
+- Lists available recipes with dependency counts and parameter keys, plus lifecycle metadata (`version`, `history_count`, `updated_at`).
 
 #### `POST /recipes` (permission `recipes_manage`)
 Body:
@@ -736,6 +736,7 @@ Body:
   "required_parameters": []
 }
 ```
+- New recipes are initialized with semantic version `1.0.0`, timestamps, and a change-history entry.
 
 #### `POST /recipes/seed` (permission `recipes_manage`)
 Body:
@@ -743,9 +744,36 @@ Body:
 {"bundle": "lamp", "overwrite": false}
 ```
 - Seeds curated recipe bundles (for example, LAMP stack recipes) into `/var/lib/fortress/recipes.json`.
+- With `overwrite=true`, existing recipes are updated with semantic version bumps and history entries.
+
+#### `POST /recipes/export` (permission `recipes_manage`)
+Body:
+```json
+{"names": ["lamp-apache"], "include_history": true}
+```
+- Exports recipes to a portable bundle payload (`format: fortress.recipe-bundle.v1`) for backup/transfer.
+- Omitting `names` exports all recipes.
+
+#### `POST /recipes/import` (permission `recipes_manage`)
+Body:
+```json
+{
+  "bundle": {
+    "format": "fortress.recipe-bundle.v1",
+    "recipes": [
+      {"name": "base-python", "packages": ["python3"], "version": "1.0.0"}
+    ]
+  },
+  "overwrite": false,
+  "preserve_history": true
+}
+```
+- Imports recipe bundles with dependency/cycle validation.
+- `overwrite=true` replaces existing definitions; `preserve_history=false` resets imported history to a single import event.
 
 #### `PUT /recipes/{name}` (permission `recipes_manage`)
 - Updates the recipe fields you provide; send empty arrays to clear lists.
+- Optional payload fields: `version_bump` (`major|minor|patch|none`, default `patch`) and `change_note` for history entries.
 
 #### `DELETE /recipes/{name}` (permission `recipes_manage`)
 - Removes a recipe unless other recipes still depend on it.
@@ -858,7 +886,7 @@ Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`,
    - `python fortress-cli.py backup list|trigger|download|decrypt ...`
    - `python fortress-cli.py api-users create alice --permissions manage_containers read_status`
    - `python fortress-cli.py recipes list|create|apply ...`
-   - `python fortress-cli.py recipes seed|plan ...`
+   - `python fortress-cli.py recipes seed|plan|export|import ...`
    - `python fortress-cli.py firewall status|rules|apply|rollback|ddos ...`
    - `python fortress-cli.py sites list|create|deploy|backup|rollback|logs|health|restart ...`
    - `python fortress-cli.py migrations status|plan|apply|rollback|ledger ...`
@@ -871,6 +899,8 @@ Recipe CLI examples:
 - LAMP PHP version: `python fortress-cli.py recipes apply lamp-apache --container web01 --param php_version=8.2`
 - LAMP params: `python fortress-cli.py recipes apply lamp-mysql --container web01 --param db_name=app_db --param db_user=app_user --param db_password=strong-pass --param db_root_password=admin-pass`
 - Dry-run plan: `python fortress-cli.py recipes plan app-bootstrap --container web01`
+- Export recipes: `python fortress-cli.py recipes export --name lamp-stack`
+- Import recipes: `python fortress-cli.py recipes import --bundle-file ./recipes-bundle.json --overwrite`
 
 By default TLS certificates are verified; pass `--insecure` during `setup` only if you are pointing at a self-signed lab server. Use the CLI’s `info` command to inspect the stored metadata without revealing secrets.
 
