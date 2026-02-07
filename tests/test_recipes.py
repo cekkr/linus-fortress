@@ -206,8 +206,23 @@ class RecipeLifecycleTests(unittest.TestCase):
         bundle = build_recipe_export_bundle(recipes, signing_key="bundle-secret")
         verify = verify_recipe_bundle(bundle, signing_key="bundle-secret", require_signature=True)
         self.assertTrue(verify["signed"])
+        self.assertEqual(verify["verified_with_index"], 0)
+        self.assertTrue(verify["verified_with_primary"])
         with self.assertRaises(ValueError):
             verify_recipe_bundle(bundle, signing_key="wrong-key", require_signature=True)
+
+    def test_verify_recipe_bundle_signature_with_rotated_keys(self) -> None:
+        recipes = {"base": create_recipe_record({"name": "base", "packages": ["python3"]})}
+        bundle = build_recipe_export_bundle(recipes, signing_key="previous-key")
+        verify = verify_recipe_bundle(
+            bundle,
+            signing_key="active-key",
+            signing_keys=["previous-key"],
+            require_signature=True,
+        )
+        self.assertTrue(verify["signed"])
+        self.assertEqual(verify["verified_with_index"], 1)
+        self.assertFalse(verify["verified_with_primary"])
 
     def test_extract_recipe_bundle_and_import_record(self) -> None:
         bundle = {

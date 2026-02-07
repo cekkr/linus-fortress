@@ -426,6 +426,23 @@ def _bundle_signature(checksum: str, signing_key: str) -> str:
     return hmac.new(signing_key.encode(), checksum.encode(), hashlib.sha256).hexdigest()
 
 
+def _normalize_signing_keys(signing_key: Optional[str], signing_keys: Optional[List[str]]) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    if signing_key:
+        key = str(signing_key).strip()
+        if key:
+            normalized.append(key)
+            seen.add(key)
+    for candidate in signing_keys or []:
+        key = str(candidate).strip()
+        if not key or key in seen:
+            continue
+        normalized.append(key)
+        seen.add(key)
+    return normalized
+
+
 def build_recipe_export_bundle(
     recipes: Dict[str, Dict[str, Any]],
     names: Optional[List[str]] = None,
@@ -467,6 +484,7 @@ def build_recipe_export_bundle(
 def verify_recipe_bundle(
     bundle: Dict[str, Any],
     signing_key: Optional[str] = None,
+    signing_keys: Optional[List[str]] = None,
     require_signature: bool = True,
 ) -> Dict[str, Any]:
     if not isinstance(bundle, dict):
@@ -488,12 +506,24 @@ def verify_recipe_bundle(
     if require_signature and not signature:
         raise ValueError("Bundle signature required")
     if signature:
-        if not signing_key:
+        candidates = _normalize_signing_keys(signing_key, signing_keys)
+        if not candidates:
             raise ValueError("Recipe bundle signing key is not configured on this server")
-        expected_signature = _bundle_signature(expected_checksum, signing_key)
-        if not hmac.compare_digest(signature, expected_signature):
+        matched_index = None
+        for index, candidate in enumerate(candidates):
+            expected_signature = _bundle_signature(expected_checksum, candidate)
+            if hmac.compare_digest(signature, expected_signature):
+                matched_index = index
+                break
+        if matched_index is None:
             raise ValueError("Bundle signature verification failed")
-    return {"checksum": expected_checksum, "signed": bool(signature)}
+        return {
+            "checksum": expected_checksum,
+            "signed": True,
+            "verified_with_index": matched_index,
+            "verified_with_primary": matched_index == 0,
+        }
+    return {"checksum": expected_checksum, "signed": False}
 
 
 def extract_recipe_bundle(bundle: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:

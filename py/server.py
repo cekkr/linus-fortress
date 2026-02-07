@@ -157,6 +157,21 @@ from fortress.hosts import (
     probe_host,
 )
 
+
+def _parse_signing_key_list(value: Optional[str]) -> List[str]:
+    if value is None:
+        return []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for chunk in value.split(","):
+        key = chunk.strip()
+        if not key or key in seen:
+            continue
+        normalized.append(key)
+        seen.add(key)
+    return normalized
+
+
 # --- CONFIGURATION ---
 # In production, load these from environment variables
 API_SECRET_KEY = os.environ.get("FORTRESS_API_KEY", os.environ.get("API_SECRET_KEY", DEFAULT_API_SECRET))
@@ -185,6 +200,7 @@ FIREWALL_ROLLBACK_DIR = os.path.join(FIREWALL_STATE_DIR, "rollbacks")
 FIREWALL_DDOS_POLICY_PATH = os.path.join(FIREWALL_STATE_DIR, "ddos_policy.json")
 POPULAR_IMAGES_DB = "/var/lib/fortress/container_images.json"
 RECIPE_BUNDLE_SIGNING_KEY = os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEY")
+RECIPE_BUNDLE_SIGNING_KEYS = _parse_signing_key_list(os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS"))
 
 # Logging setup
 LOG_PATH = os.environ.get("FORTRESS_LOG_PATH", "/var/log/fortress.log")
@@ -200,6 +216,12 @@ if MASTER_API_KEY is None:
     logging.warning("Master API key disabled or defaulted; only delegated tokens accepted.")
 if RECIPE_BUNDLE_SIGNING_KEY is not None:
     RECIPE_BUNDLE_SIGNING_KEY = RECIPE_BUNDLE_SIGNING_KEY.strip() or None
+if RECIPE_BUNDLE_SIGNING_KEY:
+    RECIPE_BUNDLE_SIGNING_KEYS = [RECIPE_BUNDLE_SIGNING_KEY] + [
+        key for key in RECIPE_BUNDLE_SIGNING_KEYS if key != RECIPE_BUNDLE_SIGNING_KEY
+    ]
+elif RECIPE_BUNDLE_SIGNING_KEYS:
+    RECIPE_BUNDLE_SIGNING_KEY = RECIPE_BUNDLE_SIGNING_KEYS[0]
 
 app = FastAPI(title="VPS Fortress Manager")
 REQUEST_CONTEXT = ContextVar("REQUEST_CONTEXT", default={"actor": "system", "endpoint": "internal"})
@@ -1778,6 +1800,7 @@ def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Head
         verification = verify_recipe_bundle(
             payload.bundle,
             signing_key=RECIPE_BUNDLE_SIGNING_KEY,
+            signing_keys=RECIPE_BUNDLE_SIGNING_KEYS,
             require_signature=payload.require_signature,
         )
         bundle_records = extract_recipe_bundle(payload.bundle)
@@ -1818,6 +1841,8 @@ def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Head
             "require_signature": payload.require_signature,
             "overwrite": payload.overwrite,
             "signed": verification.get("signed", False),
+            "verified_with_primary": verification.get("verified_with_primary"),
+            "verified_with_index": verification.get("verified_with_index"),
         },
     )
     return {

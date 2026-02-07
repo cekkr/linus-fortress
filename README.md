@@ -753,7 +753,7 @@ Body:
 ```
 - Exports recipes to a portable bundle payload (`format: fortress.recipe-bundle.v1`) for backup/transfer.
 - Omitting `names` exports all recipes.
-- Bundles include `checksum` by default; set `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` to enable HMAC signatures (and keep `include_signature=true`).
+- Bundles include `checksum` by default; set `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` (active key) to enable HMAC signatures, and optionally `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS` (comma-separated previous keys) for rotation-aware verification.
 
 #### `POST /recipes/import` (permission `recipes_manage`)
 Body:
@@ -775,6 +775,7 @@ Body:
 - Imports recipe bundles with dependency/cycle validation.
 - `overwrite=true` replaces existing definitions; `preserve_history=false` resets imported history to a single import event.
 - `require_signature=true` enforces signature verification; use `false` only for trusted unsigned bundles.
+- Signature verification checks the active key first, then any keys provided in `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS`.
 
 #### `PUT /recipes/{name}` (permission `recipes_manage`)
 - Updates the recipe fields you provide; send empty arrays to clear lists.
@@ -875,7 +876,7 @@ Body:
 - Migration schemas default to `./schemas`; override with `FORTRESS_SCHEMA_DIR` if you relocate them.
 - Site backups default to `/var/lib/fortress/site_backups`; ensure the service user can read/write.
 - Configure secrets via env vars (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`) instead of hardcoding defaults.
-- Configure `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` to sign recipe export bundles and enforce signature verification on imports.
+- Configure `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` as the active signing key for recipe exports; optional `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS` supports signature verification during key rotation.
 - Optional runtime paths: `FORTRESS_LOG_PATH` overrides the API log file target and `FORTRESS_COMMAND_LOG_DB` overrides the SQLite audit DB path.
 - ACME HTTP-01 challenges are served from `/var/lib/fortress/acme-challenges`; override via `FORTRESS_ACME_CHALLENGE_DIR`.
 - Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), manage nginx reloads, invoke `certbot`, and run package commands (`apt-get`, `dnf`, or `yum`).
@@ -917,6 +918,7 @@ By default TLS certificates are verified; pass `--insecure` during `setup` only 
 
 - `python -m unittest discover -s tests`
 - `python -m unittest discover -s tests -p 'test_permissions_matrix.py'` for route-level permission matrix checks.
+- Permission matrix coverage includes recipes, system upgrade, routing, sites, and firewall endpoint sequences.
 
 ## Roadmap
 

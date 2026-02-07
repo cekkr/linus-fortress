@@ -27,15 +27,17 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add unit tests for audit logging behavior (mock LXC subprocess calls).
 
 ## Path 4: Integration tests and permission matrix (mid term)
-- Progress: Add route-level integration tests for recipes/system-upgrade flows with delegated-token permission matrix coverage.
-- Progress: Validate container-scope enforcement during recipe applies (`allowed_containers` checks).
-- Next: Expand integration coverage to routing/sites/firewall endpoint sequences with fixture-backed state setup.
+- Done: Add route-level integration tests for recipes/system-upgrade flows with delegated-token permission matrix coverage.
+- Done: Validate container-scope enforcement during recipe applies (`allowed_containers` checks).
+- Done: Expand integration coverage to routing/sites/firewall endpoint sequences with fixture-backed state setup.
+- Next: Add token-expiry/invalid-token integration cases and 401-vs-403 assertions across the permission matrix.
 
 ## Path 5: Recipes lifecycle management (mid term)
 - Done: Add export/import bundles for recipes.
 - Done: Track semantic versions and change history for recipe updates.
 - Done: Add signed/verified recipe bundles (checksum + optional HMAC signature) before import.
-- Next: Add key rotation support (active + previous signing keys) for bundle signature verification.
+- Done: Add key rotation support (active + previous signing keys) for bundle signature verification.
+- Next: Add optional key identifiers in bundle metadata to improve rotation observability during verification.
 
 ## Path 6: External server cloning and migration (mid term)
 - Add a secure "clone external server" workflow using FTP/SFTP and database credentials (MySQL, MongoDB, etc.).
