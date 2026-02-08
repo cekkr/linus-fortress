@@ -57,6 +57,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Wire Routing, Recipes, Host Packages, Hosts, Firewall, Monitoring, and VM list views with live API calls and wizards.
 - Done: Expand container actions with start/stop/restart, snapshot create/list/restore/delete, exec/logs, and port exposure flows (user/group management still pending).
 - Done: Move wizards from the right sidebar into a full-stage horizontal slide flow, with the sidebar reused for current-operation context.
+- Done: Add a live image catalog panel on the Containers page with remote filters and direct LXD availability refresh.
 - Implement step-by-step wizards for container creation, routing, recipe apply, and backup/restore.
 - Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.
 - Add a settings panel to manage popular LXD image presets, show remote availability, and refresh latest LTS aliases.

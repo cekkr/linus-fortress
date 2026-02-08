@@ -57,6 +57,8 @@ const state = {
     latest: null,
     loading: false,
     error: null,
+    remoteFilter: "all",
+    hideUnavailable: false,
   },
   wizard: {
     active: false,
@@ -205,6 +207,7 @@ const elements = {
   layout: document.getElementById("layout"),
   tree: document.getElementById("tree"),
   grid: document.getElementById("app-grid"),
+  imageCatalog: document.getElementById("image-catalog"),
   wizardStage: document.getElementById("wizard-stage"),
   preview: document.getElementById("preview"),
   wizard: document.getElementById("wizard"),
@@ -858,6 +861,128 @@ function renderCard(node, index) {
 function renderGrid() {
   const children = getChildren(state.selectedId || state.rootId);
   elements.grid.innerHTML = children.map(renderCard).join("");
+}
+
+function shouldShowImageCatalog() {
+  const selected = state.selectedId || state.rootId;
+  return selected === "containers";
+}
+
+function filteredImageEntries() {
+  const entries = Array.isArray(state.images.popular) ? state.images.popular.slice() : [];
+  const remoteFilter = state.images.remoteFilter || "all";
+  const hideUnavailable = Boolean(state.images.hideUnavailable);
+  return entries
+    .filter((item) => {
+      if (!item || typeof item !== "object") {
+        return false;
+      }
+      if (remoteFilter !== "all" && (item.remote || "") !== remoteFilter) {
+        return false;
+      }
+      if (hideUnavailable && item.available === false) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const aAvailable = a.available === false ? 1 : 0;
+      const bAvailable = b.available === false ? 1 : 0;
+      if (aAvailable !== bAvailable) {
+        return aAvailable - bAvailable;
+      }
+      const aLabel = String(a.label || a.name || "").toLowerCase();
+      const bLabel = String(b.label || b.name || "").toLowerCase();
+      return aLabel.localeCompare(bLabel);
+    });
+}
+
+function renderImageCatalog() {
+  if (!elements.imageCatalog) {
+    return;
+  }
+  const shouldShow = shouldShowImageCatalog() && !state.wizard.active;
+  if (!shouldShow) {
+    elements.imageCatalog.hidden = true;
+    elements.imageCatalog.innerHTML = "";
+    return;
+  }
+  elements.imageCatalog.hidden = false;
+  const allEntries = Array.isArray(state.images.popular) ? state.images.popular : [];
+  const discoveredRemotes = allEntries
+    .map((item) => (item && item.remote ? String(item.remote) : ""))
+    .filter(Boolean);
+  const remotes = ["all", ...new Set([...(state.images.remotes || []), ...discoveredRemotes])];
+  if (!remotes.includes(state.images.remoteFilter)) {
+    state.images.remoteFilter = "all";
+  }
+  const filtered = filteredImageEntries();
+  const remoteButtons = remotes
+    .map((remote) => {
+      const active = remote === state.images.remoteFilter ? "active" : "";
+      const label = remote === "all" ? "All Remotes" : remote;
+      return `<button class="catalog-filter ${active}" data-image-remote="${escapeHtml(remote)}">${escapeHtml(label)}</button>`;
+    })
+    .join("");
+
+  const loadingMarkup = state.images.loading ? `<span class="pill">refreshing...</span>` : "";
+  const latestLtsMarkup =
+    state.images.latest && state.images.latest.ubuntu_lts
+      ? `<span class="pill">${escapeHtml(state.images.latest.ubuntu_lts)}</span>`
+      : "";
+  const errorMarkup = state.images.error ? `<div class="event-item error">${escapeHtml(state.images.error)}</div>` : "";
+  const listMarkup =
+    filtered.length === 0
+      ? `<div class="event-item">${state.images.loading ? "Checking live image catalog..." : "No images match this filter."}</div>`
+      : `
+      <div class="catalog-grid">
+        ${filtered
+          .map((item) => {
+            const available = item.available !== false;
+            const availability = available
+              ? `<span class="pill running">available</span>`
+              : `<span class="pill danger">unavailable</span>`;
+            const source = item.source ? `<span class="pill">${escapeHtml(item.source)}</span>` : "";
+            const remote = item.remote ? `<span class="pill">${escapeHtml(item.remote)}</span>` : "";
+            const release = item.release ? `<span class="pill">${escapeHtml(String(item.release))}</span>` : "";
+            const os = item.os ? `<span class="pill">${escapeHtml(String(item.os))}</span>` : "";
+            const reason =
+              !available && item.reason
+                ? `<div class="catalog-item-code">${escapeHtml(String(item.reason))}</div>`
+                : "";
+            return `
+              <div class="catalog-item ${available ? "" : "unavailable"}">
+                <div class="catalog-item-title">${escapeHtml(item.label || item.name || "image")}</div>
+                <div class="catalog-item-code">${escapeHtml(item.resolved_name || item.name || "")}</div>
+                <div class="catalog-item-meta">${availability}${source}${remote}${release}${os}</div>
+                ${reason}
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    `;
+
+  elements.imageCatalog.innerHTML = `
+    <div class="catalog-head">
+      <div>
+        <div class="catalog-title">Live Image Catalog</div>
+        <div class="catalog-sub">Directly discovered from configured LXD remotes.</div>
+      </div>
+      <button class="action ghost mini" data-action-id="image-catalog-refresh">Refresh</button>
+    </div>
+    <div class="catalog-controls">
+      <div class="catalog-remotes">${remoteButtons}</div>
+      <label class="catalog-toggle" for="image-hide-unavailable">
+        <input id="image-hide-unavailable" type="checkbox" ${state.images.hideUnavailable ? "checked" : ""} />
+        Hide unavailable
+      </label>
+      ${latestLtsMarkup}
+      ${loadingMarkup}
+    </div>
+    ${errorMarkup}
+    ${listMarkup}
+  `;
 }
 
 function renderRoutingPreview(node) {
@@ -1684,6 +1809,7 @@ function renderWizard() {
     if (elements.layout) {
       elements.layout.classList.remove("wizard-active");
     }
+    renderImageCatalog();
     renderOperationPanel();
     return;
   }
@@ -1696,6 +1822,7 @@ function renderWizard() {
   if (elements.layout) {
     elements.layout.classList.add("wizard-active");
   }
+  renderImageCatalog();
 
   let steps = [];
   let bodyMarkup = "";
@@ -2841,6 +2968,7 @@ function renderWizard() {
 function renderAll() {
   renderTree();
   renderStatusLine();
+  renderImageCatalog();
   renderGrid();
   renderPreview();
   renderWizard();
@@ -2860,7 +2988,9 @@ async function hydrateNode(id) {
     return;
   }
   try {
-    if (nodeId === "routing") {
+    if (nodeId === "containers") {
+      await loadPopularImages();
+    } else if (nodeId === "routing") {
       await loadRoutes();
     } else if (nodeId === "recipes" || nodeId.endsWith(":container-recipes")) {
       await loadRecipes();
@@ -3548,6 +3678,8 @@ async function autoProbeContainers() {
 async function loadPopularImages(options = {}) {
   state.images.loading = true;
   state.images.error = null;
+  renderImageCatalog();
+  renderWizard();
   try {
     const payload = await apiRequest("/api/containers/images/popular");
     state.images.popular = Array.isArray(payload.images) ? payload.images : [];
@@ -3573,6 +3705,7 @@ async function loadPopularImages(options = {}) {
     }
   } finally {
     state.images.loading = false;
+    renderImageCatalog();
     renderWizard();
   }
 }
@@ -3886,6 +4019,11 @@ async function handleAction(actionId, node, params = {}) {
     state.probedContainers.clear();
     await loadGraph();
     logEvent("success", "Synced fortress state");
+    return;
+  }
+
+  if (actionId === "image-catalog-refresh") {
+    await loadPopularImages({ log: true });
     return;
   }
 
@@ -4932,7 +5070,7 @@ async function loadGraph(options = {}) {
     state.selectedId = state.rootId;
   }
   renderAll();
-  if (["routing", "recipes", "hosts", "monitoring", "firewall", "vms"].includes(state.selectedId)) {
+  if (["containers", "routing", "recipes", "hosts", "monitoring", "firewall", "vms"].includes(state.selectedId)) {
     await hydrateNode(state.selectedId);
   }
   if (!options.skipProbe) {
@@ -4955,6 +5093,14 @@ function bindEvents() {
       } catch (err) {
         logEvent("error", err.message || "Action failed");
       }
+      return;
+    }
+
+    const remoteFilter = event.target.closest("[data-image-remote]");
+    if (remoteFilter) {
+      const selectedRemote = remoteFilter.getAttribute("data-image-remote") || "all";
+      state.images.remoteFilter = selectedRemote || "all";
+      renderImageCatalog();
       return;
     }
 
@@ -5031,6 +5177,17 @@ function bindEvents() {
       state.wizard.form[target.name] = value;
     }
   });
+
+  if (elements.imageCatalog) {
+    elements.imageCatalog.addEventListener("input", (event) => {
+      const target = event.target;
+      if (!target || target.id !== "image-hide-unavailable") {
+        return;
+      }
+      state.images.hideUnavailable = Boolean(target.checked);
+      renderImageCatalog();
+    });
+  }
 }
 
 window.addEventListener("DOMContentLoaded", () => {
