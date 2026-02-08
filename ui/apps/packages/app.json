@@ -1,7 +1,7 @@
 {
   "id": "packages",
   "title": "Host Packages",
-  "description": "Package installs on the host or container context.",
+  "description": "Manage package operations on host or containers.",
   "icon": "stack",
   "parent": "home",
   "order": 6,

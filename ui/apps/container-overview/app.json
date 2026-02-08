@@ -1,7 +1,7 @@
 {
   "id": "container-overview",
   "title": "Overview",
-  "description": "Status, IPs, and surface checks.",
+  "description": "See container status, IP, and basic health.",
   "icon": "pulse",
   "scope": "container",
   "order": 1

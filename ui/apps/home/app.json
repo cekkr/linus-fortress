@@ -1,7 +1,7 @@
 {
   "id": "home",
   "title": "Control Deck",
-  "description": "Lizard control deck for fortress operations.",
+  "description": "Start here to manage all Fortress apps.",
   "icon": "compass",
   "root": true,
   "order": 0

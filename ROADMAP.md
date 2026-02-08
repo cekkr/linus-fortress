@@ -56,12 +56,15 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add UI auth flow with server-side sessions backed by delegated tokens (no tokens in the browser).
 - Done: Wire Routing, Recipes, Host Packages, Hosts, Firewall, Monitoring, and VM list views with live API calls and wizards.
 - Done: Expand container actions with start/stop/restart, snapshot create/list/restore/delete, exec/logs, and port exposure flows (user/group management still pending).
+- Done: Move wizards from the right sidebar into a full-stage horizontal slide flow, with the sidebar reused for current-operation context.
 - Implement step-by-step wizards for container creation, routing, recipe apply, and backup/restore.
 - Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.
 - Add a settings panel to manage popular LXD image presets, show remote availability, and refresh latest LTS aliases.
 - Add monitoring dashboards powered by `/monitoring/resources` with alert overlays.
 - Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
+- Next: Add keyboard + touch navigation for wizard step transitions (left/right arrows, swipe gestures).
+- Next: Add an inline wizard step summary/history strip so users can jump directly to prior steps without losing context.
 
 ## Path 9: Bootstrap and run tooling (short term)
 - Done: Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).

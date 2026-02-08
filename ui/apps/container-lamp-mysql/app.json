@@ -1,7 +1,7 @@
 {
   "id": "container-lamp-mysql",
   "title": "MySQL",
-  "description": "MariaDB or MySQL database engine.",
+  "description": "Install a MySQL/MariaDB database service.",
   "icon": "database",
   "scope": "container",
   "stack": "lamp",

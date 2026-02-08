@@ -1,7 +1,7 @@
 {
   "id": "container-backups",
   "title": "Backups",
-  "description": "Trigger encrypted container exports.",
+  "description": "Create backup exports of this container.",
   "icon": "vault",
   "scope": "container",
   "order": 6,

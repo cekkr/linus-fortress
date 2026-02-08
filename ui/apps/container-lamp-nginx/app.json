@@ -1,7 +1,7 @@
 {
   "id": "container-lamp-nginx",
   "title": "Nginx",
-  "description": "Reverse proxy or alternate web front end.",
+  "description": "Install Nginx for web serving or reverse proxy.",
   "icon": "globe",
   "scope": "container",
   "stack": "lamp",

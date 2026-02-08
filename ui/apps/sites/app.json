@@ -1,7 +1,7 @@
 {
   "id": "sites",
   "title": "Sites",
-  "description": "PHP sites bound to containers, domains, TLS, and deploys.",
+  "description": "Create, deploy, and maintain PHP sites.",
   "icon": "globe",
   "parent": "home",
   "order": 9,

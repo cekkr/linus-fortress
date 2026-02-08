@@ -1,7 +1,7 @@
 {
   "id": "hosts",
   "title": "Hosts",
-  "description": "SSH-managed host inventory and probes.",
+  "description": "Manage remote hosts over SSH.",
   "icon": "tower",
   "parent": "home",
   "order": 7,

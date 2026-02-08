@@ -1,7 +1,7 @@
 {
   "id": "container-access",
   "title": "Access Gates",
-  "description": "Expose SSH/FTP or close access quickly.",
+  "description": "Open or close SSH/FTP access for this container.",
   "icon": "link",
   "scope": "container",
   "order": 2,

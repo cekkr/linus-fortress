@@ -1,7 +1,7 @@
 {
   "id": "routing",
   "title": "Routing",
-  "description": "Nginx routes, domains, and TLS bindings.",
+  "description": "Map domains to containers with TLS.",
   "icon": "route",
   "parent": "home",
   "order": 3,

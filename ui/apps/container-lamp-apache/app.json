@@ -1,7 +1,7 @@
 {
   "id": "container-lamp-apache",
   "title": "Apache",
-  "description": "HTTP server with PHP support.",
+  "description": "Install Apache and serve PHP apps.",
   "icon": "server",
   "scope": "container",
   "stack": "lamp",

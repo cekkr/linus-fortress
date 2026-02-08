@@ -1,7 +1,7 @@
 {
   "id": "container-lamp-ftp",
   "title": "FTP",
-  "description": "FTP service for legacy file transfers.",
+  "description": "Install FTP for file transfers.",
   "icon": "transfer",
   "scope": "container",
   "stack": "lamp",

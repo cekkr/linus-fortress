@@ -29,7 +29,7 @@
       </div>
     </header>
 
-    <main class="layout">
+    <main class="layout" id="layout">
       <aside class="nav-tree">
         <div class="panel-title">Pages Tree</div>
         <div class="tree" id="tree"></div>
@@ -46,6 +46,9 @@
           <div class="breadcrumb" id="breadcrumb"></div>
           <div class="status-line" id="status-line"></div>
         </div>
+        <section class="wizard-stage" id="wizard-stage" hidden>
+          <div class="wizard-body" id="wizard"></div>
+        </section>
         <div class="card-grid" id="app-grid"></div>
       </section>
 
@@ -54,9 +57,9 @@
           <div class="panel-title">Preview</div>
           <div class="preview" id="preview"></div>
         </div>
-        <div class="panel wizard" id="wizard-panel">
-          <div class="panel-title">Wizard</div>
-          <div class="wizard-body" id="wizard"></div>
+        <div class="panel operation-panel">
+          <div class="panel-title">Operation</div>
+          <div class="preview" id="operation"></div>
         </div>
         <div class="panel">
           <div class="panel-title">Command Log</div>

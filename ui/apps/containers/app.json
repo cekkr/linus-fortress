@@ -1,7 +1,7 @@
 {
   "id": "containers",
   "title": "Containers",
-  "description": "Launch, inspect, and wire LXD containers.",
+  "description": "Create and manage LXD containers.",
   "icon": "cube",
   "parent": "home",
   "order": 1,

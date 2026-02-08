@@ -1,7 +1,7 @@
 {
   "id": "recipes",
   "title": "Recipes",
-  "description": "Blueprint automation and dependency planning.",
+  "description": "Create and run reusable install recipes.",
   "icon": "wand",
   "parent": "home",
   "order": 4,

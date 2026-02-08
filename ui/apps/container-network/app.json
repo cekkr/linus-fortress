@@ -1,7 +1,7 @@
 {
   "id": "container-network",
   "title": "Network",
-  "description": "Links, proxy devices, and exposure rules.",
+  "description": "Expose ports and manage container network links.",
   "icon": "radar",
   "scope": "container",
   "order": 3,

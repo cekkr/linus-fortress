@@ -1,7 +1,7 @@
 {
   "id": "container-handle",
   "title": "Container",
-  "description": "Live container handle with quick actions.",
+  "description": "Manage this container with quick actions.",
   "icon": "crate",
   "template": "container",
   "parent": "containers",

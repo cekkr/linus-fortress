@@ -177,21 +177,19 @@ def build_container_router(
     def _save_image_store(payload: Dict[str, Any]) -> None:
         save_json(popular_images_db, payload, indent=2)
 
-    def _default_popular_images() -> List[Dict[str, str]]:
+    def _fallback_popular_images() -> List[Dict[str, str]]:
         latest = container_ops.find_latest_ubuntu_lts_alias()
+        latest_label = f"Ubuntu {latest.split(':', 1)[1]} LTS" if latest and ":" in latest else "Ubuntu LTS pinned"
         return [
             {"name": "ubuntu:lts", "label": "Ubuntu (latest LTS)"},
-            {"name": latest or "ubuntu:22.04", "label": "Ubuntu LTS pinned"},
-            {"name": "debian:12", "label": "Debian 12 (Bookworm)"},
+            {"name": latest or "ubuntu:22.04", "label": latest_label},
+            {"name": "debian:12", "label": "Debian 12 (stable)"},
             {"name": "images:almalinux/9/cloud", "label": "AlmaLinux 9 (cloud)"},
         ]
 
-    def _list_popular_entries() -> List[Dict[str, str]]:
+    def _list_custom_popular_entries() -> List[Dict[str, str]]:
         store = _load_image_store()
         popular = store.get("popular") or []
-        if not popular:
-            popular = _default_popular_images()
-            _save_image_store({"popular": popular})
         seen = set()
         entries: List[Dict[str, str]] = []
         for item in popular:
@@ -203,12 +201,48 @@ def build_container_router(
                 continue
             seen.add(normalized)
             label = item.get("label") if isinstance(item, dict) else None
-            entries.append({"name": normalized, "label": label or normalized})
+            entries.append({"name": normalized, "label": label or normalized, "source": "custom"})
         return entries
 
-    def _inspect_entry(entry: Dict[str, str]) -> Dict[str, Any]:
+    def _list_popular_entries() -> List[Dict[str, Any]]:
+        discovered = container_ops.discover_popular_images()
+        custom = _list_custom_popular_entries()
+        fallback = _fallback_popular_images()
+        seen = set()
+        entries: List[Dict[str, Any]] = []
+
+        def add_entry(entry: Dict[str, Any], *, source: str) -> None:
+            if not isinstance(entry, dict):
+                return
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                return
+            resolved = str(entry.get("resolved_name") or name).strip()
+            key = resolved.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            payload = dict(entry)
+            payload["name"] = name
+            payload["label"] = str(entry.get("label") or name).strip() or name
+            payload["source"] = str(entry.get("source") or source)
+            if resolved:
+                payload["resolved_name"] = resolved
+            entries.append(payload)
+
+        for item in custom:
+            add_entry(item, source="custom")
+        for item in discovered:
+            add_entry(item, source="lxd-cli")
+        if not entries:
+            for item in fallback:
+                add_entry(item, source="fallback")
+        return entries
+
+    def _inspect_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
         name = entry.get("name", "").strip()
-        resolved = container_ops.resolve_image_alias(name)
+        resolved_hint = str(entry.get("resolved_name") or "").strip()
+        resolved = resolved_hint or container_ops.resolve_image_alias(name)
         remote, alias = container_ops.parse_image_alias(resolved)
         payload: Dict[str, Any] = {
             "name": name,
@@ -217,7 +251,14 @@ def build_container_router(
             "remote": remote,
             "alias": alias,
             "available": False,
+            "source": entry.get("source") or "custom",
         }
+        if entry.get("available") is True:
+            payload["available"] = True
+            for field in ("architecture", "type", "release", "os"):
+                if field in entry:
+                    payload[field] = entry.get(field)
+            return payload
         try:
             meta = container_ops.ensure_image_available(resolved)
             props = meta.get("properties") or {}

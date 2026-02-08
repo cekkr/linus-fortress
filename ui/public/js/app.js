@@ -202,10 +202,13 @@ const state = {
 };
 
 const elements = {
+  layout: document.getElementById("layout"),
   tree: document.getElementById("tree"),
   grid: document.getElementById("app-grid"),
+  wizardStage: document.getElementById("wizard-stage"),
   preview: document.getElementById("preview"),
   wizard: document.getElementById("wizard"),
+  operation: document.getElementById("operation"),
   eventLog: document.getElementById("event-log"),
   breadcrumb: document.getElementById("breadcrumb"),
   statusLine: document.getElementById("status-line"),
@@ -227,6 +230,46 @@ const elements = {
   adminMessage: document.getElementById("admin-message"),
   adminBootstrapButton: document.getElementById("admin-bootstrap"),
   logoutButton: document.getElementById("logout"),
+};
+
+const WIZARD_STEP_COUNTS = {
+  "create-container": 3,
+  routing: 3,
+  filemanager: 2,
+  packages: 2,
+  "system-upgrade": 4,
+  "recipe-apply": 3,
+  "host-create": 3,
+  network: 2,
+  firewall: 2,
+  "vm-snapshot": 2,
+  "container-snapshot": 2,
+  exec: 2,
+  "site-create": 3,
+  "site-deploy": 3,
+  "site-backup": 2,
+  "site-rollback": 2,
+  "site-services": 2,
+};
+
+const WIZARD_MODE_LABELS = {
+  "create-container": "Create Container",
+  routing: "Configure Routing",
+  filemanager: "Install File Manager",
+  packages: "Package Operation",
+  "system-upgrade": "System Upgrade",
+  "recipe-apply": "Apply Recipe",
+  "host-create": "Add Host",
+  network: "Expose Network Port",
+  firewall: "Firewall Rule",
+  "vm-snapshot": "VM Snapshot",
+  "container-snapshot": "Container Snapshot",
+  exec: "Container Exec",
+  "site-create": "Create Site",
+  "site-deploy": "Deploy Site",
+  "site-backup": "Site Backup",
+  "site-rollback": "Site Rollback",
+  "site-services": "Restart Site Services",
 };
 
 const iconMap = {
@@ -1518,13 +1561,140 @@ function renderEvents() {
     .join("");
 }
 
+function wizardModeLabel(mode) {
+  return WIZARD_MODE_LABELS[mode] || "Wizard";
+}
+
+function wizardStepTotal(mode) {
+  return WIZARD_STEP_COUNTS[mode] || 1;
+}
+
+function buildOperationFacts() {
+  const wizard = state.wizard;
+  if (!wizard.active || !wizard.mode) {
+    return [];
+  }
+  const facts = [];
+  if (wizard.mode === "create-container") {
+    facts.push(["Name", wizard.form.name || "(pending)"]);
+    facts.push(["Image", wizard.form.distro || "ubuntu:lts"]);
+  } else if (wizard.mode === "routing") {
+    facts.push(["Container", wizard.routing.container_name || wizard.context.container || "(pending)"]);
+    facts.push(["Domain", wizard.routing.domain || "(pending)"]);
+  } else if (wizard.mode === "packages") {
+    facts.push(["Mode", wizard.packages.mode || "install"]);
+    facts.push(["Target", wizard.packages.target || "host"]);
+  } else if (wizard.mode === "system-upgrade") {
+    facts.push(["Packages", wizard.upgrade.update_packages ? "enabled" : "off"]);
+    facts.push(["Migrations", wizard.upgrade.apply_migrations ? "enabled" : "off"]);
+  } else if (wizard.mode === "recipe-apply") {
+    facts.push(["Recipe", wizard.recipe.name || "(pending)"]);
+    facts.push(["Target", wizard.recipe.target || "host"]);
+  } else if (wizard.mode === "host-create") {
+    facts.push(["Host", wizard.host.name || "(pending)"]);
+    facts.push(["SSH", wizard.host.host || "(pending)"]);
+  } else if (wizard.mode === "network") {
+    facts.push(["Container", wizard.network.container_name || wizard.context.container || "(pending)"]);
+    facts.push(["Port", wizard.network.container_port || "(pending)"]);
+  } else if (wizard.mode === "firewall") {
+    facts.push(["Action", wizard.firewall.mode || "open"]);
+    facts.push(["Port", wizard.firewall.port || "(pending)"]);
+  } else if (wizard.mode === "vm-snapshot") {
+    facts.push(["VM", wizard.context.vm || "(pending)"]);
+    facts.push(["Snapshot", wizard.vmSnapshot.name || "(pending)"]);
+  } else if (wizard.mode === "container-snapshot") {
+    facts.push(["Container", wizard.context.container || "(pending)"]);
+    facts.push(["Snapshot", wizard.containerSnapshot.name || "(pending)"]);
+  } else if (wizard.mode === "exec") {
+    facts.push(["Container", wizard.context.container || "(pending)"]);
+    facts.push(["Command", wizard.exec.command || "(pending)"]);
+  } else if (wizard.mode === "site-create") {
+    facts.push(["Site", wizard.siteCreate.name || "(pending)"]);
+    facts.push(["Domain", wizard.siteCreate.primary_domain || "(pending)"]);
+  } else if (wizard.mode === "site-deploy") {
+    facts.push(["Site", wizard.siteDeploy.site_id || "(pending)"]);
+    facts.push(["Source", wizard.siteDeploy.source || "(pending)"]);
+  } else if (wizard.mode === "site-backup") {
+    facts.push(["Site", wizard.siteBackup.site_id || "(pending)"]);
+    facts.push(["Label", wizard.siteBackup.label || "none"]);
+  } else if (wizard.mode === "site-rollback") {
+    facts.push(["Site", wizard.siteRollback.site_id || "(pending)"]);
+    facts.push(["Backup", wizard.siteRollback.backup_id || "(pending)"]);
+  } else if (wizard.mode === "site-services") {
+    facts.push(["Site", wizard.siteServices.site_id || "(pending)"]);
+    facts.push(["Services", wizard.siteServices.services || "default"]);
+  } else if (wizard.mode === "filemanager") {
+    facts.push(["Container", wizard.context.container || "(pending)"]);
+    facts.push(["User", wizard.filemanager.username || "(pending)"]);
+  }
+  return facts;
+}
+
+function renderOperationPanel() {
+  if (!elements.operation) {
+    return;
+  }
+  const wizard = state.wizard;
+  if (!wizard.active || !wizard.mode) {
+    elements.operation.innerHTML = `
+      <div class="preview-title">Idle</div>
+      <div>Pick a card action to start a guided operation.</div>
+      <div class="card-meta">
+        <span class="pill">Wizard inactive</span>
+      </div>
+    `;
+    return;
+  }
+  const total = wizardStepTotal(wizard.mode);
+  const facts = buildOperationFacts()
+    .map(
+      ([label, value]) => `
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <span>${escapeHtml(value)}</span>
+      </div>
+    `
+    )
+    .join("");
+  const errorMarkup = wizard.error ? `<div class="event-item error">${escapeHtml(wizard.error)}</div>` : "";
+  elements.operation.innerHTML = `
+    <div class="preview-title">${escapeHtml(wizardModeLabel(wizard.mode))}</div>
+    <div>Step ${wizard.step + 1} of ${total}</div>
+    <div class="card-meta">
+      <span class="pill">${wizard.busy ? "running" : "ready"}</span>
+      <span class="pill">${escapeHtml(wizard.mode)}</span>
+    </div>
+    <div class="preview-meta">
+      ${facts}
+    </div>
+    ${errorMarkup}
+  `;
+}
+
 function renderWizard() {
   const wizard = state.wizard;
   if (!wizard.active || !wizard.mode) {
-    elements.wizard.innerHTML = `
-      <div>Wizard idle. Choose a card action to start a guided flow.</div>
-    `;
+    elements.wizard.innerHTML = "";
+    if (elements.wizardStage) {
+      elements.wizardStage.hidden = true;
+    }
+    if (elements.grid) {
+      elements.grid.hidden = false;
+    }
+    if (elements.layout) {
+      elements.layout.classList.remove("wizard-active");
+    }
+    renderOperationPanel();
     return;
+  }
+  if (elements.wizardStage) {
+    elements.wizardStage.hidden = false;
+  }
+  if (elements.grid) {
+    elements.grid.hidden = true;
+  }
+  if (elements.layout) {
+    elements.layout.classList.add("wizard-active");
   }
 
   let steps = [];
@@ -1561,14 +1731,23 @@ function renderWizard() {
         })
         .join("");
       const presetsList = optionsSource
-        .map(
-          (item) => `
+        .map((item) => {
+          const source = String(item.source || "");
+          const removable = source === "custom";
+          const availability = item.available === false ? `<span class="pill danger">unavailable</span>` : "";
+          const sourcePill = source ? `<span class="pill">${escapeHtml(source)}</span>` : "";
+          const removeButton = removable
+            ? `<button class="tag-remove" data-wizard-action="remove-image" data-image-name="${item.name}" title="Remove preset">×</button>`
+            : "";
+          return `
           <div class="tag">
             <span>${item.label || item.name}</span>
-            <button class="tag-remove" data-wizard-action="remove-image" data-image-name="${item.name}" title="Remove preset">×</button>
+            ${sourcePill}
+            ${availability}
+            ${removeButton}
           </div>
-        `
-        )
+        `;
+        })
         .join("");
       bodyMarkup = `
         <div class="wizard-field">
@@ -2620,21 +2799,43 @@ function renderWizard() {
   const errorMarkup = wizard.error ? `<div class="event-item error">${wizard.error}</div>` : "";
   const backDisabled = wizard.step === 0 ? "disabled" : "";
   const nextDisabled = wizard.busy ? "disabled" : "";
-
-  const contentClass = directionClass ? `wizard-content ${directionClass}` : "wizard-content";
+  const pagesMarkup = steps
+    .map((title, index) => {
+      const placeholder = `
+        <div class="wizard-page-placeholder">
+          <div>${escapeHtml(title)}</div>
+          <div>Step ${index + 1} of ${steps.length}</div>
+        </div>
+      `;
+      const content = index === wizard.step ? `${bodyMarkup}${errorMarkup}` : placeholder;
+      return `<div class="wizard-page">${content}</div>`;
+    })
+    .join("");
+  const progressPercent = steps.length ? Math.round(((wizard.step + 1) / steps.length) * 100) : 0;
+  const trackClass = directionClass ? `wizard-track ${directionClass}` : "wizard-track";
   elements.wizard.innerHTML = `
-    <div class="wizard-steps">${stepMarkup}</div>
-    <div class="${contentClass}">
-      ${bodyMarkup}
-      ${errorMarkup}
-    </div>
-    <div class="wizard-actions">
-      <button class="action ghost" data-wizard-action="close">Close</button>
-      <button class="action ghost" data-wizard-action="back" ${backDisabled}>Back</button>
-      <button class="action" data-wizard-action="next" ${nextDisabled}>${nextLabel}</button>
+    <div class="wizard-shell">
+      <div class="wizard-header">
+        <div class="wizard-title">${escapeHtml(wizardModeLabel(wizard.mode))}</div>
+        <div class="wizard-progress-wrap">
+          <div class="wizard-progress" style="width:${progressPercent}%;"></div>
+        </div>
+      </div>
+      <div class="wizard-steps">${stepMarkup}</div>
+      <div class="wizard-viewport">
+        <div class="${trackClass}" style="transform: translateX(-${wizard.step * 100}%);">
+          ${pagesMarkup}
+        </div>
+      </div>
+      <div class="wizard-actions">
+        <button class="action ghost" data-wizard-action="close">Close</button>
+        <button class="action ghost" data-wizard-action="back" ${backDisabled}>Back</button>
+        <button class="action" data-wizard-action="next" ${nextDisabled}>${nextLabel}</button>
+      </div>
     </div>
   `;
   wizard.prevStep = wizard.step;
+  renderOperationPanel();
 }
 
 function renderAll() {
@@ -2643,6 +2844,7 @@ function renderAll() {
   renderGrid();
   renderPreview();
   renderWizard();
+  renderOperationPanel();
   renderEvents();
 }
 
@@ -3362,10 +3564,10 @@ async function loadPopularImages(options = {}) {
       }
     }
     if (options.log) {
-      logEvent("success", "Image presets refreshed");
+      logEvent("success", "Image catalog refreshed");
     }
   } catch (err) {
-    state.images.error = err.message || "Failed to load image presets";
+    state.images.error = err.message || "Failed to load image catalog";
     if (options.log) {
       logEvent("error", state.images.error);
     }
@@ -4204,25 +4406,6 @@ async function handleWizardAction(action, payload = {}) {
     return;
   }
   if (action === "next") {
-    const stepCounts = {
-      "create-container": 3,
-      routing: 3,
-      filemanager: 2,
-      packages: 2,
-      "system-upgrade": 4,
-      "recipe-apply": 3,
-      "host-create": 3,
-      network: 2,
-      firewall: 2,
-      "vm-snapshot": 2,
-      "container-snapshot": 2,
-      exec: 2,
-      "site-create": 3,
-      "site-deploy": 3,
-      "site-backup": 2,
-      "site-rollback": 2,
-      "site-services": 2,
-    };
     if (state.wizard.mode === "system-upgrade") {
       const upgrade = state.wizard.upgrade;
       if (state.wizard.step === 0) {
@@ -4315,7 +4498,7 @@ async function handleWizardAction(action, payload = {}) {
       }
       return;
     }
-    const steps = stepCounts[state.wizard.mode] || 1;
+    const steps = wizardStepTotal(state.wizard.mode);
     if (state.wizard.step < steps - 1) {
       state.wizard.prevStep = state.wizard.step;
       state.wizard.step += 1;
@@ -4832,6 +5015,16 @@ function bindEvents() {
       state.wizard.containerSnapshot[target.name] = target.type === "checkbox" ? target.checked : value;
     } else if (group === "exec") {
       state.wizard.exec[target.name] = value;
+    } else if (group === "siteCreate") {
+      state.wizard.siteCreate[target.name] = value;
+    } else if (group === "siteDeploy") {
+      state.wizard.siteDeploy[target.name] = value;
+    } else if (group === "siteBackup") {
+      state.wizard.siteBackup[target.name] = value;
+    } else if (group === "siteRollback") {
+      state.wizard.siteRollback[target.name] = value;
+    } else if (group === "siteServices") {
+      state.wizard.siteServices[target.name] = value;
     } else if (group === "imagePreset") {
       state.wizard.imagePreset[target.name] = value;
     } else {

@@ -17,6 +17,7 @@ MAX_PORT = 65535
 MIN_PORT = 1
 MAX_PROXY_DEVICES_PER_REQUEST = 50
 UBUNTU_LTS_PATTERN = re.compile(r"^(?P<year>\d{2})\.04$")
+DEBIAN_VERSION_PATTERN = re.compile(r"^(?P<version>\d+)$")
 
 AuditCallback = Callable[[str, str, Optional[str], Optional[Dict[str, Any]], str], None]
 _AUDIT_CALLBACK: Optional[AuditCallback] = None
@@ -489,6 +490,175 @@ def list_lxd_remotes() -> Set[str]:
     except Exception:
         logging.exception("Failed to list LXD remotes")
         return set()
+
+
+def list_remote_images(remote: str, limit: int = 250) -> List[Dict[str, Any]]:
+    """Return image metadata for a single LXD remote."""
+    if not remote:
+        return []
+    try:
+        raw = run_command(
+            ["lxc", "image", "list", f"{remote}:", "--format", "json", "--limit", str(max(limit, 1))]
+        )
+        payload = json.loads(raw)
+    except Exception:
+        logging.exception("Failed to list images for LXD remote '%s'", remote)
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _image_aliases(image: Dict[str, Any]) -> List[str]:
+    aliases = image.get("aliases") or []
+    names: List[str] = []
+    for alias in aliases:
+        if isinstance(alias, dict):
+            value = alias.get("name")
+        else:
+            value = alias
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                names.append(normalized)
+    return names
+
+
+def _build_remote_alias_index(remote: str, limit: int = 250) -> Dict[str, Dict[str, Any]]:
+    index: Dict[str, Dict[str, Any]] = {}
+    for image in list_remote_images(remote, limit=limit):
+        for alias in _image_aliases(image):
+            if alias not in index:
+                index[alias] = image
+    return index
+
+
+def _version_key(value: str) -> Tuple[int, ...]:
+    chunks = [chunk.strip() for chunk in value.split(".") if chunk.strip()]
+    numbers: List[int] = []
+    for chunk in chunks:
+        if not chunk.isdigit():
+            return ()
+        numbers.append(int(chunk))
+    return tuple(numbers)
+
+
+def _image_metadata_summary(meta: Dict[str, Any]) -> Dict[str, Any]:
+    properties = meta.get("properties") or {}
+    return {
+        "architecture": meta.get("architecture"),
+        "type": meta.get("type"),
+        "release": properties.get("release") or properties.get("version"),
+        "os": properties.get("os"),
+    }
+
+
+def _build_discovered_image(name: str, resolved_name: str, label: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    remote, alias = parse_image_alias(resolved_name)
+    payload = {
+        "name": name,
+        "resolved_name": resolved_name,
+        "label": label,
+        "remote": remote,
+        "alias": alias,
+        "available": True,
+        "source": "lxd-cli",
+    }
+    payload.update(_image_metadata_summary(meta))
+    return payload
+
+
+def _latest_alias_for_pattern(
+    alias_index: Dict[str, Dict[str, Any]], pattern: re.Pattern
+) -> Optional[Tuple[str, str, Dict[str, Any]]]:
+    matches: List[Tuple[Tuple[int, ...], str, str, Dict[str, Any]]] = []
+    for alias, meta in alias_index.items():
+        match = pattern.match(alias)
+        if not match:
+            continue
+        version = match.group("version")
+        key = _version_key(version)
+        if not key:
+            continue
+        matches.append((key, alias, version, meta))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0])
+    _key, alias, version, meta = matches[-1]
+    return alias, version, meta
+
+
+def discover_popular_images() -> List[Dict[str, Any]]:
+    """Discover currently available and commonly used images directly from LXD remotes."""
+    remotes = list_lxd_remotes()
+    discovered: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+
+    def register(entry: Dict[str, Any]) -> None:
+        resolved = str(entry.get("resolved_name") or entry.get("name") or "").strip().lower()
+        if not resolved or resolved in seen:
+            return
+        seen.add(resolved)
+        discovered.append(entry)
+
+    if "ubuntu" in remotes:
+        ubuntu_alias_index = _build_remote_alias_index("ubuntu", limit=300)
+        latest_lts = find_latest_ubuntu_lts_alias()
+        if latest_lts:
+            latest_alias = latest_lts.split(":", 1)[1] if ":" in latest_lts else latest_lts
+            meta = ubuntu_alias_index.get(latest_alias)
+            if meta is None:
+                try:
+                    meta = ensure_image_available(latest_lts)
+                except Exception:
+                    meta = None
+            if isinstance(meta, dict):
+                register(
+                    _build_discovered_image(
+                        "ubuntu:lts",
+                        latest_lts,
+                        f"Ubuntu {latest_alias} LTS",
+                        meta,
+                    )
+                )
+
+    if "debian" in remotes:
+        debian_alias_index = _build_remote_alias_index("debian", limit=260)
+        latest_debian = _latest_alias_for_pattern(debian_alias_index, DEBIAN_VERSION_PATTERN)
+        if latest_debian:
+            alias, version, meta = latest_debian
+            register(
+                _build_discovered_image(
+                    f"debian:{alias}",
+                    f"debian:{alias}",
+                    f"Debian {version} (stable)",
+                    meta,
+                )
+            )
+
+    if "images" in remotes:
+        images_alias_index = _build_remote_alias_index("images", limit=450)
+        families = [
+            ("almalinux", "AlmaLinux"),
+            ("rockylinux", "Rocky Linux"),
+            ("fedora", "Fedora"),
+        ]
+        for family, label in families:
+            pattern = re.compile(rf"^{family}/(?P<version>\d+(?:\.\d+)?)/cloud$")
+            latest_family = _latest_alias_for_pattern(images_alias_index, pattern)
+            if not latest_family:
+                continue
+            alias, version, meta = latest_family
+            register(
+                _build_discovered_image(
+                    f"images:{alias}",
+                    f"images:{alias}",
+                    f"{label} {version} (cloud)",
+                    meta,
+                )
+            )
+
+    return discovered
 
 
 def ensure_image_available(alias: str) -> Dict[str, Any]:

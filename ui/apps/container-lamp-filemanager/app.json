@@ -1,7 +1,7 @@
 {
   "id": "container-lamp-filemanager",
   "title": "File Manager",
-  "description": "Web file manager panel inside the container.",
+  "description": "Install a browser file manager in this container.",
   "icon": "folder",
   "scope": "container",
   "stack": "lamp",

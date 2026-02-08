@@ -1,7 +1,7 @@
 {
   "id": "container-lamp-https",
   "title": "HTTPS",
-  "description": "Route HTTPS to the container via host TLS settings.",
+  "description": "Publish this container over HTTPS.",
   "icon": "lock",
   "scope": "container",
   "stack": "lamp",

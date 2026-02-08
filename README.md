@@ -373,7 +373,9 @@ Body fields (defaults shown):
 - `disk_limit` (string, default `10GB`).
 
 #### `GET /containers/images/popular` (permission `manage_containers`)
-- Returns popular image presets, resolved aliases, availability on configured LXD remotes, and the latest Ubuntu LTS alias (if the `ubuntu:` remote is configured).
+- Uses direct `lxc image list ... --format json` lookups against configured remotes (`ubuntu`, `debian`, `images`) to return currently available popular images.
+- Merges live LXD-discovered entries with saved custom presets from `/var/lib/fortress/container_images.json`.
+- Each entry includes `source` (`lxd-cli`, `custom`, or `fallback`), resolved alias, and availability metadata.
 
 #### `POST /containers/images/popular` (permission `manage_containers`)
 Body:

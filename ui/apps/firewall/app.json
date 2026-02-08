@@ -1,7 +1,7 @@
 {
   "id": "firewall",
   "title": "Firewall",
-  "description": "UFW or firewalld rules across host and containers.",
+  "description": "Open or close firewall ports.",
   "icon": "shield",
   "parent": "home",
   "order": 5,

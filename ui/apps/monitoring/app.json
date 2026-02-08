@@ -1,7 +1,7 @@
 {
   "id": "monitoring",
   "title": "Monitoring",
-  "description": "Host and container resource pulse.",
+  "description": "Track CPU, RAM, and disk usage.",
   "icon": "pulse",
   "parent": "home",
   "order": 2,

@@ -1,7 +1,7 @@
 {
   "id": "container-packages",
   "title": "Packages",
-  "description": "Manage apt/dnf installs inside the container.",
+  "description": "Install, remove, or update packages in this container.",
   "icon": "stack",
   "scope": "container",
   "order": 4,

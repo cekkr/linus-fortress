@@ -125,6 +125,14 @@ body {
   padding: 24px 28px 32px;
 }
 
+.layout.wizard-active {
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+.layout.wizard-active .nav-tree {
+  display: none;
+}
+
 .nav-tree,
 .stage,
 .inspector {
@@ -237,6 +245,17 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 18px;
+}
+
+.wizard-stage {
+  border-radius: 20px;
+  border: 1px solid rgba(38, 49, 33, 0.35);
+  background:
+    radial-gradient(circle at 90% 0%, rgba(255, 235, 176, 0.2), transparent 48%),
+    linear-gradient(165deg, rgba(24, 36, 27, 0.96), rgba(40, 54, 39, 0.94));
+  box-shadow: 0 20px 36px rgba(12, 18, 12, 0.3);
+  color: #eaf5d5;
+  overflow: hidden;
 }
 
 .app-card {
@@ -418,43 +437,65 @@ body {
   color: #4b5940;
 }
 
-.wizard {
-  background: linear-gradient(160deg, rgba(27, 38, 31, 0.88), rgba(42, 52, 39, 0.88));
-  color: #eaf5d5;
-  overflow: hidden;
-}
-
 .wizard-body {
+  min-height: 460px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+  padding: 20px;
   font-size: 13px;
 }
 
-.wizard-content {
+.wizard-shell {
   display: flex;
   flex-direction: column;
+  gap: 14px;
+}
+
+.wizard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
-.wizard-content.slide-forward {
-  animation: wizardSlideForward 0.22s ease both;
+.wizard-title {
+  font-family: "Teko", sans-serif;
+  font-size: 28px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
 }
 
-.wizard-content.slide-back {
-  animation: wizardSlideBack 0.22s ease both;
+.wizard-progress-wrap {
+  flex: 1 1 260px;
+  min-width: 240px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+}
+
+.wizard-progress {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #8ccf55, #f2c06b);
+  transition: width 0.24s ease;
 }
 
 .wizard-steps {
   display: flex;
   gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
 }
 
 .wizard-step {
-  flex: 1;
+  flex: 0 0 150px;
   padding: 8px;
   border-radius: 10px;
-  text-align: center;
+  text-align: left;
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.12);
   font-size: 11px;
@@ -465,6 +506,49 @@ body {
 .wizard-step.active {
   background: rgba(140, 207, 85, 0.25);
   border-color: rgba(140, 207, 85, 0.4);
+}
+
+.wizard-viewport {
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(9, 13, 9, 0.32);
+  min-height: 270px;
+}
+
+.wizard-track {
+  display: flex;
+  width: 100%;
+  transition: transform 0.3s ease;
+}
+
+.wizard-track.slide-forward {
+  animation: wizardSlideForward 0.24s ease both;
+}
+
+.wizard-track.slide-back {
+  animation: wizardSlideBack 0.24s ease both;
+}
+
+.wizard-page {
+  flex: 0 0 100%;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wizard-page-placeholder {
+  border-radius: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.03);
+  min-height: 210px;
+  display: grid;
+  place-items: center;
+  color: rgba(234, 245, 213, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  text-align: center;
 }
 
 .wizard-field {
@@ -557,6 +641,10 @@ body {
 
 .wizard-actions button {
   flex: 1;
+}
+
+.operation-panel {
+  background: rgba(255, 255, 255, 0.85);
 }
 
 @keyframes wizardSlideForward {
@@ -737,6 +825,10 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .layout.wizard-active {
+    grid-template-columns: 1fr;
+  }
+
   .nav-tree,
   .inspector {
     order: 2;
@@ -760,5 +852,14 @@ body {
 
   .preview-meta {
     grid-template-columns: 1fr;
+  }
+
+  .wizard-body {
+    min-height: 0;
+    padding: 14px;
+  }
+
+  .wizard-step {
+    flex-basis: 130px;
   }
 }

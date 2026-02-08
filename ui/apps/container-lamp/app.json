@@ -1,7 +1,7 @@
 {
   "id": "container-lamp",
   "title": "LAMP Stack",
-  "description": "Apache, PHP, and database stack with add-on services.",
+  "description": "Install and manage the full LAMP stack.",
   "icon": "lamp",
   "scope": "container",
   "stack": "lamp",
