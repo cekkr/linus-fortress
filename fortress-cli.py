@@ -835,6 +835,14 @@ def system_command(args: argparse.Namespace) -> None:
         result = client.request("POST", "/system/upgrade", json_body=payload, auth_override=auth_override)
         print(json.dumps(result, indent=2))
         return
+    if args.subcommand == "update-reload":
+        payload = {
+            "apply_migrations": not args.skip_migrations,
+            "restart_mode": args.mode,
+        }
+        result = client.request("POST", "/system/update-reload", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
     raise FortressCLIError("Unsupported system subcommand")
 
 
@@ -1485,6 +1493,18 @@ def build_parser() -> argparse.ArgumentParser:
     system_upgrade.add_argument("--skip-migrations", action="store_true", help="Skip migrations apply")
     system_upgrade.add_argument("--dry-run", action="store_true", help="Preview commands without changes")
     system_upgrade.set_defaults(func=system_command)
+    system_update_reload = system_sub.add_parser(
+        "update-reload",
+        help="Pull repository updates, apply migrations when needed, then reload API/UI",
+    )
+    system_update_reload.add_argument("--skip-migrations", action="store_true", help="Skip migrations apply")
+    system_update_reload.add_argument(
+        "--mode",
+        choices=["auto", "service", "screen", "process"],
+        default="auto",
+        help="Restart strategy passed to restart.sh",
+    )
+    system_update_reload.set_defaults(func=system_command)
 
     tls_parser = subparsers.add_parser("tls", help="TLS certificate maintenance")
     tls_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")

@@ -31,6 +31,7 @@ const state = {
   systemUpgrade: {
     lastPreflight: null,
     lastExecution: null,
+    lastUpdateReload: null,
   },
   fortress: { status: "unknown" },
   auth: {
@@ -906,6 +907,7 @@ function renderRecipesPreview(node) {
 function renderPackagesPreview(node) {
   const lastPreflight = state.systemUpgrade.lastPreflight;
   const lastExecution = state.systemUpgrade.lastExecution;
+  const lastUpdateReload = state.systemUpgrade.lastUpdateReload;
   const preflightSummary =
     lastPreflight && lastPreflight.preflight
       ? (() => {
@@ -951,6 +953,29 @@ function renderPackagesPreview(node) {
           `;
         })()
       : "";
+  const updateReloadSummary =
+    lastUpdateReload && lastUpdateReload.result
+      ? (() => {
+          const result = lastUpdateReload.result;
+          const migrations =
+            result && result.migrations && Array.isArray(result.migrations.applied)
+              ? result.migrations.applied
+              : [];
+          const reloadScheduled = Boolean(result && result.reload && result.reload.scheduled);
+          const commit = result && result.after_commit ? String(result.after_commit).slice(0, 12) : "";
+          return `
+            <div class="event-item">
+              <div><strong>Last update check</strong> — ${escapeHtml(new Date(lastUpdateReload.at).toLocaleString())}</div>
+              <div class="card-meta">
+                <span class="pill ${result.updated ? "running" : "soon"}">${result.updated ? "updated" : "no changes"}</span>
+                <span class="pill">${migrations.length} stores migrated</span>
+                <span class="pill">${reloadScheduled ? "reload:scheduled" : "reload:skipped"}</span>
+                ${commit ? `<span class="pill">${escapeHtml(commit)}</span>` : ""}
+              </div>
+            </div>
+          `;
+        })()
+      : "";
   elements.preview.innerHTML = `
     <div class="preview-title">${node.title}</div>
     <div>${node.description || ""}</div>
@@ -960,8 +985,12 @@ function renderPackagesPreview(node) {
     <div class="event-item">
       Use <strong>System Upgrade</strong> to run a guided preflight and controlled package+migration upgrade with backup confirmation.
     </div>
+    <div class="event-item">
+      Use <strong>Check Update + Reload</strong> to run <code>git pull --ff-only</code>, apply pending migrations on update, then restart API/UI with auto mode detection.
+    </div>
     ${preflightSummary}
     ${executionSummary}
+    ${updateReloadSummary}
   `;
 }
 
@@ -3262,6 +3291,17 @@ async function fetchSystemUpgradePreflight(upgradeState) {
   return { preflight, migrationStatus, backups };
 }
 
+async function checkForUpdateAndReload(options = {}) {
+  const payload = {
+    apply_migrations: options.applyMigrations !== false,
+    restart_mode: options.restartMode || "auto",
+  };
+  return apiRequest("/api/system/update-reload", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 async function probeContainerServices(containerName, options = {}) {
   const response = await apiRequest(`/api/containers/${containerName}/probe`, {
     method: "POST",
@@ -3926,6 +3966,41 @@ async function handleAction(actionId, node, params = {}) {
 
   if (actionId === "system-upgrade") {
     openWizard("system-upgrade");
+    return;
+  }
+
+  if (actionId === "system-update-reload") {
+    const confirmed = window.confirm(
+      "Check for repository updates and reload Fortress API/WebUI if new commits are pulled?"
+    );
+    if (!confirmed) {
+      return;
+    }
+    try {
+      const response = await checkForUpdateAndReload({ applyMigrations: true, restartMode: "auto" });
+      state.systemUpgrade.lastUpdateReload = {
+        at: new Date().toISOString(),
+        result: response,
+      };
+      const appliedMigrations =
+        response &&
+        response.migrations &&
+        Array.isArray(response.migrations.applied)
+          ? response.migrations.applied.length
+          : 0;
+      if (response && response.updated) {
+        const reloadScheduled = Boolean(response.reload && response.reload.scheduled);
+        logEvent(
+          "success",
+          `Update pulled (${appliedMigrations} migrated stores, ${reloadScheduled ? "reload scheduled" : "reload skipped"})`
+        );
+      } else {
+        logEvent("success", (response && response.message) || "Already up to date");
+      }
+      renderPreview();
+    } catch (err) {
+      logEvent("error", err.message || "Check update and reload failed");
+    }
     return;
   }
 

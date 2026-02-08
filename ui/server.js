@@ -1705,6 +1705,14 @@ app.post(
 );
 
 app.post(
+  "/api/system/update-reload",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/system/update-reload", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
   "/api/containers/expose",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequestFor(req, "POST", "/containers/expose", req.body || {});

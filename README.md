@@ -83,6 +83,7 @@ The UI can probe service availability via `POST /containers/probe` (permission `
 The file manager install uses Tiny File Manager under `/var/www/html/filemanager` and prompts for `fm_user`/`fm_password`.
 Recipe apply results now surface `probe.health_checks` with pass/fail/skipped badges and per-check summaries in the recipes views.
 The Packages app includes a guided System Upgrade wizard that runs `/system/upgrade` preflight (`dry_run=true`) and requires backup confirmation before execution.
+The Packages app also includes **Check Update + Reload**, which runs `/system/update-reload` to `git pull --ff-only`, apply pending migrations when new commits arrive, then restart API/UI using auto mode detection.
 
 ## Run Server Script
 
@@ -864,6 +865,19 @@ Body:
 - Performs a host package update and then applies pending migrations in one call.
 - Set `dry_run=true` to preview the package command and migration plan without changes.
 
+#### `POST /system/update-reload` (permission `migration_admin`)
+Body:
+```json
+{
+  "apply_migrations": true,
+  "restart_mode": "auto"
+}
+```
+- Runs `git pull --ff-only` in the Fortress repo.
+- If new commits are pulled, applies pending schema migrations (when enabled) and schedules `restart.sh --no-pull` to reload API/UI.
+- Returns commit-before/after metadata and whether reload scheduling occurred.
+- If the working tree has local tracked changes, the endpoint returns `409` and skips pull/reload.
+
 ### Command Register & Auditing
 - Every API call records an immutable entry into `command_log.db` (see `COMMAND_LOG_DB`), capturing `actor`, endpoint, action, target, and sanitized payload details.
 - Internal behaviours such as `lxc exec` commands are also logged with command metadata (sensitive arguments are redacted) so operators can trace suspicious cross-container activity.
@@ -885,7 +899,7 @@ Body:
 
 `fortress-cli.py` is a companion script that securely stores API credentials, automates the HTTPS calls to the server, and handles encrypted backup archives.
 
-Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`, and `tls renew` for one-command maintenance flows.
+Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`, `system update-reload`, and `tls renew` for one-command maintenance flows.
 
 1. Run `python fortress-cli.py setup --server https://fortress.example.com:8443` to generate a 4096‑bit RSA keypair (protected by a passphrase) and enter the API master key, delegated user token, and/or backup password. Everything is saved under `~/.fortress-cli` (override via `FORTRESS_HOME`).
 2. Subsequent commands unlock the private key (either interactively or via `--passphrase`/`FORTRESS_PASSPHRASE`) and reuse the stored credentials:
@@ -898,6 +912,7 @@ Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`,
    - `python fortress-cli.py firewall status|rules|apply|rollback|ddos ...`
    - `python fortress-cli.py sites list|create|deploy|backup|rollback|logs|health|restart ...`
    - `python fortress-cli.py migrations status|plan|apply|rollback|ledger ...`
+   - `python fortress-cli.py system update-reload --mode auto`
 3. Encrypted backups can be downloaded and decrypted locally via `python fortress-cli.py backup download foo.enc --dest ./foo.enc` followed by `python fortress-cli.py backup decrypt ./foo.enc --output ./foo.tar.gz`.
 
 Recipe CLI examples:
@@ -918,7 +933,7 @@ By default TLS certificates are verified; pass `--insecure` during `setup` only 
 
 - `python -m unittest discover -s tests`
 - `python -m unittest discover -s tests -p 'test_permissions_matrix.py'` for route-level permission matrix checks.
-- Permission matrix coverage includes recipes, system upgrade, routing, sites, and firewall endpoint sequences.
+- Permission matrix coverage includes recipes, system upgrade, system update-reload, routing, sites, and firewall endpoint sequences.
 
 ## Roadmap
 

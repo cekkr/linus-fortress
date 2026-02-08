@@ -8,6 +8,7 @@ import shutil
 import secrets
 import sys
 import logging
+import subprocess
 from typing import Optional, List, Dict, Literal, Union, Any, Tuple
 from datetime import datetime
 from cryptography.fernet import Fernet
@@ -179,6 +180,8 @@ BACKUP_ENCRYPTION_PASSWORD = os.environ.get("FORTRESS_BACKUP_PASSWORD", "CHANGE_
 HOST_INTERFACE = os.environ.get("FORTRESS_HOST_INTERFACE", "0.0.0.0")
 HOST_PORT = int(os.environ.get("FORTRESS_HOST_PORT", "8443"))
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+RESTART_SCRIPT_PATH = os.path.join(BASE_DIR, "restart.sh")
+UPDATE_RELOAD_LOG_PATH = os.environ.get("FORTRESS_UPDATE_RELOAD_LOG", os.path.join(BASE_DIR, ".update-reload.log"))
 BACKUP_DIR = "/var/lib/fortress/backups"
 NGINX_CONFIG_DIR = "/etc/nginx/sites-available"
 NGINX_ENABLED_DIR = "/etc/nginx/sites-enabled"
@@ -412,6 +415,10 @@ class SystemUpgradeRequest(BaseModel):
     apply_migrations: bool = True
     dry_run: bool = False
 
+class SystemUpdateReloadRequest(BaseModel):
+    apply_migrations: bool = True
+    restart_mode: Literal["auto", "service", "screen", "process"] = "auto"
+
 class TLSRenewRequest(BaseModel):
     domain: Optional[str] = None
     cert_name: Optional[str] = None
@@ -446,6 +453,132 @@ class PackageRemoveRequest(BaseModel):
 class PackageUpdateRequest(BaseModel):
     container_name: Optional[str] = None
     full_upgrade: bool = False
+
+
+def _command_for_display(command: List[str]) -> str:
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def _run_local_checked(
+    command: List[str],
+    cwd: Optional[str] = None,
+    allow_return_codes: Optional[List[int]] = None,
+) -> subprocess.CompletedProcess:
+    allowed = set(allow_return_codes or [0])
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Command not found: {command[0]}") from exc
+
+    if result.returncode not in allowed:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or f"exit code {result.returncode}"
+        rendered = _command_for_display(command)
+        raise RuntimeError(f"Command failed ({rendered}): {detail}")
+    return result
+
+
+def _git_head_commit(repo_path: str) -> str:
+    result = _run_local_checked(["git", "rev-parse", "HEAD"], cwd=repo_path)
+    return (result.stdout or "").strip()
+
+
+def _git_has_uncommitted_changes(repo_path: str) -> bool:
+    for command in (["git", "diff", "--quiet"], ["git", "diff", "--cached", "--quiet"]):
+        result = _run_local_checked(command, cwd=repo_path, allow_return_codes=[0, 1])
+        if result.returncode == 1:
+            return True
+    return False
+
+
+def _launch_restart_script(restart_mode: str) -> None:
+    if not os.path.isfile(RESTART_SCRIPT_PATH):
+        raise RuntimeError(f"Restart script not found: {RESTART_SCRIPT_PATH}")
+
+    command = ["bash", RESTART_SCRIPT_PATH, "--no-pull", "--mode", restart_mode]
+    stream_target: Any = subprocess.DEVNULL
+    log_handle = None
+
+    if UPDATE_RELOAD_LOG_PATH:
+        try:
+            log_parent = os.path.dirname(UPDATE_RELOAD_LOG_PATH)
+            if log_parent:
+                os.makedirs(log_parent, exist_ok=True)
+            log_handle = open(UPDATE_RELOAD_LOG_PATH, "a", encoding="utf-8")
+            stream_target = log_handle
+        except OSError as exc:
+            logging.warning("Unable to open update-reload log %s: %s", UPDATE_RELOAD_LOG_PATH, exc)
+
+    try:
+        subprocess.Popen(
+            command,
+            cwd=BASE_DIR,
+            stdin=subprocess.DEVNULL,
+            stdout=stream_target,
+            stderr=stream_target,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError as exc:
+        rendered = _command_for_display(command)
+        raise RuntimeError(f"Failed to start restart command ({rendered}): {exc}") from exc
+    finally:
+        if log_handle:
+            log_handle.close()
+
+
+def _run_system_update_reload(payload: SystemUpdateReloadRequest, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    repo_path = BASE_DIR
+    if not os.path.isdir(os.path.join(repo_path, ".git")):
+        raise HTTPException(status_code=500, detail=f"Fortress source is not a git repository: {repo_path}")
+
+    if _git_has_uncommitted_changes(repo_path):
+        raise HTTPException(
+            status_code=409,
+            detail="Working tree has uncommitted changes; commit or stash before update-reload",
+        )
+
+    before_commit = _git_head_commit(repo_path)
+    pull_result = _run_local_checked(["git", "pull", "--ff-only"], cwd=repo_path)
+    after_commit = _git_head_commit(repo_path)
+    updated = before_commit != after_commit
+
+    migrations_result: Dict[str, Any] = {"skipped": True, "reason": "no_updates"}
+    reload_result: Dict[str, Any] = {"scheduled": False, "mode": payload.restart_mode}
+    if updated:
+        if payload.apply_migrations:
+            migration_status = MIGRATION_ENGINE.status()
+            if migration_status.get("pending"):
+                migrations_result = MIGRATION_ENGINE.apply()
+            else:
+                migrations_result = {"skipped": True, "reason": "no_pending"}
+        else:
+            migrations_result = {"skipped": True, "reason": "disabled"}
+        if not os.path.isfile(RESTART_SCRIPT_PATH):
+            raise RuntimeError(f"Restart script not found: {RESTART_SCRIPT_PATH}")
+        background_tasks.add_task(_launch_restart_script, payload.restart_mode)
+        reload_result = {"scheduled": True, "mode": payload.restart_mode}
+
+    return {
+        "message": "Update pulled; migrations handled and reload scheduled." if updated else "Already up to date.",
+        "updated": updated,
+        "before_commit": before_commit,
+        "after_commit": after_commit,
+        "git": {
+            "command": ["git", "pull", "--ff-only"],
+            "stdout": (pull_result.stdout or "").strip(),
+            "stderr": (pull_result.stderr or "").strip(),
+        },
+        "migrations": migrations_result,
+        "reload": reload_result,
+    }
 # --- CORE LOGIC ---
 
 app.include_router(
@@ -1166,6 +1299,43 @@ def system_upgrade(payload: SystemUpgradeRequest, x_api_key: Optional[str] = Hea
             "dry_run": payload.dry_run,
             "packages": bool(payload.update_packages),
             "migrations": bool(payload.apply_migrations),
+        },
+    )
+    return response
+
+
+@app.post("/system/update-reload")
+def system_update_reload(
+    payload: SystemUpdateReloadRequest,
+    background_tasks: BackgroundTasks,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    authorize("system_update_reload", "migration_admin", x_api_key, x_user_token)
+    try:
+        response = _run_system_update_reload(payload, background_tasks)
+    except HTTPException as exc:
+        audit_api(
+            "system_update_reload",
+            details={"error": str(exc.detail), "restart_mode": payload.restart_mode},
+            status="error",
+        )
+        raise
+    except Exception as exc:
+        audit_api(
+            "system_update_reload",
+            details={"error": str(exc), "restart_mode": payload.restart_mode},
+            status="error",
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    audit_api(
+        "system_update_reload",
+        details={
+            "updated": response.get("updated"),
+            "reload_scheduled": response.get("reload", {}).get("scheduled"),
+            "apply_migrations": payload.apply_migrations,
+            "restart_mode": payload.restart_mode,
         },
     )
     return response

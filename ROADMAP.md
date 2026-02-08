@@ -155,6 +155,7 @@ Acceptance criteria:
 Next:
 Done: Add `/system/upgrade` API + CLI hook for package updates and migrations.
 Done: Add WebUI upgrade wizard with preflight checks and backup confirmation.
+Done: Add `/system/update-reload` API + CLI/WebUI action to pull git updates, run migrations if needed, and restart API/UI via `restart.sh`.
 Done:
 - Extend schema coverage to monitoring history.
 - Extend schema coverage to container image presets (`/var/lib/fortress/container_images.json`).
@@ -162,6 +163,7 @@ Next:
 - Extend schema coverage to any new JSON stores (firewall state, UI admin store if adopted server-side).
 - Add migration tests for future object-style JSON stores beyond `container_images`.
 - Add upgrade execution history/audit cards in WebUI (past preflights + run outcomes).
+- Add optional branch/channel pinning and signed-update verification for update-reload workflows.
 
 Design: migration engine (schema registry + patch tracking)
 - Registry: keep `schemas/*.json` with `schema_version`, `schema_hash`, defaults, and `aliases` for renamed fields.

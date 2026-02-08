@@ -196,6 +196,73 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
         self.assertIsInstance(full_ok, dict)
         self.assertIn("packages", full_ok)
 
+    def test_permission_matrix_system_update_reload_permissions(self) -> None:
+        self._write_users(
+            {
+                "token-migration": {"username": "migrate", "permissions": ["migration_admin"], "allowed_containers": None},
+                "token-none": {"username": "none", "permissions": [], "allowed_containers": None},
+            }
+        )
+
+        request = self.module.SystemUpdateReloadRequest(apply_migrations=True, restart_mode="auto")
+        background_tasks = self.module.BackgroundTasks()
+        with mock.patch.object(
+            self.module,
+            "_run_system_update_reload",
+            return_value={"updated": False, "reload": {"scheduled": False}},
+        ):
+            allowed = self.module.system_update_reload(
+                request,
+                background_tasks,
+                x_api_key=None,
+                x_user_token="token-migration",
+            )
+            self.assertIsInstance(allowed, dict)
+            self._expect_denied(
+                lambda: self.module.system_update_reload(
+                    request,
+                    background_tasks,
+                    x_api_key=None,
+                    x_user_token="token-none",
+                )
+            )
+
+    def test_system_update_reload_skips_restart_when_no_new_commit(self) -> None:
+        payload = self.module.SystemUpdateReloadRequest(apply_migrations=True, restart_mode="auto")
+        background_tasks = self.module.BackgroundTasks()
+        pull_result = mock.Mock(stdout="Already up to date.\n", stderr="")
+        with (
+            mock.patch.object(self.module, "_git_has_uncommitted_changes", return_value=False),
+            mock.patch.object(self.module, "_git_head_commit", side_effect=["abc123", "abc123"]),
+            mock.patch.object(self.module, "_run_local_checked", return_value=pull_result),
+        ):
+            response = self.module._run_system_update_reload(payload, background_tasks)
+        self.assertFalse(response["updated"])
+        self.assertEqual(response["migrations"].get("reason"), "no_updates")
+        self.assertFalse(response["reload"].get("scheduled"))
+        self.assertEqual(len(background_tasks.tasks), 0)
+
+    def test_system_update_reload_applies_migrations_and_schedules_restart(self) -> None:
+        payload = self.module.SystemUpdateReloadRequest(apply_migrations=True, restart_mode="screen")
+        background_tasks = self.module.BackgroundTasks()
+        pull_result = mock.Mock(stdout="Updating abc..def\n", stderr="")
+        migration_result = {"message": "Migration apply complete", "patch_id": "patch-1", "applied": ["recipes"], "backups": []}
+        with (
+            mock.patch.object(self.module, "_git_has_uncommitted_changes", return_value=False),
+            mock.patch.object(self.module, "_git_head_commit", side_effect=["abc123", "def456"]),
+            mock.patch.object(self.module, "_run_local_checked", return_value=pull_result),
+            mock.patch.object(self.module, "MIGRATION_ENGINE") as migration_engine,
+            mock.patch.object(self.module.os.path, "isfile", return_value=True),
+        ):
+            migration_engine.status.return_value = {"pending": True}
+            migration_engine.apply.return_value = migration_result
+            response = self.module._run_system_update_reload(payload, background_tasks)
+        self.assertTrue(response["updated"])
+        self.assertEqual(response["migrations"], migration_result)
+        self.assertTrue(response["reload"].get("scheduled"))
+        self.assertEqual(response["reload"].get("mode"), "screen")
+        self.assertEqual(len(background_tasks.tasks), 1)
+
     def test_permission_matrix_routing_endpoint_sequence(self) -> None:
         self._write_users(
             {

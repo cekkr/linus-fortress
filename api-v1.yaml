@@ -1482,6 +1482,29 @@ paths:
             application/json:
               schema:
                 type: object
+  /system/update-reload:
+    post:
+      summary: Pull repository updates, migrate if needed, and reload API/UI processes
+      tags: [System]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SystemUpdateReloadRequest"
+      responses:
+        "200":
+          description: Update-check and reload scheduling result
+          content:
+            application/json:
+              schema:
+                type: object
+        "409":
+          description: Local tracked changes prevent fast-forward pull
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /recipes:
     get:
       summary: List available automation recipes
@@ -2769,6 +2792,16 @@ components:
         dry_run:
           type: boolean
           default: false
+    SystemUpdateReloadRequest:
+      type: object
+      properties:
+        apply_migrations:
+          type: boolean
+          default: true
+        restart_mode:
+          type: string
+          enum: [auto, service, screen, process]
+          default: auto
     TLSRenewRequest:
       type: object
       properties:
