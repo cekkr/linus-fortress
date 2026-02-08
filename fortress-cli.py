@@ -839,6 +839,7 @@ def system_command(args: argparse.Namespace) -> None:
         payload = {
             "apply_migrations": not args.skip_migrations,
             "restart_mode": args.mode,
+            "auto_stash": not args.no_auto_stash,
         }
         result = client.request("POST", "/system/update-reload", json_body=payload, auth_override=auth_override)
         print(json.dumps(result, indent=2))
@@ -1498,6 +1499,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pull repository updates, apply migrations when needed, then reload API/UI",
     )
     system_update_reload.add_argument("--skip-migrations", action="store_true", help="Skip migrations apply")
+    system_update_reload.add_argument(
+        "--no-auto-stash",
+        action="store_true",
+        help="Do not auto-stash local changes before update-reload (fails on dirty tracked files)",
+    )
     system_update_reload.add_argument(
         "--mode",
         choices=["auto", "service", "screen", "process"],

@@ -83,11 +83,12 @@ The UI can probe service availability via `POST /containers/probe` (permission `
 The file manager install uses Tiny File Manager under `/var/www/html/filemanager` and prompts for `fm_user`/`fm_password`.
 Recipe apply results now surface `probe.health_checks` with pass/fail/skipped badges and per-check summaries in the recipes views.
 Container create and operation flows now run in a full-stage horizontal sliding wizard (instead of the old right sidebar card) while the right panel shows current operation context.
+Wizard mode now includes a clickable hierarchy breadcrumb (back to Home/previous sections) and a grouped step strip that keeps completed steps available for quick jump/review.
 The Containers page also includes a live image catalog panel with remote filters (`ubuntu`, `debian`, `images`, etc.) so operators can inspect availability before opening the create-container wizard. Catalog resolution now falls back to the public LXD simplestream index (`https://images.linuxcontainers.org/streams/v1/index.json`) to canonicalize stale aliases (for example `ubuntu:lts`/`debian:12`) into current real image names when local remotes are incomplete.
 Global maintenance actions now live in a dedicated **Settings** app card (System Upgrade + Check Update/Reload) rather than being split across unrelated feature cards.
 The stage now includes a configurable fast-actions horizontal menu; action selection is editable from Settings and persisted in browser local storage.
 The Settings app includes a guided System Upgrade wizard that runs `/system/upgrade` preflight (`dry_run=true`) and requires backup confirmation before execution.
-The Settings app also includes **Check Update + Reload**, which runs `/system/update-reload` to `git pull --ff-only`, apply pending migrations when new commits arrive, then restart API/UI using auto mode detection.
+The Settings app also includes **Check Update + Reload**, which runs `/system/update-reload` to `git pull --ff-only`, auto-stashes/restores local changes by default, applies pending migrations when new commits arrive, then restarts API/UI using auto mode detection.
 
 ## Run Server Script
 
@@ -876,13 +877,15 @@ Body:
 ```json
 {
   "apply_migrations": true,
-  "restart_mode": "auto"
+  "restart_mode": "auto",
+  "auto_stash": true
 }
 ```
 - Runs `git pull --ff-only` in the Fortress repo.
+- When `auto_stash=true` (default), local tracked/untracked changes are stashed before pull and restored after the update check.
 - If new commits are pulled, applies pending schema migrations (when enabled) and schedules `restart.sh --no-pull` to reload API/UI.
 - Returns commit-before/after metadata and whether reload scheduling occurred.
-- If the working tree has local tracked changes, the endpoint returns `409` and skips pull/reload.
+- If `auto_stash=false` and the working tree has local tracked changes, the endpoint returns `409` and skips pull/reload.
 
 ### Command Register & Auditing
 - Every API call records an immutable entry into `command_log.db` (see `COMMAND_LOG_DB`), capturing `actor`, endpoint, action, target, and sanitized payload details.
@@ -918,7 +921,7 @@ Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`,
    - `python fortress-cli.py firewall status|rules|apply|rollback|ddos ...`
    - `python fortress-cli.py sites list|create|deploy|backup|rollback|logs|health|restart ...`
    - `python fortress-cli.py migrations status|plan|apply|rollback|ledger ...`
-   - `python fortress-cli.py system update-reload --mode auto`
+   - `python fortress-cli.py system update-reload --mode auto` (add `--no-auto-stash` only when you want dirty-tree pulls to fail instead of stashing)
 3. Encrypted backups can be downloaded and decrypted locally via `python fortress-cli.py backup download foo.enc --dest ./foo.enc` followed by `python fortress-cli.py backup decrypt ./foo.enc --output ./foo.tar.gz`.
 
 Recipe CLI examples:

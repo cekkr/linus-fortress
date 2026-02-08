@@ -68,6 +68,7 @@ const state = {
     mode: null,
     step: 0,
     prevStep: 0,
+    maxStep: 0,
     busy: false,
     error: null,
     context: {
@@ -890,6 +891,7 @@ function openWizard(mode, contextContainer, options = {}) {
   state.wizard.mode = mode;
   state.wizard.step = 0;
   state.wizard.prevStep = 0;
+  state.wizard.maxStep = 0;
   state.wizard.busy = false;
   state.wizard.error = null;
   if (mode === "create-container") {
@@ -933,6 +935,72 @@ function openWizard(mode, contextContainer, options = {}) {
   renderWizard();
 }
 
+function setWizardStep(nextStep) {
+  const total = Math.max(1, wizardStepTotal(state.wizard.mode));
+  const parsed = Number.parseInt(String(nextStep), 10);
+  const target = Number.isFinite(parsed) ? parsed : 0;
+  const bounded = Math.max(0, Math.min(total - 1, target));
+  state.wizard.prevStep = state.wizard.step;
+  state.wizard.step = bounded;
+  state.wizard.maxStep = Math.max(state.wizard.maxStep || 0, bounded);
+}
+
+function closeWizardState() {
+  state.wizard.active = false;
+  state.wizard.error = null;
+  state.wizard.mode = null;
+  state.wizard.busy = false;
+}
+
+function renderBreadcrumb(wizardSteps = []) {
+  const path = buildPath(state.selectedId || state.rootId);
+  const pathMarkup = path
+    .map((node, index) => {
+      const active = index === path.length - 1;
+      const activeClass = active ? "active" : "";
+      const disabled = active ? "disabled" : "";
+      const separator = index < path.length - 1 ? `<span class="breadcrumb-sep">/</span>` : "";
+      return `
+        <button class="breadcrumb-node ${activeClass}" data-nav-node-id="${node.id}" ${disabled}>${escapeHtml(node.title)}</button>
+        ${separator}
+      `;
+    })
+    .join("");
+
+  const wizard = state.wizard;
+  let wizardMarkup = "";
+  if (wizard.active && wizard.mode) {
+    const fallbackSteps = Array.from({ length: wizardStepTotal(wizard.mode) }, (_, index) => `Step ${index + 1}`);
+    const stepTitles = Array.isArray(wizardSteps) && wizardSteps.length ? wizardSteps : fallbackSteps;
+    const totalSteps = Math.max(stepTitles.length, 1);
+    const stepMarkup = stepTitles
+      .map((title, index) => {
+        const active = index === wizard.step ? "active" : "";
+        const done = index <= wizard.maxStep ? "done" : "";
+        const locked = index > wizard.maxStep ? "locked" : "";
+        const disabled = wizard.busy || index > wizard.maxStep ? "disabled" : "";
+        return `<button class="wizard-crumb-step ${active} ${done} ${locked}" data-wizard-action="goto-step" data-step-index="${index}" ${disabled}>${
+          index + 1
+        }. ${escapeHtml(title)}</button>`;
+      })
+      .join("");
+    wizardMarkup = `
+      <div class="wizard-crumb-box">
+        <div class="wizard-crumb-head">
+          <div class="wizard-crumb-title">${escapeHtml(wizardModeLabel(wizard.mode))}</div>
+          <span class="pill">${wizard.step + 1}/${totalSteps}</span>
+        </div>
+        <div class="wizard-crumb-steps">${stepMarkup}</div>
+      </div>
+    `;
+  }
+
+  elements.breadcrumb.innerHTML = `
+    <div class="breadcrumb-path">${pathMarkup}</div>
+    ${wizardMarkup}
+  `;
+}
+
 function renderTree() {
   const path = buildPath(state.selectedId || state.rootId);
   elements.tree.innerHTML = path
@@ -946,7 +1014,7 @@ function renderTree() {
       `;
     })
     .join("");
-  elements.breadcrumb.textContent = path.map((node) => node.title).join(" / ");
+  renderBreadcrumb();
 }
 
 function renderStatusLine() {
@@ -1272,6 +1340,8 @@ function renderSettingsPreview(node) {
     const result = latestUpdateReload.result;
     const updated = Boolean(result.updated);
     const reloadScheduled = Boolean(result.reload && result.reload.scheduled);
+    const stashUsed = Boolean(result.stash && result.stash.used);
+    const stashConflict = Boolean(result.stash && result.stash.restore_conflict);
     return `
       <div class="event-item">
         <div><strong>Last update check</strong> — ${escapeHtml(
@@ -1280,6 +1350,8 @@ function renderSettingsPreview(node) {
         <div class="card-meta">
           <span class="pill ${updated ? "running" : "soon"}">${updated ? "updated" : "no changes"}</span>
           <span class="pill">${reloadScheduled ? "reload scheduled" : "reload skipped"}</span>
+          ${stashUsed ? `<span class="pill">auto-stashed</span>` : ""}
+          ${stashConflict ? `<span class="pill danger">stash conflict</span>` : ""}
         </div>
       </div>
     `;
@@ -2048,6 +2120,7 @@ function renderWizard() {
     if (elements.layout) {
       elements.layout.classList.remove("wizard-active");
     }
+    renderBreadcrumb();
     renderImageCatalog();
     renderOperationPanel();
     return;
@@ -3158,12 +3231,20 @@ function renderWizard() {
   const stepMarkup = steps
     .map((title, index) => {
       const active = index === wizard.step ? "active" : "";
-      return `<div class="wizard-step ${active}">${title}</div>`;
+      const done = index <= wizard.maxStep ? "done" : "";
+      const locked = index > wizard.maxStep ? "locked" : "";
+      const disabled = wizard.busy || index > wizard.maxStep ? "disabled" : "";
+      return `
+        <button class="wizard-step ${active} ${done} ${locked}" data-wizard-action="goto-step" data-step-index="${index}" ${disabled}>
+          <span class="wizard-step-index">${index + 1}</span>
+          <span class="wizard-step-label">${escapeHtml(title)}</span>
+        </button>
+      `;
     })
     .join("");
 
   const errorMarkup = wizard.error ? `<div class="event-item error">${wizard.error}</div>` : "";
-  const backDisabled = wizard.step === 0 ? "disabled" : "";
+  const backDisabled = wizard.step === 0 || wizard.busy ? "disabled" : "";
   const nextDisabled = wizard.busy ? "disabled" : "";
   const pagesMarkup = steps
     .map((title, index) => {
@@ -3200,6 +3281,7 @@ function renderWizard() {
       </div>
     </div>
   `;
+  renderBreadcrumb(steps);
   wizard.prevStep = wizard.step;
   renderOperationPanel();
 }
@@ -3867,6 +3949,7 @@ async function checkForUpdateAndReload(options = {}) {
   const payload = {
     apply_migrations: options.applyMigrations !== false,
     restart_mode: options.restartMode || "auto",
+    auto_stash: options.autoStash !== false,
   };
   return apiRequest("/api/system/update-reload", {
     method: "POST",
@@ -4568,31 +4651,37 @@ async function handleAction(actionId, node, params = {}) {
 
   if (actionId === "system-update-reload") {
     const confirmed = window.confirm(
-      "Check for repository updates and reload Fortress API/WebUI if new commits are pulled?"
+      "Check for repository updates and reload Fortress API/WebUI if new commits are pulled? Local changes are auto-stashed and restored."
     );
     if (!confirmed) {
       return;
     }
     try {
-      const response = await checkForUpdateAndReload({ applyMigrations: true, restartMode: "auto" });
+      const response = await checkForUpdateAndReload({ applyMigrations: true, restartMode: "auto", autoStash: true });
       state.systemUpgrade.lastUpdateReload = {
         at: new Date().toISOString(),
         result: response,
       };
+      const stashUsed = Boolean(response && response.stash && response.stash.used);
+      const stashRestoreConflict = Boolean(response && response.stash && response.stash.restore_conflict);
       const appliedMigrations =
         response &&
         response.migrations &&
         Array.isArray(response.migrations.applied)
           ? response.migrations.applied.length
           : 0;
-      if (response && response.updated) {
+      if (stashRestoreConflict) {
+        logEvent("error", (response && response.message) || "Update pulled but local changes could not be restored");
+      } else if (response && response.updated) {
         const reloadScheduled = Boolean(response.reload && response.reload.scheduled);
+        const stashSuffix = stashUsed ? ", local changes restored from auto-stash" : "";
         logEvent(
           "success",
-          `Update pulled (${appliedMigrations} migrated stores, ${reloadScheduled ? "reload scheduled" : "reload skipped"})`
+          `Update pulled (${appliedMigrations} migrated stores, ${reloadScheduled ? "reload scheduled" : "reload skipped"}${stashSuffix})`
         );
       } else {
-        logEvent("success", (response && response.message) || "Already up to date");
+        const stashSuffix = stashUsed ? " (local changes auto-stashed/restored)" : "";
+        logEvent("success", `${(response && response.message) || "Already up to date"}${stashSuffix}`);
       }
       renderPreview();
     } catch (err) {
@@ -4788,15 +4877,30 @@ async function handleWizardAction(action, payload = {}) {
     return;
   }
   if (action === "close") {
-    state.wizard.active = false;
-    state.wizard.error = null;
-    state.wizard.mode = null;
+    closeWizardState();
     renderWizard();
     return;
   }
   if (action === "back") {
-    state.wizard.prevStep = state.wizard.step;
-    state.wizard.step = Math.max(0, state.wizard.step - 1);
+    setWizardStep(state.wizard.step - 1);
+    renderWizard();
+    return;
+  }
+  if (action === "goto-step") {
+    if (state.wizard.busy) {
+      return;
+    }
+    const requestedStep = Number.parseInt(String(payload.stepIndex || payload.step), 10);
+    if (!Number.isFinite(requestedStep)) {
+      return;
+    }
+    if (requestedStep > state.wizard.maxStep || requestedStep < 0) {
+      return;
+    }
+    if (requestedStep === state.wizard.step) {
+      return;
+    }
+    setWizardStep(requestedStep);
     renderWizard();
     return;
   }
@@ -4830,8 +4934,7 @@ async function handleWizardAction(action, payload = {}) {
             "success",
             `Upgrade preflight ready (${migrationPlan.length} migration changes, ${preflightData.backups.length} backups listed)`
           );
-          state.wizard.prevStep = state.wizard.step;
-          state.wizard.step = 1;
+          setWizardStep(1);
           renderPreview();
         } catch (err) {
           state.wizard.error = err.message || "Upgrade preflight failed";
@@ -4842,8 +4945,7 @@ async function handleWizardAction(action, payload = {}) {
         return;
       }
       if (state.wizard.step === 1) {
-        state.wizard.prevStep = state.wizard.step;
-        state.wizard.step = 2;
+        setWizardStep(2);
         renderWizard();
         return;
       }
@@ -4853,8 +4955,7 @@ async function handleWizardAction(action, payload = {}) {
           renderWizard();
           return;
         }
-        state.wizard.prevStep = state.wizard.step;
-        state.wizard.step = 3;
+        setWizardStep(3);
         renderWizard();
         return;
       }
@@ -4895,8 +4996,7 @@ async function handleWizardAction(action, payload = {}) {
     }
     const steps = wizardStepTotal(state.wizard.mode);
     if (state.wizard.step < steps - 1) {
-      state.wizard.prevStep = state.wizard.step;
-      state.wizard.step += 1;
+      setWizardStep(state.wizard.step + 1);
       renderWizard();
       return;
     }
@@ -5361,6 +5461,18 @@ function bindEvents() {
       return;
     }
 
+    const navNode = event.target.closest("[data-nav-node-id]");
+    if (navNode) {
+      const nodeId = navNode.getAttribute("data-nav-node-id");
+      if (nodeId) {
+        if (state.wizard.active) {
+          closeWizardState();
+        }
+        selectNode(nodeId);
+      }
+      return;
+    }
+
     const card = event.target.closest(".app-card");
     if (card) {
       selectNode(card.getAttribute("data-node-id"));
@@ -5382,6 +5494,18 @@ function bindEvents() {
     delete data.wizardAction;
     handleWizardAction(action.getAttribute("data-wizard-action"), data);
   });
+
+  if (elements.breadcrumb) {
+    elements.breadcrumb.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-wizard-action]");
+      if (!action) {
+        return;
+      }
+      const data = { ...action.dataset };
+      delete data.wizardAction;
+      handleWizardAction(action.getAttribute("data-wizard-action"), data);
+    });
+  }
 
   elements.wizard.addEventListener("input", (event) => {
     const target = event.target;

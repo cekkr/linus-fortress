@@ -66,7 +66,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
 - Next: Add keyboard + touch navigation for wizard step transitions (left/right arrows, swipe gestures).
-- Next: Add an inline wizard step summary/history strip so users can jump directly to prior steps without losing context.
+- Done: Add an inline wizard step summary/history strip with breadcrumb quick-jump so users can navigate back to Home/sections and prior wizard steps without losing context.
+- Next: Persist wizard progress markers per active flow so users can safely resume after page refresh.
 - Next: Add drag/drop ordering + named profiles for fast-actions menu preferences.
 - Next: Add a background cache refresh + health indicator for public LXD simplestream lookups and keep Ubuntu/Debian version-to-codename mappings current as new releases ship.
 
@@ -163,6 +164,7 @@ Next:
 Done: Add `/system/upgrade` API + CLI hook for package updates and migrations.
 Done: Add WebUI upgrade wizard with preflight checks and backup confirmation.
 Done: Add `/system/update-reload` API + CLI/WebUI action to pull git updates, run migrations if needed, and restart API/UI via `restart.sh`.
+Done: Auto-stash/restore local changes in `/system/update-reload` (default enabled) to avoid dirty-tree failures in Settings/CLI update flows.
 Done:
 - Extend schema coverage to monitoring history.
 - Extend schema coverage to container image presets (`/var/lib/fortress/container_images.json`).

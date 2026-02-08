@@ -228,7 +228,7 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
             )
 
     def test_system_update_reload_skips_restart_when_no_new_commit(self) -> None:
-        payload = self.module.SystemUpdateReloadRequest(apply_migrations=True, restart_mode="auto")
+        payload = self.module.SystemUpdateReloadRequest(apply_migrations=True, restart_mode="auto", auto_stash=False)
         background_tasks = self.module.BackgroundTasks()
         pull_result = mock.Mock(stdout="Already up to date.\n", stderr="")
         with (
@@ -243,7 +243,7 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
         self.assertEqual(len(background_tasks.tasks), 0)
 
     def test_system_update_reload_applies_migrations_and_schedules_restart(self) -> None:
-        payload = self.module.SystemUpdateReloadRequest(apply_migrations=True, restart_mode="screen")
+        payload = self.module.SystemUpdateReloadRequest(apply_migrations=True, restart_mode="screen", auto_stash=False)
         background_tasks = self.module.BackgroundTasks()
         pull_result = mock.Mock(stdout="Updating abc..def\n", stderr="")
         migration_result = {"message": "Migration apply complete", "patch_id": "patch-1", "applied": ["recipes"], "backups": []}
@@ -262,6 +262,34 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
         self.assertTrue(response["reload"].get("scheduled"))
         self.assertEqual(response["reload"].get("mode"), "screen")
         self.assertEqual(len(background_tasks.tasks), 1)
+
+    def test_system_update_reload_rejects_dirty_tree_when_auto_stash_disabled(self) -> None:
+        payload = self.module.SystemUpdateReloadRequest(apply_migrations=True, restart_mode="auto", auto_stash=False)
+        background_tasks = self.module.BackgroundTasks()
+        with mock.patch.object(self.module, "_git_has_uncommitted_changes", return_value=True):
+            with self.assertRaises(HTTPException) as exc:
+                self.module._run_system_update_reload(payload, background_tasks)
+        self.assertEqual(exc.exception.status_code, 409)
+        self.assertIn("Working tree has uncommitted changes", str(exc.exception.detail))
+
+    def test_system_update_reload_auto_stashes_and_restores_local_changes(self) -> None:
+        payload = self.module.SystemUpdateReloadRequest(apply_migrations=False, restart_mode="auto", auto_stash=True)
+        background_tasks = self.module.BackgroundTasks()
+        stash_push = mock.Mock(stdout="Saved working directory and index state", stderr="", returncode=0)
+        pull_result = mock.Mock(stdout="Already up to date.\n", stderr="", returncode=0)
+        stash_pop = mock.Mock(stdout="Dropped refs/stash@{0}", stderr="", returncode=0)
+        with (
+            mock.patch.object(self.module, "_git_has_local_changes", return_value=True),
+            mock.patch.object(self.module, "_git_head_commit", side_effect=["abc123", "abc123"]),
+            mock.patch.object(self.module, "_run_local_checked", side_effect=[stash_push, pull_result, stash_pop]),
+        ):
+            response = self.module._run_system_update_reload(payload, background_tasks)
+        self.assertFalse(response["updated"])
+        self.assertTrue(response["stash"].get("auto_stash"))
+        self.assertTrue(response["stash"].get("used"))
+        self.assertTrue(response["stash"].get("restored"))
+        self.assertFalse(response["stash"].get("restore_conflict"))
+        self.assertEqual(len(background_tasks.tasks), 0)
 
     def test_permission_matrix_routing_endpoint_sequence(self) -> None:
         self._write_users(

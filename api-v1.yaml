@@ -1500,7 +1500,7 @@ paths:
               schema:
                 type: object
         "409":
-          description: Local tracked changes prevent fast-forward pull
+          description: Local tracked changes prevent fast-forward pull when auto_stash is disabled
           content:
             application/json:
               schema:
@@ -2805,6 +2805,9 @@ components:
           type: string
           enum: [auto, service, screen, process]
           default: auto
+        auto_stash:
+          type: boolean
+          default: true
     TLSRenewRequest:
       type: object
       properties:

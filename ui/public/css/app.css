@@ -224,16 +224,120 @@ body {
 
 .stage-top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 
 .breadcrumb {
-  font-size: 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.breadcrumb-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.breadcrumb-node {
+  font-family: inherit;
+  border: 1px solid rgba(58, 75, 45, 0.28);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.62);
+  color: #2f3d27;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 1px;
-  color: #3a4a2e;
+  letter-spacing: 0.7px;
+  cursor: pointer;
+}
+
+.breadcrumb-node:hover {
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.breadcrumb-node.active {
+  background: rgba(58, 75, 45, 0.16);
+  border-color: rgba(58, 75, 45, 0.35);
+}
+
+.breadcrumb-node:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.breadcrumb-sep {
+  color: #5a6b4a;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.wizard-crumb-box {
+  border-radius: 12px;
+  border: 1px solid rgba(58, 75, 45, 0.28);
+  background: linear-gradient(140deg, rgba(209, 233, 170, 0.52), rgba(248, 232, 186, 0.5));
+  padding: 8px 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.wizard-crumb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wizard-crumb-title {
+  font-family: "Teko", sans-serif;
+  font-size: 18px;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: #283720;
+}
+
+.wizard-crumb-steps {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.wizard-crumb-step {
+  font-family: inherit;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid rgba(44, 61, 32, 0.2);
+  background: rgba(255, 255, 255, 0.72);
+  color: #2d3d25;
+  padding: 4px 10px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wizard-crumb-step.done {
+  background: rgba(140, 207, 85, 0.2);
+}
+
+.wizard-crumb-step.active {
+  background: rgba(58, 75, 45, 0.26);
+  border-color: rgba(58, 75, 45, 0.45);
+}
+
+.wizard-crumb-step.locked {
+  opacity: 0.65;
+}
+
+.wizard-crumb-step:disabled {
+  cursor: default;
 }
 
 .status-line {
@@ -675,20 +779,48 @@ body {
 }
 
 .wizard-step {
+  font-family: inherit;
+  appearance: none;
   flex: 0 0 150px;
-  padding: 8px;
+  padding: 8px 10px;
   border-radius: 10px;
   text-align: left;
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #eaf5d5;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.wizard-step-index {
+  font-size: 10px;
+  opacity: 0.78;
+}
+
+.wizard-step-label {
+  display: block;
 }
 
 .wizard-step.active {
   background: rgba(140, 207, 85, 0.25);
   border-color: rgba(140, 207, 85, 0.4);
+}
+
+.wizard-step.done {
+  border-color: rgba(140, 207, 85, 0.24);
+}
+
+.wizard-step.locked {
+  opacity: 0.65;
+}
+
+.wizard-step:disabled {
+  cursor: default;
 }
 
 .wizard-viewport {
@@ -1037,6 +1169,11 @@ body {
     gap: 12px;
   }
 
+  .stage-top {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .card-grid {
     grid-template-columns: 1fr;
   }
@@ -1052,6 +1189,10 @@ body {
 
   .wizard-step {
     flex-basis: 130px;
+  }
+
+  .wizard-crumb-step {
+    font-size: 9px;
   }
 
   .catalog-grid {

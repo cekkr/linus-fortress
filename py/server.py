@@ -418,6 +418,7 @@ class SystemUpgradeRequest(BaseModel):
 class SystemUpdateReloadRequest(BaseModel):
     apply_migrations: bool = True
     restart_mode: Literal["auto", "service", "screen", "process"] = "auto"
+    auto_stash: bool = True
 
 class TLSRenewRequest(BaseModel):
     domain: Optional[str] = None
@@ -498,6 +499,26 @@ def _git_has_uncommitted_changes(repo_path: str) -> bool:
     return False
 
 
+def _git_has_local_changes(repo_path: str) -> bool:
+    result = _run_local_checked(["git", "status", "--porcelain"], cwd=repo_path)
+    return bool((result.stdout or "").strip())
+
+
+def _restore_stashed_changes(repo_path: str) -> Dict[str, Any]:
+    pop_result = _run_local_checked(
+        ["git", "stash", "pop"],
+        cwd=repo_path,
+        allow_return_codes=[0, 1],
+    )
+    restored = pop_result.returncode == 0
+    return {
+        "restored": restored,
+        "restore_conflict": not restored,
+        "pop_stdout": (pop_result.stdout or "").strip(),
+        "pop_stderr": (pop_result.stderr or "").strip(),
+    }
+
+
 def _launch_restart_script(restart_mode: str) -> None:
     if not os.path.isfile(RESTART_SCRIPT_PATH):
         raise RuntimeError(f"Restart script not found: {RESTART_SCRIPT_PATH}")
@@ -539,35 +560,90 @@ def _run_system_update_reload(payload: SystemUpdateReloadRequest, background_tas
     if not os.path.isdir(os.path.join(repo_path, ".git")):
         raise HTTPException(status_code=500, detail=f"Fortress source is not a git repository: {repo_path}")
 
-    if _git_has_uncommitted_changes(repo_path):
+    stash_result: Dict[str, Any] = {
+        "auto_stash": bool(payload.auto_stash),
+        "used": False,
+        "label": None,
+        "restored": True,
+        "restore_conflict": False,
+    }
+
+    if payload.auto_stash:
+        if _git_has_local_changes(repo_path):
+            stash_label = f"fortress-update-reload-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            stash_push_result = _run_local_checked(
+                ["git", "stash", "push", "--include-untracked", "--message", stash_label],
+                cwd=repo_path,
+            )
+            stash_stdout = (stash_push_result.stdout or "").strip()
+            stash_stderr = (stash_push_result.stderr or "").strip()
+            stash_created = "No local changes to save" not in f"{stash_stdout}\n{stash_stderr}"
+            stash_result.update(
+                {
+                    "used": stash_created,
+                    "label": stash_label if stash_created else None,
+                    "push_stdout": stash_stdout,
+                    "push_stderr": stash_stderr,
+                }
+            )
+    elif _git_has_uncommitted_changes(repo_path):
         raise HTTPException(
             status_code=409,
             detail="Working tree has uncommitted changes; commit or stash before update-reload",
         )
 
-    before_commit = _git_head_commit(repo_path)
-    pull_result = _run_local_checked(["git", "pull", "--ff-only"], cwd=repo_path)
-    after_commit = _git_head_commit(repo_path)
-    updated = before_commit != after_commit
+    try:
+        before_commit = _git_head_commit(repo_path)
+        pull_result = _run_local_checked(["git", "pull", "--ff-only"], cwd=repo_path)
+        after_commit = _git_head_commit(repo_path)
+        updated = before_commit != after_commit
 
-    migrations_result: Dict[str, Any] = {"skipped": True, "reason": "no_updates"}
+        migrations_result: Dict[str, Any] = {"skipped": True, "reason": "no_updates"}
+        if updated:
+            if payload.apply_migrations:
+                migration_status = MIGRATION_ENGINE.status()
+                if migration_status.get("pending"):
+                    migrations_result = MIGRATION_ENGINE.apply()
+                else:
+                    migrations_result = {"skipped": True, "reason": "no_pending"}
+            else:
+                migrations_result = {"skipped": True, "reason": "disabled"}
+    except Exception as exc:
+        if stash_result["used"]:
+            restored = _restore_stashed_changes(repo_path)
+            stash_result.update(restored)
+            if restored.get("restore_conflict"):
+                raise RuntimeError(
+                    f"{exc}; auto-stashed changes could not be restored cleanly (git stash pop reported conflicts)"
+                ) from exc
+        raise
+
+    if stash_result["used"]:
+        stash_result.update(_restore_stashed_changes(repo_path))
+
     reload_result: Dict[str, Any] = {"scheduled": False, "mode": payload.restart_mode}
     if updated:
-        if payload.apply_migrations:
-            migration_status = MIGRATION_ENGINE.status()
-            if migration_status.get("pending"):
-                migrations_result = MIGRATION_ENGINE.apply()
-            else:
-                migrations_result = {"skipped": True, "reason": "no_pending"}
+        if stash_result.get("restore_conflict"):
+            reload_result = {
+                "scheduled": False,
+                "mode": payload.restart_mode,
+                "reason": "stash_restore_conflict",
+            }
         else:
-            migrations_result = {"skipped": True, "reason": "disabled"}
-        if not os.path.isfile(RESTART_SCRIPT_PATH):
-            raise RuntimeError(f"Restart script not found: {RESTART_SCRIPT_PATH}")
-        background_tasks.add_task(_launch_restart_script, payload.restart_mode)
-        reload_result = {"scheduled": True, "mode": payload.restart_mode}
+            if not os.path.isfile(RESTART_SCRIPT_PATH):
+                raise RuntimeError(f"Restart script not found: {RESTART_SCRIPT_PATH}")
+            background_tasks.add_task(_launch_restart_script, payload.restart_mode)
+            reload_result = {"scheduled": True, "mode": payload.restart_mode}
+
+    message = "Update pulled; migrations handled and reload scheduled." if updated else "Already up to date."
+    if stash_result.get("restore_conflict"):
+        message = (
+            "Update pulled, but local changes could not be restored cleanly after auto-stash; "
+            "resolve conflicts and apply the stash manually."
+        )
 
     return {
-        "message": "Update pulled; migrations handled and reload scheduled." if updated else "Already up to date.",
+        "message": message,
         "updated": updated,
         "before_commit": before_commit,
         "after_commit": after_commit,
@@ -578,6 +654,7 @@ def _run_system_update_reload(payload: SystemUpdateReloadRequest, background_tas
         },
         "migrations": migrations_result,
         "reload": reload_result,
+        "stash": stash_result,
     }
 # --- CORE LOGIC ---
 
@@ -1317,14 +1394,22 @@ def system_update_reload(
     except HTTPException as exc:
         audit_api(
             "system_update_reload",
-            details={"error": str(exc.detail), "restart_mode": payload.restart_mode},
+            details={
+                "error": str(exc.detail),
+                "restart_mode": payload.restart_mode,
+                "auto_stash": bool(payload.auto_stash),
+            },
             status="error",
         )
         raise
     except Exception as exc:
         audit_api(
             "system_update_reload",
-            details={"error": str(exc), "restart_mode": payload.restart_mode},
+            details={
+                "error": str(exc),
+                "restart_mode": payload.restart_mode,
+                "auto_stash": bool(payload.auto_stash),
+            },
             status="error",
         )
         raise HTTPException(status_code=500, detail=str(exc))
@@ -1336,6 +1421,9 @@ def system_update_reload(
             "reload_scheduled": response.get("reload", {}).get("scheduled"),
             "apply_migrations": payload.apply_migrations,
             "restart_mode": payload.restart_mode,
+            "auto_stash": bool(payload.auto_stash),
+            "stash_used": bool(response.get("stash", {}).get("used")),
+            "stash_restore_conflict": bool(response.get("stash", {}).get("restore_conflict")),
         },
     )
     return response
