@@ -6,7 +6,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/storage.py` centralizes JSON store helpers for API users, recipes, hosts, VMs, sites, and monitoring history
 - py/fortress/monitoring.py centralizes host/container resource snapshots with alert thresholds
 - Container lifecycle/access/connectivity APIs are implemented in `py/fortress/api/containers.py` with LXC helpers in `py/fortress/containers.py`
-- Container image endpoints now merge saved presets from `/var/lib/fortress/container_images.json` with direct `lxc image list ... --format json` discovery so the UI shows currently available popular images
+- Container image endpoints now merge saved presets from `/var/lib/fortress/container_images.json` with direct `lxc image list ... --format json` discovery and public simplestream (`https://images.linuxcontainers.org/streams/v1/index.json`) fallback so stale aliases are canonicalized to real current image names
 - `py/fortress/routing.py` centralizes nginx routing config rendering, domain validation, TLS path checks, ACME challenge support, conflict detection, and reload/testing helpers for HTTP(S) host routing
 - `py/fortress/tls.py` handles certbot-backed Let's Encrypt issuance/renewal for HTTP-01 challenges
 - Routing entries support multi-domain server names (including wildcard domains), conflict detection, and can be refreshed via `POST /routing/refresh` to update upstream IPs

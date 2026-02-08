@@ -196,7 +196,7 @@ paths:
                 $ref: "#/components/schemas/Message"
   /containers/images/popular:
     get:
-      summary: List live popular images from LXD remotes plus saved presets
+      summary: List live popular images from LXD remotes/public catalog plus saved presets
       tags: [Containers]
       responses:
         "200":
@@ -2343,7 +2343,7 @@ components:
           type: string
         source:
           type: string
-          description: Origin of this entry (`lxd-cli`, `custom`, or `fallback`).
+          description: Origin of this entry (`lxd-cli`, `lxd-repo`, `custom`, or `fallback`).
         resolved_name:
           type: string
         remote:

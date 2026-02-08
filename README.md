@@ -83,7 +83,7 @@ The UI can probe service availability via `POST /containers/probe` (permission `
 The file manager install uses Tiny File Manager under `/var/www/html/filemanager` and prompts for `fm_user`/`fm_password`.
 Recipe apply results now surface `probe.health_checks` with pass/fail/skipped badges and per-check summaries in the recipes views.
 Container create and operation flows now run in a full-stage horizontal sliding wizard (instead of the old right sidebar card) while the right panel shows current operation context.
-The Containers page also includes a live image catalog panel with remote filters (`ubuntu`, `debian`, `images`, etc.) so operators can inspect availability before opening the create-container wizard.
+The Containers page also includes a live image catalog panel with remote filters (`ubuntu`, `debian`, `images`, etc.) so operators can inspect availability before opening the create-container wizard. Catalog resolution now falls back to the public LXD simplestream index (`https://images.linuxcontainers.org/streams/v1/index.json`) to canonicalize stale aliases (for example `ubuntu:lts`/`debian:12`) into current real image names when local remotes are incomplete.
 Global maintenance actions now live in a dedicated **Settings** app card (System Upgrade + Check Update/Reload) rather than being split across unrelated feature cards.
 The stage now includes a configurable fast-actions horizontal menu; action selection is editable from Settings and persisted in browser local storage.
 The Settings app includes a guided System Upgrade wizard that runs `/system/upgrade` preflight (`dry_run=true`) and requires backup confirmation before execution.
@@ -371,15 +371,15 @@ Body:
 #### `POST /container/create` (permission `manage_containers`, scoped to `name`)
 Body fields (defaults shown):
 - `name` (**required** string) – LXD container name.
-- `distro` (string, default `ubuntu:lts`) – image alias to launch (`ubuntu:lts` resolves to the latest LTS available on the `ubuntu:` remote).
+- `distro` (string, default `ubuntu:lts`) – image alias to launch (`ubuntu:lts` resolves to the latest LTS available on the `ubuntu:` remote; when unavailable, it falls back to canonical `images:ubuntu/<release>/cloud` aliases from the public simplestream catalog).
 - `cpu_limit` (string, default `1`) – passed to `lxc config set limits.cpu`.
 - `ram_limit` (string, default `512MB`).
 - `disk_limit` (string, default `10GB`).
 
 #### `GET /containers/images/popular` (permission `manage_containers`)
-- Uses direct `lxc image list ... --format json` lookups against configured remotes (`ubuntu`, `debian`, `images`) to return currently available popular images.
+- Uses direct `lxc image list ... --format json` lookups against configured remotes (`ubuntu`, `debian`, `images`) and falls back to direct public simplestream index discovery when those remotes are incomplete.
 - Merges live LXD-discovered entries with saved custom presets from `/var/lib/fortress/container_images.json`.
-- Each entry includes `source` (`lxd-cli`, `custom`, or `fallback`), resolved alias, and availability metadata.
+- Each entry includes `source` (`lxd-cli`, `lxd-repo`, `custom`, or `fallback`), resolved alias, and availability metadata.
 
 #### `POST /containers/images/popular` (permission `manage_containers`)
 Body:

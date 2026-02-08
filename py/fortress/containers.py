@@ -5,8 +5,10 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+import requests
 from fastapi import HTTPException
 
 from fortress.system import run_command
@@ -18,9 +20,56 @@ MIN_PORT = 1
 MAX_PROXY_DEVICES_PER_REQUEST = 50
 UBUNTU_LTS_PATTERN = re.compile(r"^(?P<year>\d{2})\.04$")
 DEBIAN_VERSION_PATTERN = re.compile(r"^(?P<version>\d+)$")
+PUBLIC_IMAGE_PRODUCT_PATTERN = re.compile(r"^(?P<distro>[^:]+):(?P<release>[^:]+):(?P<arch>[^:]+):(?P<variant>[^:]+)$")
+PUBLIC_IMAGE_INDEX_URL = os.environ.get("FORTRESS_PUBLIC_IMAGE_INDEX_URL", "https://images.linuxcontainers.org/streams/v1/index.json")
+PUBLIC_IMAGE_ARCHES = {"amd64", "x86_64"}
+
+try:
+    PUBLIC_IMAGE_INDEX_TIMEOUT_SECONDS = float(os.environ.get("FORTRESS_PUBLIC_IMAGE_INDEX_TIMEOUT_SECONDS", "4"))
+except ValueError:
+    PUBLIC_IMAGE_INDEX_TIMEOUT_SECONDS = 4.0
+
+try:
+    PUBLIC_IMAGE_INDEX_CACHE_SECONDS = int(os.environ.get("FORTRESS_PUBLIC_IMAGE_INDEX_CACHE_SECONDS", "300"))
+except ValueError:
+    PUBLIC_IMAGE_INDEX_CACHE_SECONDS = 300
+
+UBUNTU_VERSION_TO_CODENAME = {
+    "16.04": "xenial",
+    "18.04": "bionic",
+    "20.04": "focal",
+    "22.04": "jammy",
+    "24.04": "noble",
+}
+UBUNTU_CODENAME_TO_VERSION = {codename: version for version, codename in UBUNTU_VERSION_TO_CODENAME.items()}
+UBUNTU_LTS_CODENAME_ORDER = {
+    codename: index
+    for index, codename in enumerate(
+        ["xenial", "bionic", "focal", "jammy", "noble"],
+        start=1,
+    )
+}
+
+DEBIAN_VERSION_TO_CODENAME = {
+    "10": "buster",
+    "11": "bullseye",
+    "12": "bookworm",
+    "13": "trixie",
+    "14": "forky",
+}
+DEBIAN_CODENAME_TO_VERSION = {codename: version for version, codename in DEBIAN_VERSION_TO_CODENAME.items()}
+DEBIAN_STABLE_ORDER = {
+    codename: index
+    for index, codename in enumerate(
+        ["buster", "bullseye", "bookworm", "trixie", "forky"],
+        start=1,
+    )
+}
+DEBIAN_UNSTABLE_RELEASES = {"sid", "unstable", "testing", "experimental"}
 
 AuditCallback = Callable[[str, str, Optional[str], Optional[Dict[str, Any]], str], None]
 _AUDIT_CALLBACK: Optional[AuditCallback] = None
+_PUBLIC_IMAGE_INDEX_CACHE: Dict[str, Any] = {"expires_at": 0.0, "products": []}
 
 
 def configure_audit(callback: Optional[AuditCallback]) -> None:
@@ -588,16 +637,262 @@ def _latest_alias_for_pattern(
     return alias, version, meta
 
 
+def _public_image_products() -> List[str]:
+    now = time.time()
+    cached_expiry = float(_PUBLIC_IMAGE_INDEX_CACHE.get("expires_at") or 0.0)
+    cached_products = _PUBLIC_IMAGE_INDEX_CACHE.get("products")
+    if cached_expiry > now and isinstance(cached_products, list):
+        return [item for item in cached_products if isinstance(item, str)]
+    try:
+        response = requests.get(PUBLIC_IMAGE_INDEX_URL, timeout=max(PUBLIC_IMAGE_INDEX_TIMEOUT_SECONDS, 1.0))
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        logging.exception("Failed to fetch LXD public image index from %s", PUBLIC_IMAGE_INDEX_URL)
+        _PUBLIC_IMAGE_INDEX_CACHE["products"] = []
+        _PUBLIC_IMAGE_INDEX_CACHE["expires_at"] = now + max(PUBLIC_IMAGE_INDEX_CACHE_SECONDS, 30)
+        return []
+    index = payload.get("index") if isinstance(payload, dict) else {}
+    images = index.get("images") if isinstance(index, dict) else {}
+    products = images.get("products") if isinstance(images, dict) else []
+    if not isinstance(products, list):
+        products = []
+    normalized = [item.strip() for item in products if isinstance(item, str) and item.strip()]
+    _PUBLIC_IMAGE_INDEX_CACHE["products"] = normalized
+    _PUBLIC_IMAGE_INDEX_CACHE["expires_at"] = now + max(PUBLIC_IMAGE_INDEX_CACHE_SECONDS, 30)
+    return list(normalized)
+
+
+def _public_cloud_releases_by_distro() -> Dict[str, Set[str]]:
+    releases: Dict[str, Set[str]] = {}
+    for product in _public_image_products():
+        match = PUBLIC_IMAGE_PRODUCT_PATTERN.match(product)
+        if not match:
+            continue
+        distro = match.group("distro").strip().lower()
+        release = match.group("release").strip()
+        arch = match.group("arch").strip().lower()
+        variant = match.group("variant").strip().lower()
+        if variant != "cloud" or arch not in PUBLIC_IMAGE_ARCHES:
+            continue
+        releases.setdefault(distro, set()).add(release)
+    return releases
+
+
+def _public_cloud_alias_for_release(cloud_releases: Dict[str, Set[str]], distro: str, release: str) -> Optional[str]:
+    wanted_distro = distro.strip().lower()
+    wanted_release = release.strip().lower()
+    for available_release in cloud_releases.get(wanted_distro, set()):
+        if available_release.strip().lower() == wanted_release:
+            return f"images:{wanted_distro}/{available_release}/cloud"
+    return None
+
+
+def _latest_release_by_version(releases: Set[str]) -> Optional[str]:
+    candidates: List[Tuple[Tuple[int, ...], str]] = []
+    for release in releases:
+        key = _version_key(release)
+        if key:
+            candidates.append((key, release))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    _key, value = candidates[-1]
+    return value
+
+
+def _latest_ubuntu_lts_release_from_public(releases: Set[str]) -> Optional[str]:
+    known_candidates: List[Tuple[int, str]] = []
+    for release in releases:
+        rank = UBUNTU_LTS_CODENAME_ORDER.get(release.strip().lower())
+        if rank is not None:
+            known_candidates.append((rank, release))
+    if known_candidates:
+        known_candidates.sort(key=lambda item: item[0])
+        _rank, value = known_candidates[-1]
+        return value
+    numeric_candidates: List[Tuple[Tuple[int, ...], str]] = []
+    for release in releases:
+        normalized = release.strip()
+        if not UBUNTU_LTS_PATTERN.match(normalized):
+            continue
+        key = _version_key(normalized)
+        if key:
+            numeric_candidates.append((key, normalized))
+    if not numeric_candidates:
+        return None
+    numeric_candidates.sort(key=lambda item: item[0])
+    _key, value = numeric_candidates[-1]
+    return value
+
+
+def _latest_debian_stable_release_from_public(releases: Set[str]) -> Optional[str]:
+    known_candidates: List[Tuple[int, str]] = []
+    for release in releases:
+        rank = DEBIAN_STABLE_ORDER.get(release.strip().lower())
+        if rank is not None:
+            known_candidates.append((rank, release))
+    if known_candidates:
+        known_candidates.sort(key=lambda item: item[0])
+        _rank, value = known_candidates[-1]
+        return value
+    numeric_candidates: List[Tuple[Tuple[int, ...], str]] = []
+    for release in releases:
+        normalized = release.strip().lower()
+        if normalized in DEBIAN_UNSTABLE_RELEASES:
+            continue
+        key = _version_key(normalized)
+        if key:
+            numeric_candidates.append((key, release))
+    if numeric_candidates:
+        numeric_candidates.sort(key=lambda item: item[0])
+        _key, value = numeric_candidates[-1]
+        return value
+    named_candidates = [release for release in releases if release.strip().lower() not in DEBIAN_UNSTABLE_RELEASES]
+    if not named_candidates:
+        return None
+    return sorted(named_candidates)[-1]
+
+
+def resolve_alias_via_public_catalog(alias: str) -> Optional[str]:
+    normalized = alias.strip()
+    if not normalized:
+        return None
+    cloud_releases = _public_cloud_releases_by_distro()
+    if not cloud_releases:
+        return None
+    remote, image_alias = parse_image_alias(normalized)
+    remote = remote.strip().lower()
+    image_alias = image_alias.strip()
+    normalized_input = normalized.lower()
+
+    if remote == "images":
+        parts = image_alias.split("/")
+        if len(parts) >= 3:
+            distro, release, variant = parts[0].lower(), parts[1], parts[2].lower()
+            if variant == "cloud":
+                return _public_cloud_alias_for_release(cloud_releases, distro, release)
+        return None
+
+    if normalized_input in {"ubuntu:lts", "ubuntu:latest-lts", "ubuntu:lts/latest"}:
+        latest_lts = _latest_ubuntu_lts_release_from_public(cloud_releases.get("ubuntu", set()))
+        if latest_lts:
+            return _public_cloud_alias_for_release(cloud_releases, "ubuntu", latest_lts)
+        return None
+
+    if remote == "ubuntu":
+        mapped_release = UBUNTU_VERSION_TO_CODENAME.get(image_alias.lower(), image_alias.lower())
+        return _public_cloud_alias_for_release(cloud_releases, "ubuntu", mapped_release)
+
+    if remote == "debian":
+        normalized_debian = image_alias.lower()
+        if normalized_debian == "stable":
+            latest_stable = _latest_debian_stable_release_from_public(cloud_releases.get("debian", set()))
+            if latest_stable:
+                return _public_cloud_alias_for_release(cloud_releases, "debian", latest_stable)
+            return None
+        mapped_release = DEBIAN_VERSION_TO_CODENAME.get(normalized_debian, normalized_debian)
+        return _public_cloud_alias_for_release(cloud_releases, "debian", mapped_release)
+
+    return None
+
+
+def discover_popular_images_from_public_catalog(images_remote_configured: bool = False) -> List[Dict[str, Any]]:
+    cloud_releases = _public_cloud_releases_by_distro()
+    if not cloud_releases:
+        return []
+
+    discovered: List[Dict[str, Any]] = []
+
+    def register(name: str, resolved_name: str, label: str, release: str, os_name: str) -> None:
+        remote, alias = parse_image_alias(resolved_name)
+        discovered.append(
+            {
+                "name": name,
+                "resolved_name": resolved_name,
+                "label": label,
+                "remote": remote,
+                "alias": alias,
+                "available": images_remote_configured,
+                "source": "lxd-repo",
+                "architecture": "amd64",
+                "type": "container",
+                "release": release,
+                "os": os_name,
+            }
+        )
+
+    ubuntu_release = _latest_ubuntu_lts_release_from_public(cloud_releases.get("ubuntu", set()))
+    if ubuntu_release:
+        resolved = _public_cloud_alias_for_release(cloud_releases, "ubuntu", ubuntu_release)
+        if resolved:
+            ubuntu_label_release = UBUNTU_CODENAME_TO_VERSION.get(ubuntu_release.lower(), ubuntu_release)
+            register(
+                "ubuntu:lts",
+                resolved,
+                f"Ubuntu {ubuntu_label_release} LTS",
+                ubuntu_label_release,
+                "Ubuntu",
+            )
+
+    debian_release = _latest_debian_stable_release_from_public(cloud_releases.get("debian", set()))
+    if debian_release:
+        resolved = _public_cloud_alias_for_release(cloud_releases, "debian", debian_release)
+        if resolved:
+            debian_label_release = DEBIAN_CODENAME_TO_VERSION.get(debian_release.lower(), debian_release)
+            register(
+                f"debian:{debian_label_release}",
+                resolved,
+                f"Debian {debian_label_release} (stable)",
+                debian_label_release,
+                "Debian",
+            )
+
+    for family, label in [("almalinux", "AlmaLinux"), ("rockylinux", "Rocky Linux"), ("fedora", "Fedora")]:
+        latest_family = _latest_release_by_version(cloud_releases.get(family, set()))
+        if not latest_family:
+            continue
+        resolved = _public_cloud_alias_for_release(cloud_releases, family, latest_family)
+        if not resolved:
+            continue
+        register(
+            f"images:{family}/{latest_family}/cloud",
+            resolved,
+            f"{label} {latest_family} (cloud)",
+            latest_family,
+            label,
+        )
+
+    return discovered
+
+
+def _needs_public_catalog_fallback(discovered: List[Dict[str, Any]]) -> bool:
+    names = {str(entry.get("name") or "").strip().lower() for entry in discovered}
+    return not (
+        "ubuntu:lts" in names
+        and any(name.startswith("debian:") for name in names)
+        and any(name.startswith("images:almalinux/") for name in names)
+        and any(name.startswith("images:rockylinux/") for name in names)
+        and any(name.startswith("images:fedora/") for name in names)
+    )
+
+
 def discover_popular_images() -> List[Dict[str, Any]]:
     """Discover currently available and commonly used images directly from LXD remotes."""
     remotes = list_lxd_remotes()
     discovered: List[Dict[str, Any]] = []
     seen: Set[str] = set()
+    seen_names: Set[str] = set()
 
     def register(entry: Dict[str, Any]) -> None:
+        name = str(entry.get("name") or "").strip().lower()
+        if name and name in seen_names:
+            return
         resolved = str(entry.get("resolved_name") or entry.get("name") or "").strip().lower()
         if not resolved or resolved in seen:
             return
+        if name:
+            seen_names.add(name)
         seen.add(resolved)
         discovered.append(entry)
 
@@ -658,6 +953,10 @@ def discover_popular_images() -> List[Dict[str, Any]]:
                 )
             )
 
+    if _needs_public_catalog_fallback(discovered):
+        for entry in discover_popular_images_from_public_catalog(images_remote_configured=("images" in remotes)):
+            register(entry)
+
     return discovered
 
 
@@ -716,7 +1015,14 @@ def find_latest_ubuntu_lts_alias() -> Optional[str]:
 def resolve_image_alias(distro: str) -> str:
     """Resolve pseudo aliases like ubuntu:lts to a concrete image alias."""
     normalized = distro.strip()
-    if normalized.lower() in {"ubuntu:lts", "ubuntu:latest-lts", "ubuntu:lts/latest"}:
+    lowered = normalized.lower()
+    if lowered in {"ubuntu:lts", "ubuntu:latest-lts", "ubuntu:lts/latest"}:
         latest = find_latest_ubuntu_lts_alias()
-        return latest or "ubuntu:22.04"
+        if latest:
+            return latest
+        from_public = resolve_alias_via_public_catalog(normalized)
+        return from_public or "ubuntu:22.04"
+    from_public = resolve_alias_via_public_catalog(normalized)
+    if from_public:
+        return from_public
     return normalized

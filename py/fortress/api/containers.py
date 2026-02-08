@@ -201,7 +201,15 @@ def build_container_router(
                 continue
             seen.add(normalized)
             label = item.get("label") if isinstance(item, dict) else None
-            entries.append({"name": normalized, "label": label or normalized, "source": "custom"})
+            resolved = normalized
+            try:
+                resolved = container_ops.resolve_image_alias(normalized)
+            except Exception:
+                resolved = normalized
+            payload = {"name": normalized, "label": label or normalized, "source": "custom"}
+            if resolved and resolved != normalized:
+                payload["resolved_name"] = resolved
+            entries.append(payload)
         return entries
 
     def _list_popular_entries() -> List[Dict[str, Any]]:

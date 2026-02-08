@@ -68,6 +68,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Next: Add keyboard + touch navigation for wizard step transitions (left/right arrows, swipe gestures).
 - Next: Add an inline wizard step summary/history strip so users can jump directly to prior steps without losing context.
 - Next: Add drag/drop ordering + named profiles for fast-actions menu preferences.
+- Next: Add a background cache refresh + health indicator for public LXD simplestream lookups and keep Ubuntu/Debian version-to-codename mappings current as new releases ship.
 
 ## Path 9: Bootstrap and run tooling (short term)
 - Done: Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).
