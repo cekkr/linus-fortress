@@ -20,16 +20,6 @@
       "id": "packages-update",
       "label": "Update",
       "variant": "ghost"
-    },
-    {
-      "id": "system-upgrade",
-      "label": "System Upgrade",
-      "variant": "primary"
-    },
-    {
-      "id": "system-update-reload",
-      "label": "Check Update + Reload",
-      "variant": "ghost"
     }
   ]
 }

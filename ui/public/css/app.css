@@ -241,6 +241,44 @@ body {
   color: #4f5d3b;
 }
 
+.fast-actions {
+  border-radius: 14px;
+  border: 1px solid rgba(58, 75, 45, 0.22);
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: 0 8px 16px rgba(16, 20, 15, 0.1);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fast-actions-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.fast-actions-title {
+  font-family: "Teko", sans-serif;
+  font-size: 20px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #2f3e26;
+}
+
+.fast-actions-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.fast-actions-row .action {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
@@ -355,6 +393,36 @@ body {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.settings-fast-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settings-fast-item {
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.62);
+  padding: 8px;
+  font-size: 12px;
+}
+
+.settings-fast-item label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #23311f;
+}
+
+.settings-fast-desc {
+  margin-top: 4px;
+  color: #4a5a40;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .wizard-stage {
@@ -987,6 +1055,10 @@ body {
   }
 
   .catalog-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-fast-actions {
     grid-template-columns: 1fr;
   }
 }

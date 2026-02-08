@@ -60,6 +60,9 @@ const state = {
     remoteFilter: "all",
     hideUnavailable: false,
   },
+  ui: {
+    fastActions: [],
+  },
   wizard: {
     active: false,
     mode: null,
@@ -206,6 +209,7 @@ const state = {
 const elements = {
   layout: document.getElementById("layout"),
   tree: document.getElementById("tree"),
+  fastActions: document.getElementById("fast-actions"),
   grid: document.getElementById("app-grid"),
   imageCatalog: document.getElementById("image-catalog"),
   wizardStage: document.getElementById("wizard-stage"),
@@ -234,6 +238,83 @@ const elements = {
   adminBootstrapButton: document.getElementById("admin-bootstrap"),
   logoutButton: document.getElementById("logout"),
 };
+
+const FAST_ACTION_STORAGE_KEY = "lizard.fast-actions.v1";
+const FAST_ACTION_OPTIONS = [
+  {
+    id: "refresh",
+    label: "Sync Deck",
+    variant: "ghost",
+    description: "Reload cards and latest API state.",
+  },
+  {
+    id: "create-container",
+    label: "New Container",
+    variant: "primary",
+    description: "Open the container creation wizard.",
+  },
+  {
+    id: "system-update-reload",
+    label: "Check Update + Reload",
+    variant: "primary",
+    description: "Pull latest git changes, run migrations, and reload services.",
+  },
+  {
+    id: "system-upgrade",
+    label: "System Upgrade",
+    variant: "ghost",
+    description: "Run guided package + migration host upgrade.",
+  },
+  {
+    id: "monitoring-refresh",
+    label: "Refresh Monitoring",
+    variant: "ghost",
+    description: "Fetch latest host/container resource telemetry.",
+  },
+  {
+    id: "routing-refresh",
+    label: "Refresh Routes",
+    variant: "ghost",
+    description: "Reload current routing records from API.",
+  },
+  {
+    id: "firewall-refresh",
+    label: "Refresh Firewall",
+    variant: "ghost",
+    description: "Reload firewall rules and diff view.",
+  },
+  {
+    id: "recipes-refresh",
+    label: "Refresh Recipes",
+    variant: "ghost",
+    description: "Reload the recipe catalog.",
+  },
+  {
+    id: "hosts-refresh",
+    label: "Refresh Hosts",
+    variant: "ghost",
+    description: "Reload SSH-managed host inventory.",
+  },
+  {
+    id: "vms-refresh",
+    label: "Refresh VMs",
+    variant: "ghost",
+    description: "Reload VM lab list and statuses.",
+  },
+  {
+    id: "sites-refresh",
+    label: "Refresh Sites",
+    variant: "ghost",
+    description: "Reload sites and backup metadata.",
+  },
+];
+const FAST_ACTION_DEFAULT_IDS = [
+  "refresh",
+  "create-container",
+  "system-update-reload",
+  "system-upgrade",
+  "monitoring-refresh",
+];
 
 const WIZARD_STEP_COUNTS = {
   "create-container": 3,
@@ -412,7 +493,65 @@ const iconMap = {
       <path d="M8 11V8a4 4 0 018 0v3"></path>
     </svg>
   `,
+  gear: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1 1 0 00.2 1.1l.1.1a1 1 0 01-1.4 1.4l-.1-.1a1 1 0 00-1.1-.2 1 1 0 00-.6.9V20a1 1 0 01-2 0v-.2a1 1 0 00-.6-.9 1 1 0 00-1.1.2l-.1.1a1 1 0 01-1.4-1.4l.1-.1a1 1 0 00.2-1.1 1 1 0 00-.9-.6H8a1 1 0 010-2h.2a1 1 0 00.9-.6 1 1 0 00-.2-1.1l-.1-.1a1 1 0 011.4-1.4l.1.1a1 1 0 001.1.2 1 1 0 00.6-.9V8a1 1 0 012 0v.2a1 1 0 00.6.9 1 1 0 001.1-.2l.1-.1a1 1 0 011.4 1.4l-.1.1a1 1 0 00-.2 1.1 1 1 0 00.9.6H20a1 1 0 010 2h-.2a1 1 0 00-.4.1z"></path>
+    </svg>
+  `,
 };
+
+function fastActionOptionById(id) {
+  return FAST_ACTION_OPTIONS.find((item) => item.id === id) || null;
+}
+
+function normalizeFastActions(rawActions) {
+  const source = Array.isArray(rawActions) ? rawActions : [];
+  const knownIds = new Set(FAST_ACTION_OPTIONS.map((item) => item.id));
+  const normalized = [];
+  for (const raw of source) {
+    const id = String(raw || "").trim();
+    if (!id || !knownIds.has(id) || normalized.includes(id)) {
+      continue;
+    }
+    normalized.push(id);
+  }
+  return normalized.length ? normalized : FAST_ACTION_DEFAULT_IDS.slice();
+}
+
+function loadFastActionsPreference() {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) {
+      state.ui.fastActions = FAST_ACTION_DEFAULT_IDS.slice();
+      return;
+    }
+    const raw = window.localStorage.getItem(FAST_ACTION_STORAGE_KEY);
+    if (!raw) {
+      state.ui.fastActions = FAST_ACTION_DEFAULT_IDS.slice();
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    state.ui.fastActions = normalizeFastActions(parsed);
+  } catch (err) {
+    state.ui.fastActions = FAST_ACTION_DEFAULT_IDS.slice();
+  }
+}
+
+function persistFastActionsPreference() {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) {
+      return;
+    }
+    window.localStorage.setItem(FAST_ACTION_STORAGE_KEY, JSON.stringify(state.ui.fastActions || []));
+  } catch (err) {
+    // Ignore storage errors.
+  }
+}
+
+function updateFastActions(nextActions) {
+  state.ui.fastActions = normalizeFastActions(nextActions);
+  persistFastActionsPreference();
+}
 
 function buildRecipeDefinition(name, description, commands, dependencies = []) {
   return {
@@ -824,6 +963,40 @@ function renderStatusLine() {
   }
 }
 
+function renderFastActions() {
+  if (!elements.fastActions) {
+    return;
+  }
+  const configured = normalizeFastActions(state.ui.fastActions);
+  state.ui.fastActions = configured;
+  const settingsAvailable = state.nodesById.has("settings");
+  const buttonsMarkup = configured
+    .map((id) => {
+      const option = fastActionOptionById(id);
+      if (!option) {
+        return "";
+      }
+      return `<button class="action ${option.variant || "ghost"}" data-action-id="${option.id}">${escapeHtml(
+        option.label
+      )}</button>`;
+    })
+    .join("");
+  elements.fastActions.hidden = false;
+  elements.fastActions.innerHTML = `
+    <div class="fast-actions-head">
+      <div class="fast-actions-title">Fast Actions</div>
+      ${
+        settingsAvailable
+          ? `<button class="action ghost mini" data-action-id="open-settings">Customize</button>`
+          : ""
+      }
+    </div>
+    <div class="fast-actions-row">
+      ${buttonsMarkup}
+    </div>
+  `;
+}
+
 function renderCard(node, index) {
   const actions = Array.isArray(node.actions) ? node.actions.slice(0, 4) : [];
   const status = node.meta && node.meta.status ? normalizeStatus(node.meta.status) : null;
@@ -1072,6 +1245,71 @@ function renderRecipesPreview(node) {
   `;
 }
 
+function renderSettingsPreview(node) {
+  const selectedSet = new Set(normalizeFastActions(state.ui.fastActions));
+  const optionsMarkup = FAST_ACTION_OPTIONS.map((option) => {
+    const checked = selectedSet.has(option.id) ? "checked" : "";
+    return `
+      <div class="settings-fast-item">
+        <label>
+          <input type="checkbox" data-setting-fast-action="${option.id}" ${checked} />
+          ${escapeHtml(option.label)}
+        </label>
+        <div class="settings-fast-desc">${escapeHtml(option.description || "")}</div>
+      </div>
+    `;
+  }).join("");
+  const currentFastActions = normalizeFastActions(state.ui.fastActions)
+    .map((id) => fastActionOptionById(id))
+    .filter(Boolean)
+    .map((item) => `<span class="pill">${escapeHtml(item.label)}</span>`)
+    .join("");
+  const systemSummary = (() => {
+    const latestUpdateReload = state.systemUpgrade.lastUpdateReload;
+    if (!latestUpdateReload || !latestUpdateReload.result) {
+      return `<div class="event-item">No update/reload run recorded yet in this session.</div>`;
+    }
+    const result = latestUpdateReload.result;
+    const updated = Boolean(result.updated);
+    const reloadScheduled = Boolean(result.reload && result.reload.scheduled);
+    return `
+      <div class="event-item">
+        <div><strong>Last update check</strong> — ${escapeHtml(
+          new Date(latestUpdateReload.at).toLocaleString()
+        )}</div>
+        <div class="card-meta">
+          <span class="pill ${updated ? "running" : "soon"}">${updated ? "updated" : "no changes"}</span>
+          <span class="pill">${reloadScheduled ? "reload scheduled" : "reload skipped"}</span>
+        </div>
+      </div>
+    `;
+  })();
+  elements.preview.innerHTML = `
+    <div class="preview-title">${node.title}</div>
+    <div>${node.description || ""}</div>
+    <div class="event-item">
+      Use this page for global operations like <strong>Check Update + Reload</strong>, system upgrade, and dashboard quick-action preferences.
+    </div>
+    <div class="card-actions">
+      <button class="action" data-action-id="system-update-reload" data-node-id="${node.id}">Check Update + Reload</button>
+      <button class="action ghost" data-action-id="system-upgrade" data-node-id="${node.id}">System Upgrade</button>
+      <button class="action ghost" data-action-id="refresh" data-node-id="${node.id}">Sync Deck</button>
+    </div>
+    ${systemSummary}
+    <div class="event-item">
+      <div><strong>Fast Actions Menu</strong> (top horizontal bar)</div>
+      <div class="settings-fast-desc">Choose which actions stay one click away.</div>
+      <div class="settings-fast-actions">
+        ${optionsMarkup}
+      </div>
+      <div class="card-actions">
+        <button class="action ghost" data-action-id="settings-fast-actions-default" data-node-id="${node.id}">Reset Defaults</button>
+      </div>
+      <div class="card-meta">${currentFastActions}</div>
+    </div>
+  `;
+}
+
 function renderPackagesPreview(node) {
   const lastPreflight = state.systemUpgrade.lastPreflight;
   const lastExecution = state.systemUpgrade.lastExecution;
@@ -1151,10 +1389,7 @@ function renderPackagesPreview(node) {
       Host-level package management uses apt/dnf/yum. Choose Install, Remove, or Update to run against the host or any container.
     </div>
     <div class="event-item">
-      Use <strong>System Upgrade</strong> to run a guided preflight and controlled package+migration upgrade with backup confirmation.
-    </div>
-    <div class="event-item">
-      Use <strong>Check Update + Reload</strong> to run <code>git pull --ff-only</code>, apply pending migrations on update, then restart API/UI with auto mode detection.
+      Global update controls moved to <strong>Settings</strong> for consistency: use Settings for <strong>System Upgrade</strong> and <strong>Check Update + Reload</strong>.
     </div>
     ${preflightSummary}
     ${executionSummary}
@@ -1519,6 +1754,10 @@ function renderPreview() {
   }
   if (node.id === "packages") {
     renderPackagesPreview(node);
+    return;
+  }
+  if (node.id === "settings") {
+    renderSettingsPreview(node);
     return;
   }
   if (node.id === "hosts") {
@@ -2968,6 +3207,7 @@ function renderWizard() {
 function renderAll() {
   renderTree();
   renderStatusLine();
+  renderFastActions();
   renderImageCatalog();
   renderGrid();
   renderPreview();
@@ -4024,6 +4264,23 @@ async function handleAction(actionId, node, params = {}) {
 
   if (actionId === "image-catalog-refresh") {
     await loadPopularImages({ log: true });
+    return;
+  }
+
+  if (actionId === "open-settings") {
+    if (state.nodesById.has("settings")) {
+      selectNode("settings");
+    } else {
+      logEvent("error", "Settings app is not available");
+    }
+    return;
+  }
+
+  if (actionId === "settings-fast-actions-default") {
+    updateFastActions(FAST_ACTION_DEFAULT_IDS);
+    renderFastActions();
+    renderPreview();
+    logEvent("success", "Fast actions reset to defaults");
     return;
   }
 
@@ -5178,6 +5435,27 @@ function bindEvents() {
     }
   });
 
+  if (elements.preview) {
+    elements.preview.addEventListener("input", (event) => {
+      const target = event.target;
+      if (!target) {
+        return;
+      }
+      const fastActionId = target.getAttribute && target.getAttribute("data-setting-fast-action");
+      if (!fastActionId) {
+        return;
+      }
+      const enabled = Boolean(target.checked);
+      const current = normalizeFastActions(state.ui.fastActions);
+      const next = enabled
+        ? [...current, fastActionId]
+        : current.filter((id) => id !== fastActionId);
+      updateFastActions(next);
+      renderFastActions();
+      renderPreview();
+    });
+  }
+
   if (elements.imageCatalog) {
     elements.imageCatalog.addEventListener("input", (event) => {
       const target = event.target;
@@ -5191,6 +5469,7 @@ function bindEvents() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  loadFastActionsPreference();
   bindEvents();
   if (elements.authForm) {
     elements.authForm.addEventListener("submit", handleLogin);

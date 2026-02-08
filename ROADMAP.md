@@ -58,6 +58,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Expand container actions with start/stop/restart, snapshot create/list/restore/delete, exec/logs, and port exposure flows (user/group management still pending).
 - Done: Move wizards from the right sidebar into a full-stage horizontal slide flow, with the sidebar reused for current-operation context.
 - Done: Add a live image catalog panel on the Containers page with remote filters and direct LXD availability refresh.
+- Done: Add a dedicated Settings app for global operations and a customizable fast-actions horizontal menu.
 - Implement step-by-step wizards for container creation, routing, recipe apply, and backup/restore.
 - Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.
 - Add a settings panel to manage popular LXD image presets, show remote availability, and refresh latest LTS aliases.
@@ -66,6 +67,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
 - Next: Add keyboard + touch navigation for wizard step transitions (left/right arrows, swipe gestures).
 - Next: Add an inline wizard step summary/history strip so users can jump directly to prior steps without losing context.
+- Next: Add drag/drop ordering + named profiles for fast-actions menu preferences.
 
 ## Path 9: Bootstrap and run tooling (short term)
 - Done: Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).

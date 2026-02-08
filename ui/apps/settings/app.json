@@ -1,0 +1,25 @@
+{
+  "id": "settings",
+  "title": "Settings",
+  "description": "Global operations and UI preferences.",
+  "icon": "gear",
+  "parent": "home",
+  "order": 2,
+  "actions": [
+    {
+      "id": "system-update-reload",
+      "label": "Check Update + Reload",
+      "variant": "primary"
+    },
+    {
+      "id": "system-upgrade",
+      "label": "System Upgrade",
+      "variant": "ghost"
+    },
+    {
+      "id": "refresh",
+      "label": "Sync Deck",
+      "variant": "ghost"
+    }
+  ]
+}

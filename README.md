@@ -84,8 +84,10 @@ The file manager install uses Tiny File Manager under `/var/www/html/filemanager
 Recipe apply results now surface `probe.health_checks` with pass/fail/skipped badges and per-check summaries in the recipes views.
 Container create and operation flows now run in a full-stage horizontal sliding wizard (instead of the old right sidebar card) while the right panel shows current operation context.
 The Containers page also includes a live image catalog panel with remote filters (`ubuntu`, `debian`, `images`, etc.) so operators can inspect availability before opening the create-container wizard.
-The Packages app includes a guided System Upgrade wizard that runs `/system/upgrade` preflight (`dry_run=true`) and requires backup confirmation before execution.
-The Packages app also includes **Check Update + Reload**, which runs `/system/update-reload` to `git pull --ff-only`, apply pending migrations when new commits arrive, then restart API/UI using auto mode detection.
+Global maintenance actions now live in a dedicated **Settings** app card (System Upgrade + Check Update/Reload) rather than being split across unrelated feature cards.
+The stage now includes a configurable fast-actions horizontal menu; action selection is editable from Settings and persisted in browser local storage.
+The Settings app includes a guided System Upgrade wizard that runs `/system/upgrade` preflight (`dry_run=true`) and requires backup confirmation before execution.
+The Settings app also includes **Check Update + Reload**, which runs `/system/update-reload` to `git pull --ff-only`, apply pending migrations when new commits arrive, then restart API/UI using auto mode detection.
 
 ## Run Server Script
 

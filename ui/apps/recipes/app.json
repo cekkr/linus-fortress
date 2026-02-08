@@ -8,7 +8,7 @@
   "actions": [
     {
       "id": "recipes-refresh",
-      "label": "Reload",
+      "label": "Refresh Recipes",
       "variant": "ghost"
     },
     {

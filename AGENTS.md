@@ -33,6 +33,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Lizard UI supports admin login sessions (bootstrap + optional TOTP MFA) plus server-side delegated-token sessions (no tokens stored in the browser)
 - Lizard UI now wires routing/recipes/packages/hosts plus container lifecycle (start/stop/restart/snapshot/exec/logs), monitoring sparklines + firewall diffs, and site management cards (deploy/backup/rollback/services)
 - Lizard UI now presents wizards as a full-stage horizontal sliding experience and includes a Containers live image catalog panel with remote filters and direct availability refresh
+- Lizard UI now includes a dedicated Settings app for global operations (system upgrade/update-reload) plus a configurable fast-actions horizontal menu persisted in browser settings
 - Lizard UI recipe apply flow surfaces `probe.health_checks` summaries with severity badges, and Packages includes a `/system/upgrade` wizard plus a `/system/update-reload` action for git pull + migration + restart flows
 - `POST /containers/expose` supports bulk interface/port exposure to a container with port ranges, protocol selection, per-interface upstream selection, and optional firewall allowlists (rolls back devices and firewall rules on failure)
 - Sites API exposes backup inventory via `GET /sites/{site_id}/backups` (metadata stored under `/var/lib/fortress/site_backups`)
