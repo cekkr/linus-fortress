@@ -1275,7 +1275,8 @@ function renderGrid() {
           <div class="app-row-cards">
             ${rowNodes.map((node, offset) => renderCard(node, rowIndex * perRow + offset, useIntroAnimation)).join("")}
           </div>
-          <div class="app-row-more ${expandedNode ? "open" : ""}" ${connectorStyle}>
+          <div class="app-row-bridge ${expandedNode ? "open" : ""}" ${connectorStyle} aria-hidden="true"></div>
+          <div class="app-row-more ${expandedNode ? "open" : ""}">
             ${expandedNode ? renderMoreInfoPanel(expandedNode) : ""}
           </div>
         </section>
@@ -1322,6 +1323,17 @@ function rowMoreElementFromCard(cardElement) {
   return row.querySelector(".app-row-more");
 }
 
+function rowBridgeElementFromCard(cardElement) {
+  if (!cardElement) {
+    return null;
+  }
+  const row = cardElement.closest(".app-row");
+  if (!row) {
+    return null;
+  }
+  return row.querySelector(".app-row-bridge");
+}
+
 function clearCardTransitionTimer() {
   if (cardTransitionTimer) {
     window.clearTimeout(cardTransitionTimer);
@@ -1347,14 +1359,21 @@ function markCardOpeningSequence(nodeId) {
     return;
   }
   const rowMore = rowMoreElementFromCard(card);
+  const rowBridge = rowBridgeElementFromCard(card);
   card.classList.add("is-expanding");
   if (rowMore) {
     rowMore.classList.add("is-opening");
+  }
+  if (rowBridge) {
+    rowBridge.classList.add("is-opening");
   }
   window.setTimeout(() => {
     card.classList.remove("is-expanding");
     if (rowMore) {
       rowMore.classList.remove("is-opening");
+    }
+    if (rowBridge) {
+      rowBridge.classList.remove("is-opening");
     }
   }, CARD_OPEN_SEQUENCE_MS);
 }
@@ -1374,11 +1393,15 @@ function closeExpandedCardAndMaybeOpen(nextNodeId) {
 
   const card = cardElementByNodeId(currentNodeId);
   const rowMore = rowMoreElementFromCard(card);
+  const rowBridge = rowBridgeElementFromCard(card);
   if (card) {
     card.classList.add("is-collapsing");
   }
   if (rowMore) {
     rowMore.classList.add("is-closing");
+  }
+  if (rowBridge) {
+    rowBridge.classList.add("is-closing");
   }
 
   clearCardTransitionTimer();
