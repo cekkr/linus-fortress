@@ -70,6 +70,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Next: Persist wizard progress markers per active flow so users can safely resume after page refresh.
 - Next: Add drag/drop ordering + named profiles for fast-actions menu preferences.
 - Next: Add a background cache refresh + health indicator for public LXD simplestream lookups and keep Ubuntu/Debian version-to-codename mappings current as new releases ship.
+- Done: Rework app navigation cards into an app-store model where icon click opens directly and title/description toggles an animated more-info panel with deep actions + Open CTA.
+- Next: Add copy/export controls for latest debug payloads from the UI Debug panel to speed up browser-side troubleshooting.
 
 ## Path 9: Bootstrap and run tooling (short term)
 - Done: Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).

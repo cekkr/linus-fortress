@@ -547,10 +547,10 @@ body {
   padding: 16px;
   border: 1px solid rgba(74, 88, 63, 0.3);
   box-shadow: 0 12px 22px var(--shadow);
-  cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
   animation: liftIn 0.5s ease forwards;
   opacity: 0;
+  overflow: hidden;
 }
 
 .app-card:hover {
@@ -563,6 +563,35 @@ body {
   box-shadow: 0 0 0 2px rgba(140, 207, 85, 0.3);
 }
 
+.app-card.expanded {
+  border-color: rgba(242, 192, 107, 0.65);
+  box-shadow: 0 14px 30px rgba(33, 46, 30, 0.22);
+}
+
+.app-card.opening {
+  animation: appOpenToHome 0.25s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.card-icon-button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.card-icon-button:focus-visible,
+.card-summary:focus-visible {
+  outline: 2px solid rgba(140, 207, 85, 0.65);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
 .card-icon {
   width: 46px;
   height: 46px;
@@ -572,7 +601,7 @@ body {
   background: linear-gradient(140deg, #1b251d, #3d4c36);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
   color: #e8f3d1;
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
 
 .card-icon svg {
@@ -583,18 +612,82 @@ body {
   stroke-width: 1.6;
 }
 
+.card-summary {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  flex: 1;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.card-summary:hover .card-title {
+  color: #344628;
+}
+
 .card-title {
   font-family: "Teko", sans-serif;
   font-size: 22px;
   letter-spacing: 1px;
   text-transform: uppercase;
-  margin: 0 0 4px;
+  margin: 0;
 }
 
 .card-desc {
   font-size: 12px;
   color: #4d5c3d;
-  min-height: 36px;
+  min-height: 32px;
+}
+
+.card-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.card-expand-shell {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition:
+    max-height 0.36s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.26s ease,
+    transform 0.36s cubic-bezier(0.2, 0.8, 0.2, 1);
+  overflow: hidden;
+}
+
+.app-card.expanded .card-expand-shell {
+  max-height: 460px;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.card-expand-panel {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.78), rgba(236, 243, 214, 0.7));
+  border: 1px solid rgba(61, 76, 54, 0.2);
+}
+
+.card-expand-copy {
+  font-size: 12px;
+  color: #2f3d27;
+}
+
+.card-actions-expanded {
+  margin-top: 10px;
+}
+
+.card-expand-open {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .card-meta {
@@ -1062,6 +1155,33 @@ body {
   border-radius: 8px;
   margin-top: 6px;
 }
+
+.event-item details,
+.catalog-item details {
+  margin-top: 8px;
+}
+
+.event-item summary,
+.catalog-item summary {
+  cursor: pointer;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #3f4f34;
+}
+
+.event-item pre,
+.catalog-item pre {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 8px;
+  padding: 8px;
+  max-height: 240px;
+  overflow: auto;
+}
 .auth-overlay {
   position: fixed;
   inset: 0;
@@ -1143,6 +1263,17 @@ body {
   }
 }
 
+@keyframes appOpenToHome {
+  from {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: translateY(-8px) scale(1.02);
+    opacity: 0.22;
+  }
+}
+
 @media (max-width: 1100px) {
   .layout {
     grid-template-columns: 1fr;
@@ -1176,6 +1307,10 @@ body {
 
   .card-grid {
     grid-template-columns: 1fr;
+  }
+
+  .card-expand-open .action {
+    width: 100%;
   }
 
   .preview-meta {

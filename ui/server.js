@@ -584,10 +584,23 @@ async function fortressRequest(method, apiPath, body, tokenOverride) {
     }
   }
   if (!response.ok) {
-    const detail = payload && payload.detail ? payload.detail : response.statusText;
-    const error = new Error(detail || "Request failed");
+    const detail =
+      payload && typeof payload === "object"
+        ? payload.error ||
+          payload.detail ||
+          payload.message ||
+          (typeof payload.details === "string" ? payload.details : "")
+        : typeof payload === "string"
+        ? payload
+        : response.statusText;
+    const error = new Error(detail || `Fortress API request failed (${response.status})`);
     error.status = response.status;
     error.payload = payload;
+    error.method = method;
+    error.apiPath = apiPath;
+    if (payload && typeof payload === "object" && payload.debug) {
+      error.debug = payload.debug;
+    }
     throw error;
   }
   return payload;

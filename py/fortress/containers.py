@@ -535,7 +535,33 @@ def list_lxd_remotes() -> Set[str]:
     try:
         raw = run_command(["lxc", "remote", "list", "--format", "json"])
         remotes = json.loads(raw)
-        return {remote.get("name") for remote in remotes if remote.get("name")}
+        names: Set[str] = set()
+        if isinstance(remotes, list):
+            for remote in remotes:
+                if isinstance(remote, dict):
+                    candidate = remote.get("name") or remote.get("Name")
+                elif isinstance(remote, str):
+                    candidate = remote
+                else:
+                    candidate = None
+                if isinstance(candidate, str) and candidate.strip():
+                    names.add(candidate.strip())
+            return names
+        if isinstance(remotes, dict):
+            for key, value in remotes.items():
+                candidate: Optional[str] = None
+                if isinstance(value, dict):
+                    raw_name = value.get("name") or value.get("Name")
+                    if isinstance(raw_name, str):
+                        candidate = raw_name
+                if not candidate and isinstance(key, str):
+                    candidate = key
+                if isinstance(candidate, str) and candidate.strip():
+                    names.add(candidate.strip())
+            return names
+        if isinstance(remotes, str) and remotes.strip():
+            names.add(remotes.strip())
+        return names
     except Exception:
         logging.exception("Failed to list LXD remotes")
         return set()
@@ -965,22 +991,42 @@ def ensure_image_available(alias: str) -> Dict[str, Any]:
     remote, _ = parse_image_alias(alias)
     remotes = list_lxd_remotes()
     if remote and remote not in remotes:
+        known_remotes = ", ".join(sorted(remotes)) if remotes else "none"
         raise HTTPException(
             status_code=400,
-            detail=f"LXD remote '{remote}' is not configured. Add it with `lxc remote add {remote} ...` or choose another image.",
+            detail=(
+                f"LXD remote '{remote}' is not configured (known remotes: {known_remotes}). "
+                f"Add it with `lxc remote add {remote} ...` or choose another image."
+            ),
         )
     try:
         info_raw = run_command(["lxc", "image", "list", alias, "--format", "json", "--limit", "1"])
         images = json.loads(info_raw)
     except HTTPException as exc:
-        logging.error("Image lookup failed for %s: %s", alias, exc.detail)
+        detail = str(exc.detail)
+        logging.error("Image lookup failed for %s: %s", alias, detail)
+        lowered = detail.lower()
+        if "not found" in lowered or "no matching" in lowered or "unknown" in lowered:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image '{alias}' was not found on remote '{remote or 'local'}'. LXD detail: {detail}",
+            ) from exc
         raise HTTPException(
-            status_code=400,
-            detail=f"Image '{alias}' was not found on remote '{remote or 'local'}'.",
+            status_code=exc.status_code if isinstance(exc.status_code, int) else 500,
+            detail=f"Image lookup failed for '{alias}' on remote '{remote or 'local'}': {detail}",
         ) from exc
-    if not images:
+    except Exception as exc:
+        logging.exception("Image lookup crashed for %s", alias)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Image lookup failed for '{alias}' on remote '{remote or 'local'}': {exc}",
+        ) from exc
+    if not isinstance(images, list) or not images:
         raise HTTPException(status_code=400, detail=f"Image '{alias}' was not found on remote '{remote or 'local'}'.")
-    return images[0]
+    first = images[0]
+    if not isinstance(first, dict):
+        raise HTTPException(status_code=500, detail=f"Image lookup returned invalid metadata for '{alias}'.")
+    return first
 
 
 def find_latest_ubuntu_lts_alias() -> Optional[str]:

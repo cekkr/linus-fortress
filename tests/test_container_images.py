@@ -110,6 +110,16 @@ class ContainerImageDiscoveryTests(unittest.TestCase):
         with mock.patch("fortress.containers.run_command", return_value="{bad-json"):
             self.assertEqual(containers.list_remote_images("ubuntu"), [])
 
+    def test_list_lxd_remotes_supports_object_payload(self) -> None:
+        remotes_payload = {
+            "local": {"Name": "local"},
+            "ubuntu": {"Addr": "https://cloud-images.ubuntu.com/releases"},
+            "images": {"Protocol": "simplestreams"},
+        }
+        with mock.patch("fortress.containers.run_command", return_value=json.dumps(remotes_payload)):
+            remotes = containers.list_lxd_remotes()
+        self.assertEqual(remotes, {"local", "ubuntu", "images"})
+
     def test_resolve_image_alias_uses_public_catalog_when_ubuntu_remote_missing(self) -> None:
         products = [
             "ubuntu:jammy:amd64:cloud",

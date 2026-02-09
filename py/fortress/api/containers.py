@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Literal
 
 from fastapi import APIRouter, Header, HTTPException
@@ -247,7 +248,7 @@ def build_container_router(
                 add_entry(item, source="fallback")
         return entries
 
-    def _inspect_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    def _inspect_entry(entry: Dict[str, Any], remotes: Optional[List[str]] = None) -> Dict[str, Any]:
         name = entry.get("name", "").strip()
         resolved_hint = str(entry.get("resolved_name") or "").strip()
         resolved = resolved_hint or container_ops.resolve_image_alias(name)
@@ -267,6 +268,13 @@ def build_container_router(
                 if field in entry:
                     payload[field] = entry.get(field)
             return payload
+
+        debug_payload = {
+            "requested": name,
+            "resolved": resolved,
+            "remote": remote,
+            "known_remotes": remotes if remotes is not None else sorted(container_ops.list_lxd_remotes()),
+        }
         try:
             meta = container_ops.ensure_image_available(resolved)
             props = meta.get("properties") or {}
@@ -281,8 +289,12 @@ def build_container_router(
             )
         except HTTPException as exc:
             payload["reason"] = exc.detail
+            payload["reason_code"] = exc.status_code
+            payload["debug"] = debug_payload
         except Exception as exc:
             payload["reason"] = str(exc)
+            payload["reason_code"] = 500
+            payload["debug"] = debug_payload
         return payload
 
     @router.get("/containers/images/popular")
@@ -291,14 +303,16 @@ def build_container_router(
         x_user_token: Optional[str] = Header(default=None),
     ):
         authorize("container_create", "manage_containers", x_api_key, x_user_token)
+        remotes = sorted(container_ops.list_lxd_remotes())
         latest_lts = container_ops.find_latest_ubuntu_lts_alias()
         entries = _list_popular_entries()
-        inspected = [_inspect_entry(entry) for entry in entries]
+        inspected = [_inspect_entry(entry, remotes=remotes) for entry in entries]
         audit_api("container_images_list", details={"count": len(inspected)})
         return {
             "images": inspected,
             "latest": {"ubuntu_lts": latest_lts},
-            "remotes": sorted(container_ops.list_lxd_remotes()),
+            "remotes": remotes,
+            "refreshed_at": datetime.now(timezone.utc).isoformat(),
         }
 
     @router.post("/containers/images/popular")

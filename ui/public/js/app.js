@@ -49,12 +49,16 @@ const state = {
     error: null,
   },
   events: [],
+  debug: {
+    lastError: null,
+  },
   probedContainers: new Set(),
   probeInFlight: false,
   images: {
     popular: [],
     remotes: [],
     latest: null,
+    refreshedAt: null,
     loading: false,
     error: null,
     remoteFilter: "all",
@@ -62,6 +66,7 @@ const state = {
   },
   ui: {
     fastActions: [],
+    expandedCardId: null,
   },
   wizard: {
     active: false,
@@ -218,6 +223,7 @@ const elements = {
   wizard: document.getElementById("wizard"),
   operation: document.getElementById("operation"),
   eventLog: document.getElementById("event-log"),
+  debugPanel: document.getElementById("debug-panel"),
   breadcrumb: document.getElementById("breadcrumb"),
   statusLine: document.getElementById("status-line"),
   fortressStatus: document.getElementById("fortress-status"),
@@ -241,6 +247,8 @@ const elements = {
 };
 
 const FAST_ACTION_STORAGE_KEY = "lizard.fast-actions.v1";
+const IMAGE_CATALOG_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+let imageCatalogRefreshTimer = null;
 const FAST_ACTION_OPTIONS = [
   {
     id: "refresh",
@@ -1066,41 +1074,90 @@ function renderFastActions() {
 }
 
 function renderCard(node, index) {
-  const actions = Array.isArray(node.actions) ? node.actions.slice(0, 4) : [];
+  const actions = Array.isArray(node.actions) ? node.actions.slice(0, 6) : [];
+  const quickActions = actions.slice(0, 2);
   const status = node.meta && node.meta.status ? normalizeStatus(node.meta.status) : null;
   const badgeClass = node.badge ? node.badge.toLowerCase().replace(/[^a-z0-9]+/g, "-") : null;
+  const expanded = node.id === state.ui.expandedCardId ? "expanded" : "";
   const selected = node.id === state.selectedId ? "selected" : "";
   const delay = `${index * 0.05}s`;
   return `
-    <div class="app-card ${selected}" data-node-id="${node.id}" style="animation-delay: ${delay}">
-      <div class="card-icon">${iconFor(node.icon)}</div>
-      <div class="card-title">${node.title}</div>
-      <div class="card-desc">${node.description || ""}</div>
+    <article class="app-card ${selected} ${expanded}" data-node-id="${node.id}" style="animation-delay: ${delay}">
+      <div class="card-head">
+        <button
+          class="card-icon-button"
+          data-card-open-node="${node.id}"
+          title="Open ${escapeHtml(node.title || node.id)}"
+          aria-label="Open ${escapeHtml(node.title || node.id)}"
+        >
+          <span class="card-icon">${iconFor(node.icon)}</span>
+        </button>
+        <button
+          class="card-summary"
+          data-card-expand-node="${node.id}"
+          aria-expanded="${expanded ? "true" : "false"}"
+          aria-label="More info for ${escapeHtml(node.title || node.id)}"
+        >
+          <span class="card-title">${escapeHtml(node.title || "")}</span>
+          <span class="card-desc">${escapeHtml(node.description || "")}</span>
+        </button>
+      </div>
       <div class="card-meta">
         ${status ? `<span class="pill ${status}">${status}</span>` : ""}
         ${badgeClass ? `<span class="pill ${badgeClass}">${node.badge}</span>` : ""}
         ${node.meta && node.meta.ip ? `<span class="pill">${node.meta.ip}</span>` : ""}
       </div>
       ${
-        actions.length
+        quickActions.length
           ? `
-        <div class="card-actions">
-          ${actions
+        <div class="card-quick-actions">
+          ${quickActions
             .map(
               (action) =>
-                `<button class="action ${action.variant || ""}" data-action-id="${action.id}" data-node-id="${node.id}">${action.label}</button>`
+                `<button class="action ${action.variant || ""}" data-action-id="${action.id}" data-node-id="${node.id}">${escapeHtml(
+                  action.label || action.id
+                )}</button>`
             )
             .join("")}
         </div>
       `
           : ""
       }
-    </div>
+      <div class="card-expand-shell">
+        <div class="card-expand-panel">
+          <div class="card-expand-copy">
+            Open details and deeper actions for <strong>${escapeHtml(node.title || "")}</strong>.
+          </div>
+          ${
+            actions.length
+              ? `
+            <div class="card-actions card-actions-expanded">
+              ${actions
+                .map(
+                  (action) =>
+                    `<button class="action ${action.variant || ""}" data-action-id="${action.id}" data-node-id="${node.id}">${escapeHtml(
+                      action.label || action.id
+                    )}</button>`
+                )
+                .join("")}
+            </div>
+          `
+              : ""
+          }
+          <div class="card-expand-open">
+            <button class="action" data-card-open-node="${node.id}" data-open-mode="expanded">Open</button>
+          </div>
+        </div>
+      </div>
+    </article>
   `;
 }
 
 function renderGrid() {
   const children = getChildren(state.selectedId || state.rootId);
+  if (state.ui.expandedCardId && !children.some((child) => child.id === state.ui.expandedCardId)) {
+    state.ui.expandedCardId = null;
+  }
   elements.grid.innerHTML = children.map(renderCard).join("");
 }
 
@@ -1171,6 +1228,10 @@ function renderImageCatalog() {
     state.images.latest && state.images.latest.ubuntu_lts
       ? `<span class="pill">${escapeHtml(state.images.latest.ubuntu_lts)}</span>`
       : "";
+  const refreshedMarkup =
+    state.images.refreshedAt
+      ? `<span class="pill">${escapeHtml(new Date(state.images.refreshedAt).toLocaleTimeString())}</span>`
+      : "";
   const errorMarkup = state.images.error ? `<div class="event-item error">${escapeHtml(state.images.error)}</div>` : "";
   const listMarkup =
     filtered.length === 0
@@ -1187,16 +1248,25 @@ function renderImageCatalog() {
             const remote = item.remote ? `<span class="pill">${escapeHtml(item.remote)}</span>` : "";
             const release = item.release ? `<span class="pill">${escapeHtml(String(item.release))}</span>` : "";
             const os = item.os ? `<span class="pill">${escapeHtml(String(item.os))}</span>` : "";
+            const reasonCode =
+              !available && item.reason_code ? `<span class="pill danger">code ${escapeHtml(String(item.reason_code))}</span>` : "";
             const reason =
               !available && item.reason
                 ? `<div class="catalog-item-code">${escapeHtml(String(item.reason))}</div>`
+                : "";
+            const debug =
+              !available && item.debug
+                ? `<details><summary>debug</summary><pre>${escapeHtml(
+                    JSON.stringify(item.debug, null, 2)
+                  )}</pre></details>`
                 : "";
             return `
               <div class="catalog-item ${available ? "" : "unavailable"}">
                 <div class="catalog-item-title">${escapeHtml(item.label || item.name || "image")}</div>
                 <div class="catalog-item-code">${escapeHtml(item.resolved_name || item.name || "")}</div>
-                <div class="catalog-item-meta">${availability}${source}${remote}${release}${os}</div>
+                <div class="catalog-item-meta">${availability}${reasonCode}${source}${remote}${release}${os}</div>
                 ${reason}
+                ${debug}
               </div>
             `;
           })
@@ -1208,7 +1278,7 @@ function renderImageCatalog() {
     <div class="catalog-head">
       <div>
         <div class="catalog-title">Live Image Catalog</div>
-        <div class="catalog-sub">Directly discovered from configured LXD remotes.</div>
+        <div class="catalog-sub">Directly discovered from configured LXD remotes (startup preload + 10 minute refresh).</div>
       </div>
       <button class="action ghost mini" data-action-id="image-catalog-refresh">Refresh</button>
     </div>
@@ -1218,6 +1288,7 @@ function renderImageCatalog() {
         <input id="image-hide-unavailable" type="checkbox" ${state.images.hideUnavailable ? "checked" : ""} />
         Hide unavailable
       </label>
+      ${refreshedMarkup}
       ${latestLtsMarkup}
       ${loadingMarkup}
     </div>
@@ -1995,6 +2066,49 @@ function renderEvents() {
     `
     )
     .join("");
+}
+
+function renderDebugPanel() {
+  if (!elements.debugPanel) {
+    return;
+  }
+  const lastError = state.debug.lastError;
+  if (!lastError) {
+    elements.debugPanel.innerHTML = `
+      <div class="event-item">
+        No API errors captured in this session.
+      </div>
+    `;
+    return;
+  }
+  const detailsJson =
+    lastError.details && typeof lastError.details === "object"
+      ? JSON.stringify(lastError.details, null, 2)
+      : lastError.details
+      ? String(lastError.details)
+      : "";
+  const stackJson = lastError.stack ? String(lastError.stack) : "";
+  elements.debugPanel.innerHTML = `
+    <div class="event-item error">
+      <div><strong>${escapeHtml(lastError.message || "Request failed")}</strong></div>
+      <div class="card-meta">
+        ${lastError.status ? `<span class="pill danger">HTTP ${lastError.status}</span>` : `<span class="pill danger">network</span>`}
+        ${lastError.method ? `<span class="pill">${escapeHtml(lastError.method)}</span>` : ""}
+        ${lastError.path ? `<span class="pill">${escapeHtml(lastError.path)}</span>` : ""}
+        ${lastError.at ? `<span class="pill">${escapeHtml(lastError.at)}</span>` : ""}
+      </div>
+      ${
+        detailsJson
+          ? `<details><summary>Payload</summary><pre>${escapeHtml(detailsJson)}</pre></details>`
+          : ""
+      }
+      ${
+        stackJson
+          ? `<details><summary>Stack</summary><pre>${escapeHtml(stackJson)}</pre></details>`
+          : ""
+      }
+    </div>
+  `;
 }
 
 function wizardModeLabel(mode) {
@@ -3296,12 +3410,45 @@ function renderAll() {
   renderWizard();
   renderOperationPanel();
   renderEvents();
+  renderDebugPanel();
 }
 
 function selectNode(id) {
   state.selectedId = id;
+  state.ui.expandedCardId = null;
   renderAll();
   hydrateNode(id).catch(() => {});
+}
+
+function toggleAppCardDetails(nodeId) {
+  if (!nodeId) {
+    return;
+  }
+  state.ui.expandedCardId = state.ui.expandedCardId === nodeId ? null : nodeId;
+  renderGrid();
+}
+
+let pendingCardOpenTimer = null;
+
+function openAppFromCard(nodeId) {
+  if (!nodeId) {
+    return;
+  }
+  if (pendingCardOpenTimer) {
+    window.clearTimeout(pendingCardOpenTimer);
+    pendingCardOpenTimer = null;
+  }
+  const cards = elements.grid ? Array.from(elements.grid.querySelectorAll(".app-card")) : [];
+  const card = cards.find((item) => item.getAttribute("data-node-id") === nodeId) || null;
+  if (card) {
+    card.classList.add("opening");
+    pendingCardOpenTimer = window.setTimeout(() => {
+      pendingCardOpenTimer = null;
+      selectNode(nodeId);
+    }, 180);
+    return;
+  }
+  selectNode(nodeId);
 }
 
 async function hydrateNode(id) {
@@ -3574,13 +3721,66 @@ function renderRecipeApplyReport(report, scopedTarget = "") {
   `;
 }
 
+function apiErrorMessage(payload, status) {
+  if (payload && typeof payload === "object") {
+    const primary =
+      payload.error ||
+      payload.detail ||
+      payload.message ||
+      (typeof payload.details === "string" ? payload.details : "");
+    if (primary) {
+      return String(primary);
+    }
+  }
+  if (typeof payload === "string" && payload.trim()) {
+    return payload.trim();
+  }
+  return status ? `Request failed (${status})` : "Request failed";
+}
+
+function captureDebugError(error, context = {}) {
+  const details = error && error.details ? error.details : null;
+  const payload = {
+    at: new Date().toISOString(),
+    message: (error && error.message) || "Request failed",
+    status: error && Number.isFinite(error.status) ? error.status : null,
+    method: context.method || (error && error.method) || null,
+    path: context.path || (error && error.path) || null,
+    details,
+    stack: error && error.stack ? error.stack : null,
+  };
+  state.debug.lastError = payload;
+  if (typeof console !== "undefined" && console.error) {
+    console.error("[lizard-debug] API error", payload);
+  }
+  renderDebugPanel();
+}
+
 async function apiRequest(path, options = {}) {
-  const response = await fetch(path, {
-    headers: {
-      "Content-Type": "application/json",
-    },
-    ...options,
-  });
+  const requestOptions = { ...options };
+  const suppressAuthOverlay = Boolean(requestOptions.suppressAuthOverlay);
+  delete requestOptions.suppressAuthOverlay;
+  const method = requestOptions.method || "GET";
+
+  let response;
+  try {
+    response = await fetch(path, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+      ...requestOptions,
+    });
+  } catch (fetchErr) {
+    const error = new Error(`Network request failed: ${(fetchErr && fetchErr.message) || fetchErr}`);
+    error.status = 0;
+    error.details = {
+      error: error.message,
+    };
+    error.path = path;
+    error.method = method;
+    captureDebugError(error, { path, method });
+    throw error;
+  }
   const text = await response.text();
   let data = null;
   if (text) {
@@ -3591,15 +3791,21 @@ async function apiRequest(path, options = {}) {
     }
   }
   if (!response.ok) {
-    const error = new Error((data && data.error) || "Request failed");
+    const message = apiErrorMessage(data, response.status);
+    const error = new Error(message);
     error.status = response.status;
     error.details = data;
+    error.path = path;
+    error.method = method;
+    captureDebugError(error, { path, method });
     if (response.status === 401 || response.status === 403) {
-      const message = (data && data.error) || "";
-      if (message.toLowerCase().includes("admin")) {
-        showAdminOverlay(message || "Admin session required.");
-      } else {
-        showAuthOverlay("Session required. Enter a delegated token.");
+      const authMessage = apiErrorMessage(data, response.status);
+      if (!suppressAuthOverlay) {
+        if (authMessage.toLowerCase().includes("admin")) {
+          showAdminOverlay(authMessage || "Admin session required.");
+        } else {
+          showAuthOverlay("Session required. Enter a delegated token.");
+        }
       }
     }
     throw error;
@@ -3679,6 +3885,9 @@ function setAuthState(payload) {
   state.auth.active = Boolean(payload && payload.active);
   state.auth.mode = payload && payload.mode ? payload.mode : "none";
   state.auth.session = Boolean(payload && payload.session);
+  if (!state.auth.active) {
+    stopImageCatalogRefreshLoop();
+  }
   updateAuthUI();
 }
 
@@ -3704,6 +3913,7 @@ function showAuthOverlay(message) {
   state.auth.active = false;
   state.auth.mode = "none";
   state.auth.session = false;
+  stopImageCatalogRefreshLoop();
   if (elements.authOverlay) {
     elements.authOverlay.hidden = !state.admin.active;
   }
@@ -3713,6 +3923,28 @@ function showAuthOverlay(message) {
   if (elements.authMessage) {
     elements.authMessage.textContent = message || "";
   }
+}
+
+function stopImageCatalogRefreshLoop() {
+  if (imageCatalogRefreshTimer) {
+    window.clearInterval(imageCatalogRefreshTimer);
+    imageCatalogRefreshTimer = null;
+  }
+}
+
+function startImageCatalogRefreshLoop() {
+  stopImageCatalogRefreshLoop();
+  if (!state.auth.active) {
+    return;
+  }
+  loadPopularImages({ background: true, suppressAuthOverlay: true }).catch(() => {});
+  imageCatalogRefreshTimer = window.setInterval(() => {
+    if (!state.auth.active) {
+      stopImageCatalogRefreshLoop();
+      return;
+    }
+    loadPopularImages({ background: true, suppressAuthOverlay: true }).catch(() => {});
+  }, IMAGE_CATALOG_REFRESH_INTERVAL_MS);
 }
 
 async function refreshAdminSession() {
@@ -3856,6 +4088,7 @@ async function handleLogin(event) {
 }
 
 async function handleLogout() {
+  stopImageCatalogRefreshLoop();
   try {
     await apiRequest("/api/session", { method: "DELETE" });
     await apiRequest("/api/admin/logout", { method: "POST" });
@@ -3999,15 +4232,22 @@ async function autoProbeContainers() {
 }
 
 async function loadPopularImages(options = {}) {
-  state.images.loading = true;
-  state.images.error = null;
-  renderImageCatalog();
-  renderWizard();
+  const background = Boolean(options.background);
+  if (!background) {
+    state.images.loading = true;
+    state.images.error = null;
+    renderImageCatalog();
+    renderWizard();
+  }
   try {
-    const payload = await apiRequest("/api/containers/images/popular");
+    const payload = await apiRequest("/api/containers/images/popular", {
+      suppressAuthOverlay: options.suppressAuthOverlay === true,
+    });
     state.images.popular = Array.isArray(payload.images) ? payload.images : [];
     state.images.remotes = Array.isArray(payload.remotes) ? payload.remotes : [];
     state.images.latest = payload.latest || null;
+    state.images.refreshedAt = payload && payload.refreshed_at ? payload.refreshed_at : new Date().toISOString();
+    state.images.error = null;
     if (state.wizard.active && state.wizard.mode === "create-container") {
       const preferred = state.images.popular[0]
         ? state.images.popular[0].resolved_name || state.images.popular[0].name
@@ -4027,7 +4267,9 @@ async function loadPopularImages(options = {}) {
       logEvent("error", state.images.error);
     }
   } finally {
-    state.images.loading = false;
+    if (!background) {
+      state.images.loading = false;
+    }
     renderImageCatalog();
     renderWizard();
   }
@@ -5430,6 +5672,7 @@ async function loadGraph(options = {}) {
   if (["containers", "routing", "recipes", "hosts", "monitoring", "firewall", "vms"].includes(state.selectedId)) {
     await hydrateNode(state.selectedId);
   }
+  startImageCatalogRefreshLoop();
   if (!options.skipProbe) {
     autoProbeContainers().catch(() => {});
   }
@@ -5473,9 +5716,24 @@ function bindEvents() {
       return;
     }
 
+    const cardOpen = event.target.closest("[data-card-open-node]");
+    if (cardOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      openAppFromCard(cardOpen.getAttribute("data-card-open-node"));
+      return;
+    }
+
+    const cardExpand = event.target.closest("[data-card-expand-node]");
+    if (cardExpand) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleAppCardDetails(cardExpand.getAttribute("data-card-expand-node"));
+      return;
+    }
+
     const card = event.target.closest(".app-card");
     if (card) {
-      selectNode(card.getAttribute("data-node-id"));
       return;
     }
 
@@ -5594,6 +5852,7 @@ function bindEvents() {
 
 window.addEventListener("DOMContentLoaded", () => {
   loadFastActionsPreference();
+  renderDebugPanel();
   bindEvents();
   if (elements.authForm) {
     elements.authForm.addEventListener("submit", handleLogin);
