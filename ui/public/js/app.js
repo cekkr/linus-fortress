@@ -67,6 +67,7 @@ const state = {
   ui: {
     fastActions: [],
     expandedCardId: null,
+    cardsAnimated: false,
   },
   wizard: {
     active: false,
@@ -1079,15 +1080,16 @@ function renderFastActions() {
   `;
 }
 
-function renderCard(node, index) {
-  const actions = Array.isArray(node.actions) ? node.actions.slice(0, 6) : [];
+function renderCard(node, index, useIntroAnimation = false) {
   const status = node.meta && node.meta.status ? normalizeStatus(node.meta.status) : null;
   const badgeClass = node.badge ? node.badge.toLowerCase().replace(/[^a-z0-9]+/g, "-") : null;
   const expanded = node.id === state.ui.expandedCardId ? "expanded" : "";
   const selected = node.id === state.selectedId ? "selected" : "";
   const delay = `${index * 0.05}s`;
+  const introClass = useIntroAnimation ? "intro" : "steady";
+  const delayStyle = useIntroAnimation ? `style="animation-delay: ${delay}"` : "";
   return `
-    <article class="app-card ${selected} ${expanded}" data-node-id="${node.id}" style="animation-delay: ${delay}">
+    <article class="app-card ${introClass} ${selected} ${expanded}" data-node-id="${node.id}" ${delayStyle}>
       <div class="app-card-frame">
         <div class="card-head">
           <button
@@ -1133,6 +1135,39 @@ function appCardsPerRow() {
   return 4;
 }
 
+function stableHash(text) {
+  let hash = 0;
+  const value = String(text || "");
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function renderNodeGraphBars(node) {
+  const base = stableHash(node && (node.id || node.title || "app"));
+  const cpu = 24 + (base % 62);
+  const mem = 28 + (Math.floor(base / 7) % 58);
+  const io = 20 + (Math.floor(base / 13) % 66);
+  const lanes = [
+    { label: "cpu", value: cpu },
+    { label: "ram", value: mem },
+    { label: "io", value: io },
+  ];
+  return lanes
+    .map(
+      (lane) => `
+        <div class="row-graph-lane">
+          <span class="row-graph-label">${escapeHtml(lane.label)}</span>
+          <span class="row-graph-meter"><span class="row-graph-fill" style="width:${lane.value}%"></span></span>
+          <span class="row-graph-value">${lane.value}%</span>
+        </div>
+      `
+    )
+    .join("");
+}
+
 function renderMoreInfoPanel(node) {
   if (!node) {
     return "";
@@ -1146,8 +1181,9 @@ function renderMoreInfoPanel(node) {
         )}</button>`
     )
     .join('<span class="row-more-nav-sep">/</span>');
-  const actions = Array.isArray(node.actions) ? node.actions.slice(0, 8) : [];
   const status = node.meta && node.meta.status ? normalizeStatus(node.meta.status) : null;
+  const actions = Array.isArray(node.actions) ? node.actions.slice(0, 8) : [];
+  const quickActions = actions.length ? actions : [{ id: "refresh", label: "Sync Deck", variant: "ghost" }];
   const badges = [
     status ? `<span class="pill ${status}">${escapeHtml(status)}</span>` : "",
     node.badge ? `<span class="pill">${escapeHtml(node.badge)}</span>` : "",
@@ -1162,30 +1198,60 @@ function renderMoreInfoPanel(node) {
         <span class="row-more-nav-sep">/</span>
         <span class="row-more-nav-current">${escapeHtml(node.title || "App")}</span>
       </div>
-      <div class="row-more-head">
-        <div class="row-more-icon">${iconFor(node.icon)}</div>
-        <div class="row-more-copy">
-          <div class="row-more-title">${escapeHtml(node.title || "App")}</div>
-          <div class="row-more-desc">${escapeHtml(node.description || "Open this app to inspect and execute actions.")}</div>
-          <div class="card-meta">${badges}</div>
-        </div>
+      <div class="row-more-layout">
+        <aside class="row-more-side">
+          <div class="row-more-head">
+            <div class="row-more-icon">${iconFor(node.icon)}</div>
+            <div class="row-more-copy">
+              <div class="row-more-title">${escapeHtml(node.title || "App")}</div>
+              <div class="row-more-desc">${escapeHtml(node.description || "Open this app to inspect and execute actions.")}</div>
+              <div class="card-meta">${badges}</div>
+            </div>
+          </div>
+          <div class="row-more-side-actions">
+            <button class="action" data-card-open-node="${node.id}" data-open-mode="expanded">Open</button>
+            <button class="action ghost" data-card-expand-node="${node.id}">Close</button>
+          </div>
+        </aside>
+        <section class="row-more-main">
+          <div class="row-more-main-title">Live Signals</div>
+          <div class="row-more-graphs">
+            ${renderNodeGraphBars(node)}
+          </div>
+          <div class="row-more-main-title">Fast Actions</div>
+          <div class="row-more-actions">
+            ${
+              quickActions
+                .map(
+                  (action) =>
+                    `<button class="action ${action.variant || "ghost"}" data-action-id="${action.id}" data-node-id="${node.id}">${escapeHtml(
+                      action.label || action.id
+                    )}</button>`
+                )
+                .join("")
+            }
+          </div>
+        </section>
       </div>
-      <div class="row-more-actions">
-        <button class="action" data-card-open-node="${node.id}" data-open-mode="expanded">Open</button>
-        ${
-          actions
-            .map(
-              (action) =>
-                `<button class="action ${action.variant || "ghost"}" data-action-id="${action.id}" data-node-id="${node.id}">${escapeHtml(
-                  action.label || action.id
-                )}</button>`
-            )
-            .join("")
-        }
-        <button class="action ghost" data-card-expand-node="${node.id}">Close</button>
+      <div class="row-more-foot">
+        <div class="row-more-foot-note">Action surface expanded from this app button.</div>
+        <div class="row-more-foot-rule"></div>
       </div>
     </div>
   `;
+}
+
+function connectorStyleForRow(rowNodes, expandedNode) {
+  if (!expandedNode || !Array.isArray(rowNodes) || !rowNodes.length) {
+    return "";
+  }
+  const index = rowNodes.findIndex((node) => node.id === expandedNode.id);
+  if (index < 0) {
+    return "";
+  }
+  const left = (index / rowNodes.length) * 100;
+  const width = (1 / rowNodes.length) * 100;
+  return `style="--connector-left:${left.toFixed(4)}%;--connector-width:${width.toFixed(4)}%"`;
 }
 
 function renderGrid() {
@@ -1198,22 +1264,25 @@ function renderGrid() {
   for (let index = 0; index < children.length; index += perRow) {
     rows.push(children.slice(index, index + perRow));
   }
+  const useIntroAnimation = !state.ui.cardsAnimated;
   elements.grid.style.setProperty("--app-row-cols", String(perRow));
   elements.grid.innerHTML = rows
     .map((rowNodes, rowIndex) => {
       const expandedNode = rowNodes.find((node) => node.id === state.ui.expandedCardId) || null;
+      const connectorStyle = connectorStyleForRow(rowNodes, expandedNode);
       return `
         <section class="app-row" data-row-index="${rowIndex}">
           <div class="app-row-cards">
-            ${rowNodes.map((node, offset) => renderCard(node, rowIndex * perRow + offset)).join("")}
+            ${rowNodes.map((node, offset) => renderCard(node, rowIndex * perRow + offset, useIntroAnimation)).join("")}
           </div>
-          <div class="app-row-more ${expandedNode ? "open" : ""}">
+          <div class="app-row-more ${expandedNode ? "open" : ""}" ${connectorStyle}>
             ${expandedNode ? renderMoreInfoPanel(expandedNode) : ""}
           </div>
         </section>
       `;
     })
     .join("");
+  state.ui.cardsAnimated = true;
 }
 
 function scheduleGridRelayout() {
@@ -5111,6 +5180,12 @@ async function handleAction(actionId, node, params = {}) {
         logEvent("success", `${(response && response.message) || "Already up to date"}${stashSuffix}`);
       }
       renderPreview();
+      const reloadDelayMs =
+        response && response.reload && response.reload.scheduled ? 2600 : 900;
+      logEvent("success", `Reloading WebUI in ${Math.max(1, Math.round(reloadDelayMs / 1000))}s...`);
+      window.setTimeout(() => {
+        window.location.reload();
+      }, reloadDelayMs);
     } catch (err) {
       logEvent("error", err.message || "Check update and reload failed");
     }
