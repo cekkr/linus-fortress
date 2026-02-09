@@ -249,6 +249,7 @@ const elements = {
 const FAST_ACTION_STORAGE_KEY = "lizard.fast-actions.v1";
 const IMAGE_CATALOG_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 let imageCatalogRefreshTimer = null;
+let gridResizeTimer = null;
 const FAST_ACTION_OPTIONS = [
   {
     id: "refresh",
@@ -1075,7 +1076,6 @@ function renderFastActions() {
 
 function renderCard(node, index) {
   const actions = Array.isArray(node.actions) ? node.actions.slice(0, 6) : [];
-  const quickActions = actions.slice(0, 2);
   const status = node.meta && node.meta.status ? normalizeStatus(node.meta.status) : null;
   const badgeClass = node.badge ? node.badge.toLowerCase().replace(/[^a-z0-9]+/g, "-") : null;
   const expanded = node.id === state.ui.expandedCardId ? "expanded" : "";
@@ -1083,73 +1083,103 @@ function renderCard(node, index) {
   const delay = `${index * 0.05}s`;
   return `
     <article class="app-card ${selected} ${expanded}" data-node-id="${node.id}" style="animation-delay: ${delay}">
-      <div class="card-head">
-        <button
-          class="card-icon-button"
-          data-card-open-node="${node.id}"
-          title="Open ${escapeHtml(node.title || node.id)}"
-          aria-label="Open ${escapeHtml(node.title || node.id)}"
-        >
-          <span class="card-icon">${iconFor(node.icon)}</span>
-        </button>
-        <button
-          class="card-summary"
-          data-card-expand-node="${node.id}"
-          aria-expanded="${expanded ? "true" : "false"}"
-          aria-label="More info for ${escapeHtml(node.title || node.id)}"
-        >
-          <span class="card-title">${escapeHtml(node.title || "")}</span>
-          <span class="card-desc">${escapeHtml(node.description || "")}</span>
-        </button>
+      <div class="app-card-frame">
+        <div class="card-head">
+          <button
+            class="card-icon-button"
+            data-card-open-node="${node.id}"
+            title="Open ${escapeHtml(node.title || node.id)}"
+            aria-label="Open ${escapeHtml(node.title || node.id)}"
+          >
+            <span class="card-icon">${iconFor(node.icon)}</span>
+          </button>
+          <button
+            class="card-summary"
+            data-card-expand-node="${node.id}"
+            aria-expanded="${expanded ? "true" : "false"}"
+            aria-label="More info for ${escapeHtml(node.title || node.id)}"
+          >
+            <span class="card-title">${escapeHtml(node.title || "")}</span>
+            <span class="card-desc">${escapeHtml(node.description || "")}</span>
+          </button>
+        </div>
+        <div class="card-meta">
+          ${status ? `<span class="pill ${status}">${status}</span>` : ""}
+          ${badgeClass ? `<span class="pill ${badgeClass}">${node.badge}</span>` : ""}
+          ${node.meta && node.meta.ip ? `<span class="pill">${node.meta.ip}</span>` : ""}
+        </div>
       </div>
-      <div class="card-meta">
-        ${status ? `<span class="pill ${status}">${status}</span>` : ""}
-        ${badgeClass ? `<span class="pill ${badgeClass}">${node.badge}</span>` : ""}
-        ${node.meta && node.meta.ip ? `<span class="pill">${node.meta.ip}</span>` : ""}
+      <div class="app-card-tab" aria-hidden="true"></div>
+    </article>
+  `;
+}
+
+function appCardsPerRow() {
+  const width = elements.grid ? elements.grid.clientWidth : window.innerWidth;
+  if (width < 680) {
+    return 1;
+  }
+  if (width < 1024) {
+    return 2;
+  }
+  if (width < 1400) {
+    return 3;
+  }
+  return 4;
+}
+
+function renderMoreInfoPanel(node) {
+  if (!node) {
+    return "";
+  }
+  const path = buildPath(state.selectedId || state.rootId);
+  const pathMarkup = path
+    .map(
+      (entry) =>
+        `<button class="row-more-nav-link" data-nav-node-id="${entry.id}" title="Go to ${escapeHtml(entry.title)}">${escapeHtml(
+          entry.title
+        )}</button>`
+    )
+    .join('<span class="row-more-nav-sep">/</span>');
+  const actions = Array.isArray(node.actions) ? node.actions.slice(0, 8) : [];
+  const status = node.meta && node.meta.status ? normalizeStatus(node.meta.status) : null;
+  const badges = [
+    status ? `<span class="pill ${status}">${escapeHtml(status)}</span>` : "",
+    node.badge ? `<span class="pill">${escapeHtml(node.badge)}</span>` : "",
+    node.meta && node.meta.ip ? `<span class="pill">${escapeHtml(node.meta.ip)}</span>` : "",
+  ]
+    .filter(Boolean)
+    .join("");
+  return `
+    <div class="row-more-content">
+      <div class="row-more-nav">
+        ${pathMarkup}
+        <span class="row-more-nav-sep">/</span>
+        <span class="row-more-nav-current">${escapeHtml(node.title || "App")}</span>
       </div>
-      ${
-        quickActions.length
-          ? `
-        <div class="card-quick-actions">
-          ${quickActions
+      <div class="row-more-head">
+        <div class="row-more-icon">${iconFor(node.icon)}</div>
+        <div class="row-more-copy">
+          <div class="row-more-title">${escapeHtml(node.title || "App")}</div>
+          <div class="row-more-desc">${escapeHtml(node.description || "Open this app to inspect and execute actions.")}</div>
+          <div class="card-meta">${badges}</div>
+        </div>
+      </div>
+      <div class="row-more-actions">
+        <button class="action" data-card-open-node="${node.id}" data-open-mode="expanded">Open</button>
+        ${
+          actions
             .map(
               (action) =>
-                `<button class="action ${action.variant || ""}" data-action-id="${action.id}" data-node-id="${node.id}">${escapeHtml(
+                `<button class="action ${action.variant || "ghost"}" data-action-id="${action.id}" data-node-id="${node.id}">${escapeHtml(
                   action.label || action.id
                 )}</button>`
             )
-            .join("")}
-        </div>
-      `
-          : ""
-      }
-      <div class="card-expand-shell">
-        <div class="card-expand-panel">
-          <div class="card-expand-copy">
-            Open details and deeper actions for <strong>${escapeHtml(node.title || "")}</strong>.
-          </div>
-          ${
-            actions.length
-              ? `
-            <div class="card-actions card-actions-expanded">
-              ${actions
-                .map(
-                  (action) =>
-                    `<button class="action ${action.variant || ""}" data-action-id="${action.id}" data-node-id="${node.id}">${escapeHtml(
-                      action.label || action.id
-                    )}</button>`
-                )
-                .join("")}
-            </div>
-          `
-              : ""
-          }
-          <div class="card-expand-open">
-            <button class="action" data-card-open-node="${node.id}" data-open-mode="expanded">Open</button>
-          </div>
-        </div>
+            .join("")
+        }
+        <button class="action ghost" data-card-expand-node="${node.id}">Close</button>
       </div>
-    </article>
+    </div>
   `;
 }
 
@@ -1158,7 +1188,37 @@ function renderGrid() {
   if (state.ui.expandedCardId && !children.some((child) => child.id === state.ui.expandedCardId)) {
     state.ui.expandedCardId = null;
   }
-  elements.grid.innerHTML = children.map(renderCard).join("");
+  const perRow = appCardsPerRow();
+  const rows = [];
+  for (let index = 0; index < children.length; index += perRow) {
+    rows.push(children.slice(index, index + perRow));
+  }
+  elements.grid.style.setProperty("--app-row-cols", String(perRow));
+  elements.grid.innerHTML = rows
+    .map((rowNodes, rowIndex) => {
+      const expandedNode = rowNodes.find((node) => node.id === state.ui.expandedCardId) || null;
+      return `
+        <section class="app-row" data-row-index="${rowIndex}">
+          <div class="app-row-cards">
+            ${rowNodes.map((node, offset) => renderCard(node, rowIndex * perRow + offset)).join("")}
+          </div>
+          <div class="app-row-more ${expandedNode ? "open" : ""}">
+            ${expandedNode ? renderMoreInfoPanel(expandedNode) : ""}
+          </div>
+        </section>
+      `;
+    })
+    .join("");
+}
+
+function scheduleGridRelayout() {
+  if (gridResizeTimer) {
+    window.clearTimeout(gridResizeTimer);
+  }
+  gridResizeTimer = window.setTimeout(() => {
+    gridResizeTimer = null;
+    renderGrid();
+  }, 120);
 }
 
 function shouldShowImageCatalog() {
@@ -5854,6 +5914,7 @@ window.addEventListener("DOMContentLoaded", () => {
   loadFastActionsPreference();
   renderDebugPanel();
   bindEvents();
+  window.addEventListener("resize", scheduleGridRelayout);
   if (elements.authForm) {
     elements.authForm.addEventListener("submit", handleLogin);
   }
