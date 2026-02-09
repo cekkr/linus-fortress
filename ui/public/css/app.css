@@ -428,16 +428,22 @@ body {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(var(--connector-left, 0%) + 11px);
-  right: calc(100% - var(--connector-left, 0%) - var(--connector-width, 25%) + 11px);
+  left: var(--connector-left, 0%);
+  right: calc(100% - var(--connector-left, 0%) - var(--connector-width, 25%));
   border-left: 1px solid #2e3339;
   border-right: 1px solid #2e3339;
   border-bottom: 1px solid #2e3339;
-  border-radius: 0 0 8px 8px;
+  border-radius: 0;
   background-image:
     var(--fiber-dark-texture),
     linear-gradient(180deg, #434850 0%, #32373e 100%);
   box-shadow: 0 10px 18px rgba(6, 8, 11, 0.32);
+  transform-origin: top center;
+  transform: scaleY(0.15);
+  opacity: 0;
+  transition:
+    transform 0.34s var(--legacy-swing),
+    opacity 0.2s ease;
 }
 
 .app-row-bridge.open {
@@ -445,10 +451,21 @@ body {
   opacity: 1;
 }
 
+.app-row-bridge.open::before {
+  transform: scaleY(1);
+  opacity: 1;
+}
+
 .app-row-bridge.is-opening {
   transition:
     height 0.42s var(--legacy-swing),
     opacity 0.26s ease;
+}
+
+.app-row-bridge.is-opening::before {
+  transition:
+    transform 0.38s var(--legacy-swing),
+    opacity 0.2s ease;
 }
 
 .app-row-bridge.is-closing {
@@ -470,7 +487,7 @@ body {
     opacity 0.3s ease,
     transform 0.4s var(--legacy-swing);
   padding: 0 6px;
-  margin-top: -1px;
+  margin-top: 0;
   z-index: 1;
 }
 
@@ -482,9 +499,9 @@ body {
 
 .app-row-more.is-opening {
   transition:
-    max-height 0.4s var(--legacy-swing),
-    opacity 0.3s ease,
-    transform 0.4s var(--legacy-swing);
+    max-height 0.44s var(--legacy-swing) 0.07s,
+    opacity 0.26s ease 0.1s,
+    transform 0.44s var(--legacy-swing) 0.07s;
 }
 
 .app-row-more.is-closing {
@@ -498,8 +515,9 @@ body {
 }
 
 .row-more-content {
-  border-radius: 6px 6px 10px 10px;
+  border-radius: 0 0 10px 10px;
   border: 1px solid #2c2f34;
+  border-top: none;
   background-image:
     var(--fiber-dark-texture),
     linear-gradient(180deg, #4b4f56 0%, #3a3f46 50%, #2f343a 100%);
@@ -513,6 +531,10 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.app-row-more.is-opening .row-more-content {
+  animation: rowMoreAperture 0.42s var(--legacy-swing) both;
 }
 
 .row-more-nav {
@@ -1687,6 +1709,17 @@ body {
   }
 }
 
+@keyframes rowMoreAperture {
+  from {
+    clip-path: inset(0 0 100% 0);
+    opacity: 0.45;
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+    opacity: 1;
+  }
+}
+
 @keyframes appCardDarken {
   from {
     filter: brightness(1.06);
@@ -1760,7 +1793,7 @@ body {
   }
 
   .app-row-more {
-    margin-top: -2px;
+    margin-top: 0;
   }
 
   .row-more-layout {
