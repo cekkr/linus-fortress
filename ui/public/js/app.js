@@ -250,6 +250,11 @@ const FAST_ACTION_STORAGE_KEY = "lizard.fast-actions.v1";
 const IMAGE_CATALOG_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 let imageCatalogRefreshTimer = null;
 let gridResizeTimer = null;
+const CARD_SWITCH_SEQUENCE_MS = 500;
+const CARD_OPEN_SEQUENCE_MS = 420;
+let cardTransitionTimer = null;
+let cardTransitionBusy = false;
+let queuedExpandNodeId = null;
 const FAST_ACTION_OPTIONS = [
   {
     id: "refresh",
@@ -1212,6 +1217,9 @@ function renderGrid() {
 }
 
 function scheduleGridRelayout() {
+  if (cardTransitionBusy) {
+    return;
+  }
   if (gridResizeTimer) {
     window.clearTimeout(gridResizeTimer);
   }
@@ -1219,6 +1227,102 @@ function scheduleGridRelayout() {
     gridResizeTimer = null;
     renderGrid();
   }, 120);
+}
+
+function safeNodeSelectorValue(nodeId) {
+  return String(nodeId || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"');
+}
+
+function cardElementByNodeId(nodeId) {
+  if (!elements.grid || !nodeId) {
+    return null;
+  }
+  return elements.grid.querySelector(`.app-card[data-node-id="${safeNodeSelectorValue(nodeId)}"]`);
+}
+
+function rowMoreElementFromCard(cardElement) {
+  if (!cardElement) {
+    return null;
+  }
+  const row = cardElement.closest(".app-row");
+  if (!row) {
+    return null;
+  }
+  return row.querySelector(".app-row-more");
+}
+
+function clearCardTransitionTimer() {
+  if (cardTransitionTimer) {
+    window.clearTimeout(cardTransitionTimer);
+    cardTransitionTimer = null;
+  }
+}
+
+function runQueuedCardToggleIfNeeded() {
+  if (!queuedExpandNodeId) {
+    return;
+  }
+  const nextNodeId = queuedExpandNodeId;
+  queuedExpandNodeId = null;
+  if (nextNodeId === state.ui.expandedCardId) {
+    return;
+  }
+  toggleAppCardDetails(nextNodeId);
+}
+
+function markCardOpeningSequence(nodeId) {
+  const card = cardElementByNodeId(nodeId);
+  if (!card) {
+    return;
+  }
+  const rowMore = rowMoreElementFromCard(card);
+  card.classList.add("is-expanding");
+  if (rowMore) {
+    rowMore.classList.add("is-opening");
+  }
+  window.setTimeout(() => {
+    card.classList.remove("is-expanding");
+    if (rowMore) {
+      rowMore.classList.remove("is-opening");
+    }
+  }, CARD_OPEN_SEQUENCE_MS);
+}
+
+function closeExpandedCardAndMaybeOpen(nextNodeId) {
+  const currentNodeId = state.ui.expandedCardId;
+  if (!currentNodeId) {
+    if (nextNodeId) {
+      state.ui.expandedCardId = nextNodeId;
+      renderGrid();
+      markCardOpeningSequence(nextNodeId);
+    }
+    cardTransitionBusy = false;
+    runQueuedCardToggleIfNeeded();
+    return;
+  }
+
+  const card = cardElementByNodeId(currentNodeId);
+  const rowMore = rowMoreElementFromCard(card);
+  if (card) {
+    card.classList.add("is-collapsing");
+  }
+  if (rowMore) {
+    rowMore.classList.add("is-closing");
+  }
+
+  clearCardTransitionTimer();
+  cardTransitionTimer = window.setTimeout(() => {
+    cardTransitionTimer = null;
+    state.ui.expandedCardId = nextNodeId || null;
+    renderGrid();
+    if (nextNodeId) {
+      markCardOpeningSequence(nextNodeId);
+    }
+    cardTransitionBusy = false;
+    runQueuedCardToggleIfNeeded();
+  }, CARD_SWITCH_SEQUENCE_MS);
 }
 
 function shouldShowImageCatalog() {
@@ -3474,6 +3578,9 @@ function renderAll() {
 }
 
 function selectNode(id) {
+  clearCardTransitionTimer();
+  cardTransitionBusy = false;
+  queuedExpandNodeId = null;
   state.selectedId = id;
   state.ui.expandedCardId = null;
   renderAll();
@@ -3484,8 +3591,23 @@ function toggleAppCardDetails(nodeId) {
   if (!nodeId) {
     return;
   }
-  state.ui.expandedCardId = state.ui.expandedCardId === nodeId ? null : nodeId;
-  renderGrid();
+  if (cardTransitionBusy) {
+    queuedExpandNodeId = nodeId;
+    return;
+  }
+  const currentNodeId = state.ui.expandedCardId;
+  if (!currentNodeId) {
+    state.ui.expandedCardId = nodeId;
+    renderGrid();
+    markCardOpeningSequence(nodeId);
+    return;
+  }
+  cardTransitionBusy = true;
+  if (currentNodeId === nodeId) {
+    closeExpandedCardAndMaybeOpen(null);
+    return;
+  }
+  closeExpandedCardAndMaybeOpen(nodeId);
 }
 
 let pendingCardOpenTimer = null;
@@ -3494,6 +3616,9 @@ function openAppFromCard(nodeId) {
   if (!nodeId) {
     return;
   }
+  clearCardTransitionTimer();
+  cardTransitionBusy = false;
+  queuedExpandNodeId = null;
   if (pendingCardOpenTimer) {
     window.clearTimeout(pendingCardOpenTimer);
     pendingCardOpenTimer = null;

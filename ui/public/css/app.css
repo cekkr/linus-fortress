@@ -15,6 +15,7 @@
   --fiber-dark-texture:
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 4px),
     repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0, rgba(0, 0, 0, 0.16) 1px, transparent 1px, transparent 5px);
+  --legacy-swing: cubic-bezier(0.215, 0.61, 0.355, 1);
   --grid-gap: 20px;
 }
 
@@ -411,9 +412,9 @@ body {
   transform: translateY(-10px);
   overflow: hidden;
   transition:
-    max-height 0.34s cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 0.24s ease,
-    transform 0.34s cubic-bezier(0.2, 0.8, 0.2, 1);
+    max-height 0.4s var(--legacy-swing),
+    opacity 0.3s ease,
+    transform 0.4s var(--legacy-swing);
   padding: 0 6px;
 }
 
@@ -421,7 +422,23 @@ body {
   max-height: 420px;
   opacity: 1;
   transform: translateY(0);
-  animation: rowMoreReveal 0.34s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.app-row-more.is-opening {
+  transition:
+    max-height 0.4s var(--legacy-swing),
+    opacity 0.3s ease,
+    transform 0.4s var(--legacy-swing);
+}
+
+.app-row-more.is-closing {
+  max-height: 0 !important;
+  opacity: 0 !important;
+  transform: translateY(-10px) !important;
+  transition:
+    max-height 0.4s var(--legacy-swing),
+    transform 0.4s var(--legacy-swing),
+    opacity 0.3s ease 0.1s;
 }
 
 .row-more-content {
@@ -708,9 +725,9 @@ body {
   transition:
     border-bottom-color 0.2s ease,
     border-color 0.2s ease,
-    background 0.24s ease,
-    box-shadow 0.24s ease,
-    transform 0.24s ease;
+    background 0.3s ease,
+    box-shadow 0.3s ease,
+    transform 0.24s var(--legacy-swing);
 }
 
 .app-card:hover .app-card-frame {
@@ -737,7 +754,10 @@ body {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     0 14px 24px rgba(6, 8, 11, 0.34);
-  animation: appCardDarken 0.22s ease;
+}
+
+.app-card.is-collapsing .app-card-frame {
+  transform: translateY(0);
 }
 
 .app-card-tab {
@@ -755,16 +775,32 @@ body {
     var(--fiber-dark-texture),
     linear-gradient(180deg, #42474f 0%, #32373e 100%);
   transition:
-    height 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 0.22s ease,
-    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+    height 0.16s linear,
+    transform 0.16s linear,
+    opacity 0.2s ease;
 }
 
 .app-card.expanded .app-card-tab {
   height: 12px;
   opacity: 1;
   transform: translateY(10px);
-  animation: cardTabReveal 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.app-card.is-expanding .app-card-tab {
+  transition:
+    opacity 0.3s ease,
+    height 0.1s linear 0.3s,
+    transform 0.1s linear 0.3s;
+}
+
+.app-card.is-collapsing .app-card-tab {
+  height: 0 !important;
+  opacity: 0 !important;
+  transform: translateY(-2px) !important;
+  transition:
+    height 0.1s linear,
+    transform 0.1s linear,
+    opacity 0.3s ease 0.1s;
 }
 
 .app-card.opening {
