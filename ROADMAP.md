@@ -72,7 +72,9 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Next: Add a background cache refresh + health indicator for public LXD simplestream lookups and keep Ubuntu/Debian version-to-codename mappings current as new releases ship.
 - Done: Rework app navigation cards into an app-store model where icon click opens directly and title/description toggles an animated more-info panel with deep actions + Open CTA.
 - Done: Align app deck UX closer to legacy Lizard: fixed-height rectangular app buttons, row-level dark-fiber more-info expansion, and active-button bottom-extension animation without resizing sibling cards.
+- Done: Add stage-level app-home fallbacks for leaf/fullscreen app views so opening main apps without child cards never renders a blank stage.
 - Next: Add copy/export controls for latest debug payloads from the UI Debug panel to speed up browser-side troubleshooting.
+- Next: Continue expanding app-home dashboards with richer per-item actions (route/site/VM quick controls), container sub-app homes, and visual regression coverage for stage rendering.
 
 ## Path 9: Bootstrap and run tooling (short term)
 - Done: Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).

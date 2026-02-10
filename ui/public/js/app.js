@@ -1241,10 +1241,539 @@ function renderMoreInfoPanel(node) {
   `;
 }
 
+function formatPercentValue(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return "n/a";
+  }
+  return `${Math.round(parsed)}%`;
+}
+
+function routeUsesTls(route) {
+  const mode = route && route.tls && route.tls.mode ? String(route.tls.mode).toLowerCase() : "http";
+  return mode !== "disabled" && mode !== "http" && mode !== "off";
+}
+
+function normalizeHomeActions(node, extraActions = []) {
+  const source = [
+    ...(Array.isArray(node && node.actions) ? node.actions : []),
+    ...(Array.isArray(extraActions) ? extraActions : []),
+  ];
+  const seen = new Set();
+  const actions = [];
+  for (const action of source) {
+    const id = action && action.id ? String(action.id).trim() : "";
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    actions.push({
+      id,
+      label: action.label || id,
+      variant: action.variant || "ghost",
+      nodeId: action.nodeId || null,
+    });
+  }
+  return actions;
+}
+
+function renderHomeActionButtons(actions, nodeId) {
+  const list = Array.isArray(actions) ? actions : [];
+  if (!list.length) {
+    return "";
+  }
+  return list
+    .map((action) => {
+      const targetNodeId = action.nodeId || nodeId || "";
+      return `<button class="action ${escapeHtml(action.variant || "ghost")}" data-action-id="${escapeHtml(action.id)}" data-node-id="${escapeHtml(
+        targetNodeId
+      )}">${escapeHtml(action.label || action.id)}</button>`;
+    })
+    .join("");
+}
+
+function renderHomeMetricCards(metrics) {
+  const list = Array.isArray(metrics) ? metrics : [];
+  if (!list.length) {
+    return "";
+  }
+  return `
+    <div class="app-home-metrics">
+      ${list
+        .map(
+          (metric) => `
+            <div class="app-home-metric ${escapeHtml(metric && metric.tone ? metric.tone : "")}">
+              <span class="app-home-metric-label">${escapeHtml(metric && metric.label ? metric.label : "")}</span>
+              <span class="app-home-metric-value">${escapeHtml(metric && metric.value !== undefined ? metric.value : "n/a")}</span>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderHomeItemCards(items, emptyText) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
+    return `<div class="app-home-empty">${escapeHtml(emptyText || "No records available for this app.")}</div>`;
+  }
+  return `
+    <div class="app-home-items">
+      ${list
+        .map((item) => {
+          const pills = Array.isArray(item.pills) ? item.pills : [];
+          const pillMarkup = pills
+            .map((pill) => {
+              if (!pill) {
+                return "";
+              }
+              if (typeof pill === "string") {
+                return `<span class="pill">${escapeHtml(pill)}</span>`;
+              }
+              const tone = pill.tone ? ` ${escapeHtml(pill.tone)}` : "";
+              return `<span class="pill${tone}">${escapeHtml(pill.label || "")}</span>`;
+            })
+            .join("");
+          return `
+            <article class="app-home-item">
+              <div class="app-home-item-head">
+                <div class="app-home-item-title">${escapeHtml(item.title || "Untitled")}</div>
+                ${
+                  item.navNodeId
+                    ? `<button class="action ghost mini" data-nav-node-id="${escapeHtml(item.navNodeId)}">Open</button>`
+                    : ""
+                }
+              </div>
+              ${item.detail ? `<div class="app-home-item-detail">${escapeHtml(item.detail)}</div>` : ""}
+              ${pillMarkup ? `<div class="card-meta">${pillMarkup}</div>` : ""}
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function buildAppHomeModel(node) {
+  const defaultNode = node || {};
+  const model = {
+    kicker: "App Home",
+    title: defaultNode.title ? `${defaultNode.title} Home` : "App Home",
+    description:
+      defaultNode.description || "No sub-apps are available here yet. Use these actions and summaries to operate this section.",
+    metrics: [],
+    actions: normalizeHomeActions(defaultNode, [{ id: "refresh", label: "Sync Deck", variant: "ghost" }]),
+    itemsTitle: "Latest Signals",
+    items: [],
+    emptyText: "No records available for this app yet.",
+  };
+
+  const nodeId = defaultNode.id || "";
+  if (nodeId === "containers") {
+    const running = state.containers.filter((container) => normalizeStatus(container.status) === "running").length;
+    const stopped = state.containers.filter((container) => normalizeStatus(container.status) === "stopped").length;
+    const lamp = state.containers.filter((container) => String(container.stack || "").toLowerCase() === "lamp").length;
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "Total", value: String(state.containers.length) },
+      { label: "Running", value: String(running), tone: "running" },
+      { label: "Stopped", value: String(stopped), tone: "stopped" },
+      { label: "LAMP", value: String(lamp), tone: "soon" },
+    ];
+    model.itemsTitle = "Container Inventory";
+    model.items = state.containers.slice(0, 8).map((container) => {
+      const status = normalizeStatus(container.status);
+      return {
+        title: container.name || "container",
+        detail: `${container.ip || "IP pending"} • ${container.architecture || "unknown arch"}`,
+        navNodeId: `container:${container.name}`,
+        pills: [
+          { label: status, tone: status === "running" ? "running" : status === "stopped" ? "stopped" : "" },
+          container.stack ? { label: String(container.stack).toUpperCase() } : null,
+        ].filter(Boolean),
+      };
+    });
+    model.emptyText = "No containers found. Use New Container to get started.";
+    model.actions = normalizeHomeActions(defaultNode, [{ id: "refresh", label: "Sync Deck", variant: "ghost" }]);
+    return model;
+  }
+
+  if (nodeId === "routing") {
+    const routes = Array.isArray(state.routes) ? state.routes : [];
+    const enabled = routes.filter((route) => route.enabled !== false).length;
+    const tls = routes.filter((route) => routeUsesTls(route)).length;
+    const wildcard = routes.filter((route) => String(route.domain || "").startsWith("*.")).length;
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "Routes", value: state.routesLoading ? "loading..." : String(routes.length) },
+      { label: "Enabled", value: String(enabled), tone: "running" },
+      { label: "TLS", value: String(tls), tone: "soon" },
+      { label: "Wildcard", value: String(wildcard) },
+    ];
+    model.itemsTitle = "Domain Map";
+    model.items = routes.slice(0, 8).map((route) => {
+      const target = route.container_name
+        ? `${route.container_name}:${route.container_port || 80}`
+        : `host:${route.container_port || 80}`;
+      const listen = `${route.listen_address || "0.0.0.0"}:${route.listen_port || 80}`;
+      return {
+        title: route.domain || "route",
+        detail: `${listen} -> ${target}`,
+        pills: [
+          { label: route.enabled === false ? "disabled" : "enabled", tone: route.enabled === false ? "stopped" : "running" },
+          { label: routeUsesTls(route) ? (route.tls && route.tls.mode ? route.tls.mode : "tls") : "http" },
+        ],
+      };
+    });
+    model.emptyText = state.routesLoading
+      ? "Loading routes..."
+      : "No routes configured. Use Add Route to publish a container.";
+    return model;
+  }
+
+  if (nodeId === "recipes") {
+    const recipes = Array.isArray(state.recipes) ? state.recipes : [];
+    const deps = recipes.filter((recipe) => {
+      const count = Array.isArray(recipe.dependencies) ? recipe.dependencies.length : recipe.dependencies_count || 0;
+      return count > 0;
+    }).length;
+    const withParams = recipes.filter((recipe) => {
+      const keys = Array.isArray(recipe.parameter_keys) ? recipe.parameter_keys.length : 0;
+      return keys > 0;
+    }).length;
+    const latest = getLatestRecipeApplyReport();
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "Recipes", value: state.recipesLoading ? "loading..." : String(recipes.length) },
+      { label: "With Deps", value: String(deps) },
+      { label: "With Params", value: String(withParams) },
+      { label: "Last Apply", value: latest ? latest.recipe : "none" },
+    ];
+    model.itemsTitle = "Recipe Catalog";
+    model.items = recipes.slice(0, 8).map((recipe) => {
+      const depsCount = Array.isArray(recipe.dependencies) ? recipe.dependencies.length : recipe.dependencies_count || 0;
+      return {
+        title: recipe.name || "recipe",
+        detail: recipe.description || "No description",
+        pills: [
+          { label: `${depsCount} deps` },
+          { label: `${recipe.packages_count || 0} pkg` },
+          { label: `${recipe.commands_count || 0} cmd` },
+        ],
+      };
+    });
+    model.emptyText = state.recipesLoading
+      ? "Loading recipes..."
+      : "No recipes found. Seed LAMP to create starter recipes.";
+    return model;
+  }
+
+  if (nodeId === "monitoring") {
+    const snapshot = state.monitoring || null;
+    const host = snapshot && snapshot.host ? snapshot.host : {};
+    const alerts = snapshot && snapshot.alerts ? snapshot.alerts : {};
+    const hostAlerts = Array.isArray(alerts.host) ? alerts.host.length : 0;
+    const containerAlerts = alerts.containers && typeof alerts.containers === "object" ? alerts.containers : {};
+    const containerAlertCount = Object.values(containerAlerts).reduce(
+      (sum, value) => sum + (Array.isArray(value) ? value.length : 0),
+      0
+    );
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "CPU", value: snapshot ? formatPercentValue(host.cpu_percent) : state.monitoringLoading ? "loading..." : "n/a" },
+      { label: "RAM", value: snapshot ? formatPercentValue(host.memory_percent) : "n/a" },
+      { label: "Disk", value: snapshot ? formatPercentValue(host.disk_percent) : "n/a" },
+      {
+        label: "Alerts",
+        value: snapshot ? String(hostAlerts + containerAlertCount) : "0",
+        tone: hostAlerts + containerAlertCount > 0 ? "stopped" : "running",
+      },
+    ];
+    model.itemsTitle = "Container Telemetry";
+    const containerEntries = snapshot && snapshot.containers ? Object.entries(snapshot.containers) : [];
+    containerEntries.sort((a, b) => {
+      const aData = a[1] || {};
+      const bData = b[1] || {};
+      const aPeak = Math.max(Number(aData.cpu_percent) || 0, Number(aData.memory_percent) || 0, Number(aData.disk_percent) || 0);
+      const bPeak = Math.max(Number(bData.cpu_percent) || 0, Number(bData.memory_percent) || 0, Number(bData.disk_percent) || 0);
+      return bPeak - aPeak;
+    });
+    model.items = containerEntries.slice(0, 8).map(([name, data]) => {
+      const containerAlertList = Array.isArray(containerAlerts[name]) ? containerAlerts[name] : [];
+      return {
+        title: name,
+        detail: `CPU ${formatPercentValue(data.cpu_percent)} • RAM ${formatPercentValue(data.memory_percent)} • Disk ${formatPercentValue(
+          data.disk_percent
+        )}`,
+        pills: [
+          containerAlertList.length
+            ? { label: `${containerAlertList.length} alerts`, tone: "stopped" }
+            : { label: "ok", tone: "running" },
+          data.process_count ? { label: `${data.process_count} procs` } : null,
+        ].filter(Boolean),
+      };
+    });
+    model.emptyText = state.monitoringLoading
+      ? "Loading monitoring snapshot..."
+      : "No monitoring snapshot loaded yet. Refresh to fetch current metrics.";
+    return model;
+  }
+
+  if (nodeId === "firewall") {
+    const fw = state.firewall || {};
+    const rules = Array.isArray(fw.rules) ? fw.rules : [];
+    const allow = rules.filter((rule) => {
+      const action = String(rule.action || "allow").toLowerCase();
+      return action.includes("allow") || action.includes("accept");
+    }).length;
+    const blocked = rules.filter((rule) => {
+      const action = String(rule.action || "").toLowerCase();
+      return action.includes("deny") || action.includes("reject") || action.includes("drop");
+    }).length;
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "Backend", value: fw.backend || (state.firewallLoading ? "loading..." : "unknown") },
+      { label: "Rules", value: String(rules.length) },
+      { label: "Allow", value: String(allow), tone: "running" },
+      { label: "Block", value: String(blocked), tone: blocked > 0 ? "stopped" : "" },
+    ];
+    model.itemsTitle = "Rule Snapshot";
+    model.items = rules.slice(0, 8).map((rule) => ({
+      title: `${rule.port || "?"}/${rule.protocol || "tcp"}`,
+      detail: `${rule.source || "any source"} • ${rule.interface || "all interfaces"}`,
+      pills: [{ label: rule.action || "allow" }],
+    }));
+    model.emptyText = state.firewallLoading
+      ? "Loading firewall rules..."
+      : "No firewall rules loaded yet. Use Open Port or Refresh Rules.";
+    return model;
+  }
+
+  if (nodeId === "packages") {
+    const lastPreflight = state.systemUpgrade.lastPreflight;
+    const lastExecution = state.systemUpgrade.lastExecution;
+    const lastUpdateReload = state.systemUpgrade.lastUpdateReload;
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "Preflight", value: lastPreflight ? "ready" : "none" },
+      { label: "Upgrade", value: lastExecution ? "run" : "never" },
+      { label: "Update+Reload", value: lastUpdateReload ? "run" : "never" },
+    ];
+    model.itemsTitle = "Recent Operations";
+    model.items = [
+      lastPreflight
+        ? {
+            title: "Last preflight",
+            detail: new Date(lastPreflight.at).toLocaleString(),
+            pills: [
+              {
+                label: `${Array.isArray(lastPreflight.preflight && lastPreflight.preflight.migrations ? lastPreflight.preflight.migrations : [])
+                  .length} migration changes`,
+              },
+            ],
+          }
+        : null,
+      lastExecution
+        ? {
+            title: "Last upgrade",
+            detail: new Date(lastExecution.at).toLocaleString(),
+            pills: [{ label: (lastExecution.result && lastExecution.result.message) || "completed", tone: "running" }],
+          }
+        : null,
+      lastUpdateReload
+        ? {
+            title: "Last update check",
+            detail: new Date(lastUpdateReload.at).toLocaleString(),
+            pills: [
+              {
+                label: lastUpdateReload.result && lastUpdateReload.result.updated ? "updated" : "no changes",
+                tone: lastUpdateReload.result && lastUpdateReload.result.updated ? "running" : "soon",
+              },
+            ],
+          }
+        : null,
+    ].filter(Boolean);
+    model.emptyText = "No package operations recorded in this session yet.";
+    return model;
+  }
+
+  if (nodeId === "hosts") {
+    const hosts = Array.isArray(state.hosts) ? state.hosts : [];
+    const installed = hosts.filter((host) => Boolean(host.installed)).length;
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "Hosts", value: state.hostsLoading ? "loading..." : String(hosts.length) },
+      { label: "Installed", value: String(installed), tone: "running" },
+      { label: "Pending", value: String(Math.max(hosts.length - installed, 0)), tone: "soon" },
+    ];
+    model.itemsTitle = "Host Inventory";
+    model.items = hosts.slice(0, 8).map((host) => ({
+      title: host.name || "host",
+      detail: host.ssh_host ? `${host.ssh_host}${host.ssh_port ? `:${host.ssh_port}` : ""}` : "SSH endpoint missing",
+      pills: [
+        { label: host.installed ? "installed" : "new", tone: host.installed ? "running" : "soon" },
+        host.os_type ? { label: host.os_type } : null,
+      ].filter(Boolean),
+    }));
+    model.emptyText = state.hostsLoading ? "Loading hosts..." : "No hosts registered yet. Add a host to start.";
+    return model;
+  }
+
+  if (nodeId === "vms") {
+    const vms = Array.isArray(state.vms) ? state.vms : [];
+    const running = vms.filter((vm) => String(vm.status || vm.state || "").toLowerCase().includes("running")).length;
+    const snapshots = vms.reduce((sum, vm) => sum + (Array.isArray(vm.snapshots) ? vm.snapshots.length : 0), 0);
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "VMs", value: state.vmsLoading ? "loading..." : String(vms.length) },
+      { label: "Running", value: String(running), tone: "running" },
+      { label: "Snapshots", value: String(snapshots) },
+    ];
+    model.itemsTitle = "VM Lab Status";
+    model.items = vms.slice(0, 8).map((vm) => {
+      const status = String(vm.status || vm.state || "unknown");
+      return {
+        title: vm.name || "vm",
+        detail: `${vm.profile || vm.provider || "vm"} • ${vm.memory_mb ? `${vm.memory_mb}MB` : "memory ?"} • ${
+          vm.disk_gb ? `${vm.disk_gb}GB` : "disk ?"
+        }`,
+        pills: [{ label: status, tone: status.toLowerCase().includes("running") ? "running" : "stopped" }],
+      };
+    });
+    model.emptyText = state.vmsLoading ? "Loading VMs..." : "No VMs defined yet.";
+    return model;
+  }
+
+  if (nodeId === "sites") {
+    const sites = Array.isArray(state.sites) ? state.sites : [];
+    const active = sites.filter((site) => String(site.status || "").toLowerCase().includes("active")).length;
+    let backups = 0;
+    for (const list of state.siteBackups.values()) {
+      backups += Array.isArray(list) ? list.length : 0;
+    }
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "Sites", value: state.sitesLoading ? "loading..." : String(sites.length) },
+      { label: "Active", value: String(active), tone: "running" },
+      { label: "Backups", value: String(backups) },
+    ];
+    model.itemsTitle = "Site Inventory";
+    model.items = sites.slice(0, 8).map((site) => {
+      const siteId = site.id || site.name;
+      const detail = state.siteDetails.get(siteId) || site;
+      const domain = detail.primary_domain || site.primary_domain || "domain pending";
+      const container = detail.container_name || site.container_name || "container ?";
+      const status = String(site.status || "unknown");
+      return {
+        title: siteId || "site",
+        detail: `${domain} • ${container}`,
+        pills: [
+          { label: status, tone: status.toLowerCase().includes("active") ? "running" : "stopped" },
+          detail.runtime && detail.runtime.php_version ? { label: `PHP ${detail.runtime.php_version}` } : null,
+        ].filter(Boolean),
+      };
+    });
+    model.emptyText = state.sitesLoading ? "Loading sites..." : "No sites yet. Create one to begin.";
+    return model;
+  }
+
+  if (nodeId === "settings") {
+    const selectedFastActions = normalizeFastActions(state.ui.fastActions);
+    const latestUpdateReload = state.systemUpgrade.lastUpdateReload;
+    const latestStatus = latestUpdateReload
+      ? latestUpdateReload.result && latestUpdateReload.result.updated
+        ? "updated"
+        : "no changes"
+      : "never";
+    model.kicker = "Main App";
+    model.metrics = [
+      { label: "Fast Actions", value: String(selectedFastActions.length) },
+      { label: "Update Check", value: latestStatus, tone: latestStatus === "updated" ? "running" : "soon" },
+      { label: "Session", value: state.auth.mode || "none" },
+    ];
+    model.itemsTitle = "Current Fast Actions";
+    model.items = selectedFastActions
+      .map((id) => fastActionOptionById(id))
+      .filter(Boolean)
+      .map((option) => ({
+        title: option.label,
+        detail: option.description,
+        pills: [{ label: option.variant || "action" }],
+      }));
+    model.emptyText = "No fast actions selected.";
+    model.actions = normalizeHomeActions(defaultNode, [{ id: "settings-fast-actions-default", label: "Reset Fast Actions", variant: "ghost" }]);
+    return model;
+  }
+
+  if (defaultNode.context && defaultNode.context.container) {
+    const containerName = String(defaultNode.context.container);
+    const container = state.containerIndex.get(containerName);
+    const status = container ? normalizeStatus(container.status) : "unknown";
+    model.kicker = "Container App";
+    model.metrics = [
+      { label: "Container", value: containerName },
+      { label: "Status", value: status, tone: status === "running" ? "running" : status === "stopped" ? "stopped" : "" },
+      { label: "IP", value: container && container.ip ? container.ip : "n/a" },
+    ];
+    model.itemsTitle = "Detected Services";
+    const services = container && Array.isArray(container.services) ? container.services : [];
+    model.items = services.slice(0, 8).map((service) => ({
+      title: service,
+      detail: `${containerName} service`,
+      pills: [{ label: "available", tone: "running" }],
+    }));
+    model.emptyText = services.length
+      ? model.emptyText
+      : "No detected services yet. Use Detect Services or app actions to install components.";
+    model.actions = normalizeHomeActions(defaultNode, [
+      { id: "refresh", label: "Sync Deck", variant: "ghost" },
+      { id: "probe-services", label: "Detect Services", variant: "ghost" },
+    ]);
+    return model;
+  }
+
+  return model;
+}
+
+function renderAppHome(node) {
+  const model = buildAppHomeModel(node);
+  const metricsMarkup = renderHomeMetricCards(model.metrics);
+  const actionsMarkup = renderHomeActionButtons(model.actions, node ? node.id : state.rootId);
+  const itemsMarkup = renderHomeItemCards(model.items, model.emptyText);
+  return `
+    <section class="app-home-shell">
+      <header class="app-home-head">
+        <div class="app-home-icon">${iconFor(node && node.icon)}</div>
+        <div class="app-home-copy">
+          <div class="app-home-kicker">${escapeHtml(model.kicker || "App Home")}</div>
+          <div class="app-home-title">${escapeHtml(model.title || "App Home")}</div>
+          <div class="app-home-desc">${escapeHtml(model.description || "")}</div>
+        </div>
+      </header>
+      ${metricsMarkup}
+      ${actionsMarkup ? `<div class="app-home-actions">${actionsMarkup}</div>` : ""}
+      <section class="app-home-section">
+        <div class="app-home-section-title">${escapeHtml(model.itemsTitle || "Latest Signals")}</div>
+        ${itemsMarkup}
+      </section>
+    </section>
+  `;
+}
+
 function renderGrid() {
-  const children = getChildren(state.selectedId || state.rootId);
+  const selectedNodeId = state.selectedId || state.rootId;
+  const selectedNode = getNode(selectedNodeId);
+  const children = getChildren(selectedNodeId);
   if (state.ui.expandedCardId && !children.some((child) => child.id === state.ui.expandedCardId)) {
     state.ui.expandedCardId = null;
+  }
+  if (!children.length) {
+    elements.grid.style.removeProperty("--app-row-cols");
+    elements.grid.innerHTML = renderAppHome(selectedNode);
+    state.ui.cardsAnimated = true;
+    syncBridgeGeometry();
+    return;
   }
   const perRow = appCardsPerRow();
   const rows = [];
