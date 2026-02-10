@@ -1241,19 +1241,6 @@ function renderMoreInfoPanel(node) {
   `;
 }
 
-function connectorStyleForRow(rowNodes, expandedNode) {
-  if (!expandedNode || !Array.isArray(rowNodes) || !rowNodes.length) {
-    return "";
-  }
-  const index = rowNodes.findIndex((node) => node.id === expandedNode.id);
-  if (index < 0) {
-    return "";
-  }
-  const left = (index / rowNodes.length) * 100;
-  const width = (1 / rowNodes.length) * 100;
-  return `style="--connector-left:${left.toFixed(4)}%;--connector-width:${width.toFixed(4)}%"`;
-}
-
 function renderGrid() {
   const children = getChildren(state.selectedId || state.rootId);
   if (state.ui.expandedCardId && !children.some((child) => child.id === state.ui.expandedCardId)) {
@@ -1269,13 +1256,12 @@ function renderGrid() {
   elements.grid.innerHTML = rows
     .map((rowNodes, rowIndex) => {
       const expandedNode = rowNodes.find((node) => node.id === state.ui.expandedCardId) || null;
-      const connectorStyle = connectorStyleForRow(rowNodes, expandedNode);
       return `
         <section class="app-row" data-row-index="${rowIndex}">
           <div class="app-row-cards">
             ${rowNodes.map((node, offset) => renderCard(node, rowIndex * perRow + offset, useIntroAnimation)).join("")}
           </div>
-          <div class="app-row-bridge ${expandedNode ? "open" : ""}" ${connectorStyle} aria-hidden="true"></div>
+          <div class="app-row-bridge ${expandedNode ? "open" : ""}" aria-hidden="true"></div>
           <div class="app-row-more ${expandedNode ? "open" : ""}">
             ${expandedNode ? renderMoreInfoPanel(expandedNode) : ""}
           </div>
@@ -1284,6 +1270,7 @@ function renderGrid() {
     })
     .join("");
   state.ui.cardsAnimated = true;
+  syncBridgeGeometry();
 }
 
 function scheduleGridRelayout() {
@@ -1334,6 +1321,40 @@ function rowBridgeElementFromCard(cardElement) {
   return row.querySelector(".app-row-bridge");
 }
 
+function syncBridgeGeometry() {
+  if (!elements.grid) {
+    return;
+  }
+  const rows = Array.from(elements.grid.querySelectorAll(".app-row"));
+  for (const row of rows) {
+    const bridge = row.querySelector(".app-row-bridge");
+    if (!bridge) {
+      continue;
+    }
+    bridge.style.removeProperty("--connector-left-px");
+    bridge.style.removeProperty("--connector-width-px");
+    const expandedCard = row.querySelector(".app-card.expanded");
+    if (!expandedCard) {
+      continue;
+    }
+    const rowRect = row.getBoundingClientRect();
+    const tab =
+      expandedCard.querySelector(".app-card-tab") ||
+      expandedCard.querySelector(".app-card-frame") ||
+      expandedCard;
+    const tabRect = tab.getBoundingClientRect();
+    let left = tabRect.left - rowRect.left;
+    let width = tabRect.width;
+    if (!Number.isFinite(left) || !Number.isFinite(width)) {
+      continue;
+    }
+    left = Math.max(0, left);
+    width = Math.max(0, Math.min(width, Math.max(0, rowRect.width - left)));
+    bridge.style.setProperty("--connector-left-px", `${left.toFixed(2)}px`);
+    bridge.style.setProperty("--connector-width-px", `${width.toFixed(2)}px`);
+  }
+}
+
 function clearCardTransitionTimer() {
   if (cardTransitionTimer) {
     window.clearTimeout(cardTransitionTimer);
@@ -1367,6 +1388,7 @@ function markCardOpeningSequence(nodeId) {
   if (rowBridge) {
     rowBridge.classList.add("is-opening");
   }
+  syncBridgeGeometry();
   window.setTimeout(() => {
     card.classList.remove("is-expanding");
     if (rowMore) {
@@ -1403,6 +1425,7 @@ function closeExpandedCardAndMaybeOpen(nextNodeId) {
   if (rowBridge) {
     rowBridge.classList.add("is-closing");
   }
+  syncBridgeGeometry();
 
   clearCardTransitionTimer();
   cardTransitionTimer = window.setTimeout(() => {

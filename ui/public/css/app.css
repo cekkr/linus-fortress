@@ -399,6 +399,8 @@ body {
   flex-direction: column;
   --connector-left: 0%;
   --connector-width: 25%;
+  --connector-left-px: 0px;
+  --connector-width-px: 0px;
 }
 
 .app-row-cards {
@@ -428,8 +430,8 @@ body {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: var(--connector-left, 0%);
-  right: calc(100% - var(--connector-left, 0%) - var(--connector-width, 25%));
+  left: var(--connector-left-px, var(--connector-left, 0%));
+  width: var(--connector-width-px, var(--connector-width, 25%));
   border-left: 1px solid #2e3339;
   border-right: 1px solid #2e3339;
   border-bottom: 1px solid #2e3339;
