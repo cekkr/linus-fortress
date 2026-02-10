@@ -1292,6 +1292,24 @@ function renderHomeActionButtons(actions, nodeId) {
     .join("");
 }
 
+function serializeHomeActionDataAttrs(params = {}) {
+  if (!params || typeof params !== "object") {
+    return "";
+  }
+  return Object.entries(params)
+    .map(([key, value]) => {
+      const normalizedKey = String(key || "")
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, "");
+      if (!normalizedKey || value === null || value === undefined) {
+        return "";
+      }
+      return `data-${normalizedKey}="${escapeHtml(String(value))}"`;
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
 function renderHomeMetricCards(metrics) {
   const list = Array.isArray(metrics) ? metrics : [];
   if (!list.length) {
@@ -1313,7 +1331,7 @@ function renderHomeMetricCards(metrics) {
   `;
 }
 
-function renderHomeItemCards(items, emptyText) {
+function renderHomeItemCards(items, emptyText, fallbackNodeId = "") {
   const list = Array.isArray(items) ? items : [];
   if (!list.length) {
     return `<div class="app-home-empty">${escapeHtml(emptyText || "No records available for this app.")}</div>`;
@@ -1335,6 +1353,19 @@ function renderHomeItemCards(items, emptyText) {
               return `<span class="pill${tone}">${escapeHtml(pill.label || "")}</span>`;
             })
             .join("");
+          const itemActions = Array.isArray(item.actions) ? item.actions : [];
+          const actionMarkup = itemActions
+            .map((action) => {
+              if (!action || !action.id) {
+                return "";
+              }
+              const targetNodeId = action.nodeId || item.nodeId || fallbackNodeId || "";
+              const paramsMarkup = serializeHomeActionDataAttrs(action.params || {});
+              return `<button class="action ${escapeHtml(action.variant || "ghost")}" data-action-id="${escapeHtml(
+                action.id
+              )}" data-node-id="${escapeHtml(targetNodeId)}" ${paramsMarkup}>${escapeHtml(action.label || action.id)}</button>`;
+            })
+            .join("");
           return `
             <article class="app-home-item">
               <div class="app-home-item-head">
@@ -1347,6 +1378,7 @@ function renderHomeItemCards(items, emptyText) {
               </div>
               ${item.detail ? `<div class="app-home-item-detail">${escapeHtml(item.detail)}</div>` : ""}
               ${pillMarkup ? `<div class="card-meta">${pillMarkup}</div>` : ""}
+              ${actionMarkup ? `<div class="card-actions app-home-item-actions">${actionMarkup}</div>` : ""}
             </article>
           `;
         })
@@ -1420,10 +1452,28 @@ function buildAppHomeModel(node) {
       return {
         title: route.domain || "route",
         detail: `${listen} -> ${target}`,
+        nodeId: nodeId,
         pills: [
           { label: route.enabled === false ? "disabled" : "enabled", tone: route.enabled === false ? "stopped" : "running" },
           { label: routeUsesTls(route) ? (route.tls && route.tls.mode ? route.tls.mode : "tls") : "http" },
         ],
+        actions:
+          route.domain && route.domain.trim()
+            ? [
+                {
+                  id: "route-refresh",
+                  label: "Refresh",
+                  variant: "ghost",
+                  params: { domain: route.domain },
+                },
+                {
+                  id: "route-delete",
+                  label: "Delete",
+                  variant: "danger ghost",
+                  params: { domain: route.domain },
+                },
+              ]
+            : [],
       };
     });
     model.emptyText = state.routesLoading
@@ -1638,7 +1688,16 @@ function buildAppHomeModel(node) {
         detail: `${vm.profile || vm.provider || "vm"} • ${vm.memory_mb ? `${vm.memory_mb}MB` : "memory ?"} • ${
           vm.disk_gb ? `${vm.disk_gb}GB` : "disk ?"
         }`,
+        nodeId: nodeId,
         pills: [{ label: status, tone: status.toLowerCase().includes("running") ? "running" : "stopped" }],
+        actions:
+          vm.name && String(vm.name).trim()
+            ? [
+                { id: "vm-start", label: "Start", variant: "ghost", params: { vm: vm.name } },
+                { id: "vm-stop", label: "Stop", variant: "ghost", params: { vm: vm.name } },
+                { id: "vm-snapshot", label: "Snapshot", variant: "ghost", params: { vm: vm.name } },
+              ]
+            : [],
       };
     });
     model.emptyText = state.vmsLoading ? "Loading VMs..." : "No VMs defined yet.";
@@ -1668,10 +1727,18 @@ function buildAppHomeModel(node) {
       return {
         title: siteId || "site",
         detail: `${domain} • ${container}`,
+        nodeId: nodeId,
         pills: [
           { label: status, tone: status.toLowerCase().includes("active") ? "running" : "stopped" },
           detail.runtime && detail.runtime.php_version ? { label: `PHP ${detail.runtime.php_version}` } : null,
         ].filter(Boolean),
+        actions:
+          siteId && String(siteId).trim()
+            ? [
+                { id: "site-deploy", label: "Deploy", variant: "ghost", params: { site: siteId } },
+                { id: "site-backup", label: "Backup", variant: "ghost", params: { site: siteId } },
+              ]
+            : [],
       };
     });
     model.emptyText = state.sitesLoading ? "Loading sites..." : "No sites yet. Create one to begin.";
@@ -1740,7 +1807,7 @@ function renderAppHome(node) {
   const model = buildAppHomeModel(node);
   const metricsMarkup = renderHomeMetricCards(model.metrics);
   const actionsMarkup = renderHomeActionButtons(model.actions, node ? node.id : state.rootId);
-  const itemsMarkup = renderHomeItemCards(model.items, model.emptyText);
+  const itemsMarkup = renderHomeItemCards(model.items, model.emptyText, node && node.id ? node.id : state.rootId);
   return `
     <section class="app-home-shell">
       <header class="app-home-head">
@@ -4221,6 +4288,20 @@ function renderAll() {
   renderDebugPanel();
 }
 
+function refreshSelectedLeafHome() {
+  if (state.wizard.active) {
+    return;
+  }
+  const selectedId = state.selectedId || state.rootId;
+  if (!selectedId || !getNode(selectedId)) {
+    return;
+  }
+  if (getChildren(selectedId).length) {
+    return;
+  }
+  renderGrid();
+}
+
 function selectNode(id) {
   clearCardTransitionTimer();
   cardTransitionBusy = false;
@@ -5101,6 +5182,7 @@ async function loadPopularImages(options = {}) {
     }
     renderImageCatalog();
     renderWizard();
+    refreshSelectedLeafHome();
   }
 }
 
@@ -5120,6 +5202,7 @@ async function loadRoutes(options = {}) {
   } finally {
     state.routesLoading = false;
     renderPreview();
+    refreshSelectedLeafHome();
   }
 }
 
@@ -5154,6 +5237,7 @@ async function loadRecipes(options = {}) {
   } finally {
     state.recipesLoading = false;
     renderPreview();
+    refreshSelectedLeafHome();
   }
 }
 
@@ -5183,6 +5267,7 @@ async function loadMonitoring(options = {}) {
   } finally {
     state.monitoringLoading = false;
     renderPreview();
+    refreshSelectedLeafHome();
   }
 }
 
@@ -5214,6 +5299,7 @@ async function loadFirewall(options = {}) {
   } finally {
     state.firewallLoading = false;
     renderPreview();
+    refreshSelectedLeafHome();
   }
 }
 
@@ -5233,6 +5319,7 @@ async function loadVms(options = {}) {
   } finally {
     state.vmsLoading = false;
     renderPreview();
+    refreshSelectedLeafHome();
   }
 }
 
@@ -5280,6 +5367,7 @@ async function loadSites(options = {}) {
   } finally {
     state.sitesLoading = false;
     renderPreview();
+    refreshSelectedLeafHome();
   }
 }
 
@@ -5311,6 +5399,7 @@ async function loadSiteDetails(siteId, options = {}) {
   } finally {
     state.siteDetailsLoading.delete(siteId);
     renderPreview();
+    refreshSelectedLeafHome();
   }
 }
 
@@ -5338,6 +5427,7 @@ async function loadSiteBackups(siteId, options = {}) {
   } finally {
     state.siteBackupsLoading.delete(siteId);
     renderPreview();
+    refreshSelectedLeafHome();
   }
 }
 
@@ -5378,6 +5468,7 @@ async function loadHosts(options = {}) {
   } finally {
     state.hostsLoading = false;
     renderPreview();
+    refreshSelectedLeafHome();
   }
 }
 

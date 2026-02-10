@@ -73,6 +73,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Rework app navigation cards into an app-store model where icon click opens directly and title/description toggles an animated more-info panel with deep actions + Open CTA.
 - Done: Align app deck UX closer to legacy Lizard: fixed-height rectangular app buttons, row-level dark-fiber more-info expansion, and active-button bottom-extension animation without resizing sibling cards.
 - Done: Add stage-level app-home fallbacks for leaf/fullscreen app views so opening main apps without child cards never renders a blank stage.
+- Done: Add richer per-item app-home actions for main ops (route refresh/delete, site deploy/backup, VM start/stop/snapshot).
+- Done: Add Puppeteer-based visual regression coverage for all top-level app homes using deterministic screenshot hashes.
 - Next: Add copy/export controls for latest debug payloads from the UI Debug panel to speed up browser-side troubleshooting.
 - Next: Continue expanding app-home dashboards with richer per-item actions (route/site/VM quick controls), container sub-app homes, and visual regression coverage for stage rendering.
 

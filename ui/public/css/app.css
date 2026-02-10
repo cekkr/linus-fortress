@@ -561,6 +561,15 @@ body {
   color: #495a3e;
 }
 
+.app-home-item-actions {
+  margin-top: 8px;
+}
+
+.app-home-item-actions .action {
+  padding: 5px 10px;
+  font-size: 10px;
+}
+
 .app-home-empty {
   border-radius: 12px;
   border: 1px dashed rgba(58, 75, 45, 0.32);
