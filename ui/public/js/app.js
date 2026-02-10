@@ -1997,18 +1997,40 @@ function markCardOpeningSequence(nodeId) {
   card.classList.add("is-expanding");
   if (rowMore) {
     rowMore.classList.add("is-opening");
+    rowMore.classList.add("pre-open");
   }
   if (rowBridge) {
     rowBridge.classList.add("is-opening");
+    rowBridge.classList.add("pre-open");
   }
-  syncBridgeGeometry();
+  if (rowMore || rowBridge) {
+    // Force the initial collapsed geometry so open transitions are always visible.
+    if (rowBridge) {
+      void rowBridge.offsetHeight;
+    } else if (rowMore) {
+      void rowMore.offsetHeight;
+    }
+    window.setTimeout(() => {
+      if (rowMore) {
+        rowMore.classList.remove("pre-open");
+      }
+      if (rowBridge) {
+        rowBridge.classList.remove("pre-open");
+      }
+      syncBridgeGeometry();
+    }, 26);
+  } else {
+    syncBridgeGeometry();
+  }
   window.setTimeout(() => {
     card.classList.remove("is-expanding");
     if (rowMore) {
       rowMore.classList.remove("is-opening");
+      rowMore.classList.remove("pre-open");
     }
     if (rowBridge) {
       rowBridge.classList.remove("is-opening");
+      rowBridge.classList.remove("pre-open");
     }
   }, CARD_OPEN_SEQUENCE_MS);
 }

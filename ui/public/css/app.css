@@ -610,8 +610,8 @@ body {
   overflow: hidden;
   pointer-events: none;
   transition:
-    height 0.4s var(--legacy-swing),
-    opacity 0.22s ease;
+    height 0.28s var(--legacy-swing),
+    opacity 0.2s ease;
   z-index: 2;
 }
 
@@ -622,14 +622,24 @@ body {
   bottom: 0;
   left: var(--connector-left-px, var(--connector-left, 0%));
   width: var(--connector-width-px, var(--connector-width, 25%));
+  box-sizing: border-box;
   border-left: 1px solid #2e3339;
   border-right: 1px solid #2e3339;
-  border-bottom: 1px solid #2e3339;
+  border-bottom: none;
   border-radius: 0;
   background-image: var(--unibody-surface);
   background-position:
     var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px),
+    var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px),
     var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px);
+  background-size:
+    auto,
+    auto,
+    100% 640px;
+  background-repeat:
+    repeat,
+    repeat,
+    no-repeat;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   transform-origin: top center;
   transform: scaleY(0.15);
@@ -644,6 +654,19 @@ body {
   opacity: 1;
 }
 
+.app-row-bridge.open.pre-open {
+  height: 0;
+  opacity: 0;
+}
+
+.app-row-bridge.pre-open {
+  transition: none !important;
+}
+
+.app-row-bridge.pre-open::before {
+  transition: none !important;
+}
+
 .app-row-bridge.open::before {
   transform: scaleY(1);
   opacity: 1;
@@ -651,8 +674,8 @@ body {
 
 .app-row-bridge.is-opening {
   transition:
-    height 0.42s var(--legacy-swing),
-    opacity 0.26s ease;
+    height 0.3s var(--legacy-swing),
+    opacity 0.22s ease;
 }
 
 .app-row-bridge.is-opening::before {
@@ -692,9 +715,19 @@ body {
 
 .app-row-more.is-opening {
   transition:
-    max-height 0.44s var(--legacy-swing) 0.07s,
-    opacity 0.26s ease 0.1s,
-    transform 0.44s var(--legacy-swing) 0.07s;
+    max-height 0.42s var(--legacy-swing) 0.22s,
+    opacity 0.24s ease 0.24s,
+    transform 0.42s var(--legacy-swing) 0.22s;
+}
+
+.app-row-more.open.pre-open {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+.app-row-more.pre-open {
+  transition: none !important;
 }
 
 .app-row-more.is-closing {
@@ -714,7 +747,16 @@ body {
   background-image: var(--unibody-surface);
   background-position:
     var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px),
+    var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px),
     var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px);
+  background-size:
+    auto,
+    auto,
+    100% 640px;
+  background-repeat:
+    repeat,
+    repeat,
+    no-repeat;
   color: #eff2f6;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
@@ -1144,7 +1186,16 @@ body {
   background-image: var(--unibody-surface);
   background-position:
     var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px),
+    var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px),
     var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px);
+  background-size:
+    auto,
+    auto,
+    100% 640px;
+  background-repeat:
+    repeat,
+    repeat,
+    no-repeat;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     0 14px 24px rgba(6, 8, 11, 0.34);
