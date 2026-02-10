@@ -1933,14 +1933,16 @@ function syncBridgeGeometry() {
     if (!expandedCard) {
       continue;
     }
-    const rowRect = row.getBoundingClientRect();
-    const tab =
-      expandedCard.querySelector(".app-card-tab") ||
+    const frame =
       expandedCard.querySelector(".app-card-frame") ||
+      expandedCard.querySelector(".app-card-tab") ||
       expandedCard;
-    const tabRect = tab.getBoundingClientRect();
-    let left = tabRect.left - rowRect.left;
-    let width = tabRect.width;
+    const panel = row.querySelector(".app-row-more.open .row-more-content");
+    const rowRect = row.getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    const bridgeRect = bridge.getBoundingClientRect();
+    let left = frameRect.left - rowRect.left;
+    let width = frameRect.width;
     if (!Number.isFinite(left) || !Number.isFinite(width)) {
       continue;
     }
@@ -1948,6 +1950,21 @@ function syncBridgeGeometry() {
     width = Math.max(0, Math.min(width, Math.max(0, rowRect.width - left)));
     bridge.style.setProperty("--connector-left-px", `${left.toFixed(2)}px`);
     bridge.style.setProperty("--connector-width-px", `${width.toFixed(2)}px`);
+
+    const anchorX = frameRect.left;
+    const anchorY = frameRect.top;
+    const applyUnibodyOffset = (element, rect) => {
+      if (!element || !rect) {
+        return;
+      }
+      element.style.setProperty("--unibody-bg-x", `${(anchorX - rect.left).toFixed(2)}px`);
+      element.style.setProperty("--unibody-bg-y", `${(anchorY - rect.top).toFixed(2)}px`);
+    };
+    applyUnibodyOffset(frame, frameRect);
+    applyUnibodyOffset(bridge, bridgeRect);
+    if (panel) {
+      applyUnibodyOffset(panel, panel.getBoundingClientRect());
+    }
   }
 }
 
