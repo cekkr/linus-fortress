@@ -257,6 +257,8 @@ const CARD_OPEN_SEQUENCE_MS = 420;
 let cardTransitionTimer = null;
 let cardTransitionBusy = false;
 let queuedExpandNodeId = null;
+let bridgeSyncRafId = null;
+let bridgeSyncLoopUntil = 0;
 const FAST_ACTION_OPTIONS = [
   {
     id: "refresh",
@@ -1929,12 +1931,41 @@ function rowBridgeElementFromCard(cardElement) {
   return row.querySelector(".app-row-bridge");
 }
 
+function stopBridgeSyncLoop() {
+  if (bridgeSyncRafId) {
+    window.cancelAnimationFrame(bridgeSyncRafId);
+    bridgeSyncRafId = null;
+  }
+  bridgeSyncLoopUntil = 0;
+}
+
+function startBridgeSyncLoop(durationMs = CARD_OPEN_SEQUENCE_MS + 160) {
+  const now = window.performance ? window.performance.now() : Date.now();
+  bridgeSyncLoopUntil = Math.max(bridgeSyncLoopUntil, now + Math.max(durationMs, 120));
+  if (bridgeSyncRafId) {
+    return;
+  }
+  const tick = () => {
+    syncBridgeGeometry();
+    const ts = window.performance ? window.performance.now() : Date.now();
+    if (ts < bridgeSyncLoopUntil) {
+      bridgeSyncRafId = window.requestAnimationFrame(tick);
+      return;
+    }
+    bridgeSyncRafId = null;
+    bridgeSyncLoopUntil = 0;
+  };
+  bridgeSyncRafId = window.requestAnimationFrame(tick);
+}
+
 function syncBridgeGeometry() {
   if (!elements.grid) {
     return;
   }
   const rows = Array.from(elements.grid.querySelectorAll(".app-row"));
   for (const row of rows) {
+    const rowRect = row.getBoundingClientRect();
+    row.style.setProperty("--unibody-bg-width", `${Math.max(1, rowRect.width).toFixed(2)}px`);
     const bridge = row.querySelector(".app-row-bridge");
     if (!bridge) {
       continue;
@@ -1945,12 +1976,9 @@ function syncBridgeGeometry() {
     if (!expandedCard) {
       continue;
     }
-    const frame =
-      expandedCard.querySelector(".app-card-frame") ||
-      expandedCard.querySelector(".app-card-tab") ||
-      expandedCard;
-    const panel = row.querySelector(".app-row-more.open .row-more-content");
-    const rowRect = row.getBoundingClientRect();
+    const frame = expandedCard.querySelector(".app-card-frame") || expandedCard;
+    const tab = expandedCard.querySelector(".app-card-tab");
+    const panel = row.querySelector(".app-row-more .row-more-content");
     const frameRect = frame.getBoundingClientRect();
     const bridgeRect = bridge.getBoundingClientRect();
     let left = frameRect.left - rowRect.left;
@@ -1973,6 +2001,9 @@ function syncBridgeGeometry() {
       element.style.setProperty("--unibody-bg-y", `${(anchorY - rect.top).toFixed(2)}px`);
     };
     applyUnibodyOffset(frame, frameRect);
+    if (tab) {
+      applyUnibodyOffset(tab, tab.getBoundingClientRect());
+    }
     applyUnibodyOffset(bridge, bridgeRect);
     if (panel) {
       applyUnibodyOffset(panel, panel.getBoundingClientRect());
@@ -2016,6 +2047,7 @@ function markCardOpeningSequence(nodeId) {
     rowBridge.classList.add("pre-open");
   }
   if (rowMore || rowBridge) {
+    startBridgeSyncLoop(CARD_OPEN_SEQUENCE_MS + 220);
     // Force the initial collapsed geometry so open transitions are always visible.
     if (rowBridge) {
       void rowBridge.offsetHeight;
@@ -2035,6 +2067,7 @@ function markCardOpeningSequence(nodeId) {
     syncBridgeGeometry();
   }
   window.setTimeout(() => {
+    stopBridgeSyncLoop();
     card.classList.remove("is-expanding");
     if (rowMore) {
       rowMore.classList.remove("is-opening");
@@ -2072,6 +2105,7 @@ function closeExpandedCardAndMaybeOpen(nextNodeId) {
   if (rowBridge) {
     rowBridge.classList.add("is-closing");
   }
+  startBridgeSyncLoop(CARD_SWITCH_SEQUENCE_MS + 220);
   syncBridgeGeometry();
 
   clearCardTransitionTimer();
@@ -2081,6 +2115,8 @@ function closeExpandedCardAndMaybeOpen(nextNodeId) {
     renderGrid();
     if (nextNodeId) {
       markCardOpeningSequence(nextNodeId);
+    } else {
+      stopBridgeSyncLoop();
     }
     cardTransitionBusy = false;
     runQueuedCardToggleIfNeeded();

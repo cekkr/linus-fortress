@@ -237,66 +237,109 @@ test("bridge opens before info panel, stays aligned, and startup image refresh i
     const intervalDelays = await page.evaluate(() => window.__intervalDelays || []);
     assert.ok(intervalDelays.includes(600000), "expected 10-minute image refresh interval");
 
-    const timing = await page.evaluate(async () => {
-      const nodeId = "containers";
-      const clickSelector = `.app-card[data-node-id="${nodeId}"] .card-summary`;
-      const clickTarget = document.querySelector(clickSelector);
-      if (!clickTarget) {
-        return null;
-      }
-      const start = performance.now();
-      clickTarget.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-
-      return await new Promise((resolve) => {
-        let bridgeStart = null;
-        let panelStart = null;
-        const deadline = start + 1900;
-
-        const sample = (now) => {
-          const card = document.querySelector(`.app-card[data-node-id="${nodeId}"]`);
-          const row = card ? card.closest(".app-row") : null;
-          const bridge = row ? row.querySelector(".app-row-bridge") : null;
-          const rowMore = row ? row.querySelector(".app-row-more") : null;
-          if (bridge && bridgeStart === null && bridge.getBoundingClientRect().height > 1) {
-            bridgeStart = now - start;
+    const captureBridgeSnapshot = async (nodeId, triggerOpen = false) => {
+      return await page.evaluate(
+        async (payload) => {
+          const { nodeId: targetNodeId, triggerOpen: shouldTriggerOpen } = payload || {};
+          const clickSelector = `.app-card[data-node-id="${targetNodeId}"] .card-summary`;
+          const clickTarget = document.querySelector(clickSelector);
+          if (!clickTarget) {
+            return null;
           }
-          if (rowMore && panelStart === null && rowMore.getBoundingClientRect().height > 1) {
-            panelStart = now - start;
+          const parseThirdBackgroundWidth = (value) => {
+            const tokens = String(value || "").split(",");
+            const third = (tokens[2] || tokens[tokens.length - 1] || "").trim();
+            const match = third.match(/([0-9.]+)px/);
+            return match ? Number(match[1]) : NaN;
+          };
+          const parsePxVar = (style, name) => {
+            if (!style) {
+              return NaN;
+            }
+            const raw = style.getPropertyValue(name);
+            return Number.parseFloat(raw || "NaN");
+          };
+
+          const start = performance.now();
+          if (shouldTriggerOpen) {
+            clickTarget.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
           }
 
-          const settled = now - start >= 900;
-          if (now < deadline && (!settled || bridgeStart === null || panelStart === null)) {
+          return await new Promise((resolve) => {
+            let bridgeStart = null;
+            let panelStart = null;
+            const deadline = start + 2200;
+
+            const sample = (now) => {
+              const card = document.querySelector(`.app-card[data-node-id="${targetNodeId}"]`);
+              const row = card ? card.closest(".app-row") : null;
+              const bridge = row ? row.querySelector(".app-row-bridge") : null;
+              const rowMore = row ? row.querySelector(".app-row-more") : null;
+              if (bridge && bridgeStart === null && bridge.getBoundingClientRect().height > 1) {
+                bridgeStart = now - start;
+              }
+              if (rowMore && panelStart === null && rowMore.getBoundingClientRect().height > 1) {
+                panelStart = now - start;
+              }
+
+              const expanded = card ? card.classList.contains("expanded") : false;
+              const settled = now - start >= 1180;
+              const needTiming = shouldTriggerOpen && (bridgeStart === null || panelStart === null);
+              if (now < deadline && (!expanded || !settled || needTiming)) {
+                requestAnimationFrame(sample);
+                return;
+              }
+
+              const frame = card ? card.querySelector(".app-card-frame") : null;
+              const tab = card ? card.querySelector(".app-card-tab") : null;
+              const panel = row ? row.querySelector(".app-row-more .row-more-content") : null;
+              const rowRect = row ? row.getBoundingClientRect() : null;
+              const rowMoreRect = rowMore ? rowMore.getBoundingClientRect() : null;
+              const frameRect = frame ? frame.getBoundingClientRect() : null;
+              const tabRect = tab ? tab.getBoundingClientRect() : null;
+              const bridgeRect = bridge ? bridge.getBoundingClientRect() : null;
+              const panelRect = panel ? panel.getBoundingClientRect() : null;
+              const rowStyle = row ? getComputedStyle(row) : null;
+              const frameStyle = frame ? getComputedStyle(frame) : null;
+              const tabStyle = tab ? getComputedStyle(tab) : null;
+              const bridgeStyle = bridge ? getComputedStyle(bridge) : null;
+              const bridgePseudoStyle = bridge ? getComputedStyle(bridge, "::before") : null;
+              const panelStyle = panel ? getComputedStyle(panel) : null;
+              resolve({
+                bridgeStart,
+                panelStart,
+                rowLeft: rowRect ? rowRect.left : null,
+                frameLeft: frameRect ? frameRect.left : null,
+                frameWidth: frameRect ? frameRect.width : null,
+                tabLeft: tabRect ? tabRect.left : null,
+                tabWidth: tabRect ? tabRect.width : null,
+                panelLeft: panelRect ? panelRect.left : null,
+                bridgeLeft: bridgeRect ? bridgeRect.left : null,
+                connectorLeft: bridgeStyle ? parseFloat(bridgeStyle.getPropertyValue("--connector-left-px")) : NaN,
+                connectorWidth: bridgeStyle ? parseFloat(bridgeStyle.getPropertyValue("--connector-width-px")) : NaN,
+                bridgeBottom: bridgeRect ? bridgeRect.top + bridgeRect.height : null,
+                rowMoreTop: rowMoreRect ? rowMoreRect.top : null,
+                panelTop: panelRect ? panelRect.top : null,
+                frameBgWidth: frameStyle ? parseThirdBackgroundWidth(frameStyle.backgroundSize) : NaN,
+                tabBgWidth: tabStyle ? parseThirdBackgroundWidth(tabStyle.backgroundSize) : NaN,
+                bridgeBgWidth: bridgePseudoStyle ? parseThirdBackgroundWidth(bridgePseudoStyle.backgroundSize) : NaN,
+                panelBgWidth: panelStyle ? parseThirdBackgroundWidth(panelStyle.backgroundSize) : NaN,
+                rowBgWidth: rowStyle ? parsePxVar(rowStyle, "--unibody-bg-width") : NaN,
+                frameBgX: frameStyle ? parsePxVar(frameStyle, "--unibody-bg-x") : NaN,
+                tabBgX: tabStyle ? parsePxVar(tabStyle, "--unibody-bg-x") : NaN,
+                bridgeBgX: bridgeStyle ? parsePxVar(bridgeStyle, "--unibody-bg-x") : NaN,
+                panelBgX: panelStyle ? parsePxVar(panelStyle, "--unibody-bg-x") : NaN,
+              });
+            };
+
             requestAnimationFrame(sample);
-            return;
-          }
-
-          const frame = card ? card.querySelector(".app-card-frame") : null;
-          const panel = row ? row.querySelector(".app-row-more .row-more-content") : null;
-          const rowMoreRect = rowMore ? rowMore.getBoundingClientRect() : null;
-          const rowRect = row ? row.getBoundingClientRect() : null;
-          const frameRect = frame ? frame.getBoundingClientRect() : null;
-          const bridgeRect = bridge ? bridge.getBoundingClientRect() : null;
-          const panelRect = panel ? panel.getBoundingClientRect() : null;
-          const style = bridge ? getComputedStyle(bridge) : null;
-          const connectorLeft = style ? parseFloat(style.getPropertyValue("--connector-left-px")) : NaN;
-          const connectorWidth = style ? parseFloat(style.getPropertyValue("--connector-width-px")) : NaN;
-          resolve({
-            bridgeStart,
-            panelStart,
-            rowLeft: rowRect ? rowRect.left : null,
-            frameLeft: frameRect ? frameRect.left : null,
-            frameWidth: frameRect ? frameRect.width : null,
-            connectorLeft,
-            connectorWidth,
-            bridgeBottom: bridgeRect ? bridgeRect.top + bridgeRect.height : null,
-            rowMoreTop: rowMoreRect ? rowMoreRect.top : null,
-            panelTop: panelRect ? panelRect.top : null,
           });
-        };
+        },
+        { nodeId, triggerOpen }
+      );
+    };
 
-        requestAnimationFrame(sample);
-      });
-    });
+    const timing = await captureBridgeSnapshot("containers", true);
 
     assert.ok(timing, "missing bridge timing payload");
     assert.notEqual(timing.bridgeStart, null, "bridge did not animate");
@@ -311,9 +354,40 @@ test("bridge opens before info panel, stays aligned, and startup image refresh i
     assert.ok(leftDelta <= 1.1, `bridge left offset drifted (${leftDelta})`);
     assert.ok(widthDelta <= 1.1, `bridge width drifted (${widthDelta})`);
     assert.ok(seamDelta <= 1.2, `bridge/row seam drifted (${seamDelta})`);
+    const tabLeftDelta = Math.abs(timing.tabLeft - timing.frameLeft);
+    const tabWidthDelta = Math.abs(timing.tabWidth - timing.frameWidth);
+    assert.ok(tabLeftDelta <= 1.1, `tab left mismatch (${tabLeftDelta})`);
+    assert.ok(tabWidthDelta <= 1.1, `tab width mismatch (${tabWidthDelta})`);
+    const bgWidths = [timing.frameBgWidth, timing.tabBgWidth, timing.bridgeBgWidth, timing.panelBgWidth];
+    assert.equal(
+      bgWidths.filter((value) => Number.isFinite(value)).length,
+      bgWidths.length,
+      "missing shared background width values"
+    );
+    const bgWidthDelta = Math.max(...bgWidths) - Math.min(...bgWidths);
+    assert.ok(bgWidthDelta <= 1.1, `background widths diverged (${bgWidthDelta})`);
+    const rowBgWidthDelta = Math.abs(timing.rowBgWidth - timing.frameBgWidth);
+    assert.ok(rowBgWidthDelta <= 1.1, `row/frame background width mismatch (${rowBgWidthDelta})`);
+    const frameAnchorX = timing.frameLeft + timing.frameBgX;
+    const tabAnchorX = timing.tabLeft + timing.tabBgX;
+    const bridgeAnchorX = timing.bridgeLeft + timing.bridgeBgX;
+    const panelAnchorX = timing.panelLeft + timing.panelBgX;
+    assert.ok(Math.abs(frameAnchorX - tabAnchorX) <= 1.2, "frame/tab background anchor drift");
+    assert.ok(Math.abs(frameAnchorX - bridgeAnchorX) <= 1.2, "frame/bridge background anchor drift");
+    assert.ok(Math.abs(frameAnchorX - panelAnchorX) <= 1.2, "frame/panel background anchor drift");
+
+    const sideTiming = await captureBridgeSnapshot("monitoring", true);
+    assert.ok(sideTiming, "missing side-card timing payload");
+    assert.ok(sideTiming.connectorLeft > 6, `expected non-zero side bridge offset (${sideTiming.connectorLeft})`);
+    const sideLeftDelta = Math.abs((sideTiming.frameLeft - sideTiming.rowLeft) - sideTiming.connectorLeft);
+    const sideWidthDelta = Math.abs(sideTiming.frameWidth - sideTiming.connectorWidth);
+    const sideSeamDelta = Math.abs(sideTiming.bridgeBottom - sideTiming.rowMoreTop);
+    assert.ok(sideLeftDelta <= 1.2, `side bridge left offset drifted (${sideLeftDelta})`);
+    assert.ok(sideWidthDelta <= 1.2, `side bridge width drifted (${sideWidthDelta})`);
+    assert.ok(sideSeamDelta <= 1.2, `side bridge/row seam drifted (${sideSeamDelta})`);
 
     const collapseMetrics = await page.evaluate(async () => {
-      const nodeId = "containers";
+      const nodeId = "monitoring";
       const row = document.querySelector(`.app-card[data-node-id="${nodeId}"]`)?.closest(".app-row");
       if (!row) {
         return null;

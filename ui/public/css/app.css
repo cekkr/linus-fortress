@@ -589,6 +589,7 @@ body {
   --connector-width: 25%;
   --connector-left-px: 0px;
   --connector-width-px: 0px;
+  --unibody-bg-width: 100%;
   --unibody-bg-x: 0px;
   --unibody-bg-y: 0px;
 }
@@ -635,7 +636,7 @@ body {
   background-size:
     auto,
     auto,
-    100% 640px;
+    var(--unibody-bg-width, 100%) 640px;
   background-repeat:
     repeat,
     repeat,
@@ -702,7 +703,7 @@ body {
     max-height 0.4s var(--legacy-swing),
     opacity 0.3s ease,
     transform 0.4s var(--legacy-swing);
-  padding: 0 6px;
+  padding: 0;
   margin-top: 0;
   z-index: 1;
 }
@@ -752,7 +753,7 @@ body {
   background-size:
     auto,
     auto,
-    100% 640px;
+    var(--unibody-bg-width, 100%) 640px;
   background-repeat:
     repeat,
     repeat,
@@ -1191,7 +1192,7 @@ body {
   background-size:
     auto,
     auto,
-    100% 640px;
+    var(--unibody-bg-width, 100%) 640px;
   background-repeat:
     repeat,
     repeat,
@@ -1210,21 +1211,31 @@ body {
 }
 
 .app-card-tab {
-  display: none;
+  display: block;
   position: absolute;
-  left: 10px;
-  right: 10px;
+  left: 0;
+  right: 0;
   top: 73px;
   bottom: auto;
   height: 0;
   opacity: 0;
   transform: translateY(0);
-  border-radius: 0 0 6px 6px;
+  border-radius: 0;
   border: 1px solid #2e3339;
   border-top: none;
-  background-image:
-    var(--fiber-dark-texture),
-    linear-gradient(180deg, #42474f 0%, #32373e 100%);
+  background-image: var(--unibody-surface);
+  background-position:
+    var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px),
+    var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px),
+    var(--unibody-bg-x, 0px) var(--unibody-bg-y, 0px);
+  background-size:
+    auto,
+    auto,
+    var(--unibody-bg-width, 100%) 640px;
+  background-repeat:
+    repeat,
+    repeat,
+    no-repeat;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     0 8px 16px rgba(6, 8, 11, 0.28);
