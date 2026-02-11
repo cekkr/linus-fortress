@@ -530,6 +530,20 @@ def parse_image_alias(alias: str) -> Tuple[str, str]:
     return remote, image_alias
 
 
+def _dict_value_case_insensitive(payload: Any, *keys: str) -> Optional[Any]:
+    if not isinstance(payload, dict):
+        return None
+    normalized: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(key, str):
+            normalized[key.strip().lower()] = value
+    for key in keys:
+        candidate = normalized.get(key.strip().lower())
+        if candidate is not None:
+            return candidate
+    return None
+
+
 def list_lxd_remotes() -> Set[str]:
     """Return the set of configured LXD remotes."""
     try:
@@ -539,7 +553,7 @@ def list_lxd_remotes() -> Set[str]:
         if isinstance(remotes, list):
             for remote in remotes:
                 if isinstance(remote, dict):
-                    candidate = remote.get("name") or remote.get("Name")
+                    candidate = _dict_value_case_insensitive(remote, "name")
                 elif isinstance(remote, str):
                     candidate = remote
                 else:
@@ -551,7 +565,7 @@ def list_lxd_remotes() -> Set[str]:
             for key, value in remotes.items():
                 candidate: Optional[str] = None
                 if isinstance(value, dict):
-                    raw_name = value.get("name") or value.get("Name")
+                    raw_name = _dict_value_case_insensitive(value, "name")
                     if isinstance(raw_name, str):
                         candidate = raw_name
                 if not candidate and isinstance(key, str):
@@ -589,7 +603,7 @@ def _image_aliases(image: Dict[str, Any]) -> List[str]:
     names: List[str] = []
     for alias in aliases:
         if isinstance(alias, dict):
-            value = alias.get("name")
+            value = _dict_value_case_insensitive(alias, "name")
         else:
             value = alias
         if isinstance(value, str):
@@ -988,7 +1002,7 @@ def discover_popular_images() -> List[Dict[str, Any]]:
 
 def ensure_image_available(alias: str) -> Dict[str, Any]:
     """Validate that an image alias exists on a configured remote and return metadata."""
-    remote, _ = parse_image_alias(alias)
+    remote, image_alias = parse_image_alias(alias)
     remotes = list_lxd_remotes()
     if remote and remote not in remotes:
         known_remotes = ", ".join(sorted(remotes)) if remotes else "none"
@@ -999,8 +1013,12 @@ def ensure_image_available(alias: str) -> Dict[str, Any]:
                 f"Add it with `lxc remote add {remote} ...` or choose another image."
             ),
         )
+    if remote and image_alias:
+        lookup_args = ["lxc", "image", "list", f"{remote}:", image_alias, "--format", "json", "--limit", "1"]
+    else:
+        lookup_args = ["lxc", "image", "list", alias, "--format", "json", "--limit", "1"]
     try:
-        info_raw = run_command(["lxc", "image", "list", alias, "--format", "json", "--limit", "1"])
+        info_raw = run_command(lookup_args)
         images = json.loads(info_raw)
     except HTTPException as exc:
         detail = str(exc.detail)

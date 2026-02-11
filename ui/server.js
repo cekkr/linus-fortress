@@ -85,6 +85,10 @@ const DEBUG_ENABLED = !/^(0|false|no)$/i.test(process.env.FORTRESS_DEBUG || "1")
 
 const sessions = new Map();
 const adminSessions = new Map();
+const apiIdentityCache = {
+  checkedAt: 0,
+  value: null,
+};
 
 async function ensureReadableStream() {
   if (globalThis.ReadableStream) {
@@ -124,6 +128,56 @@ async function initHttpClient() {
     });
     dispatcher = agent;
   }
+}
+
+async function detectApiIdentity() {
+  const now = Date.now();
+  if (apiIdentityCache.value && now - apiIdentityCache.checkedAt < 60_000) {
+    return apiIdentityCache.value;
+  }
+  if (!fetchFn) {
+    return null;
+  }
+  const options = {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  };
+  if (dispatcher) {
+    options.dispatcher = dispatcher;
+  }
+  try {
+    const response = await fetchFn(new URL("/1.0", API_URL), options);
+    const text = await response.text();
+    let payload = null;
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch (err) {
+        payload = null;
+      }
+    }
+    const metadata = payload && typeof payload === "object" ? payload.metadata : null;
+    const extensions = metadata && Array.isArray(metadata.api_extensions) ? metadata.api_extensions : [];
+    const serverName =
+      metadata && typeof metadata === "object" && typeof metadata.server_name === "string"
+        ? metadata.server_name.toLowerCase()
+        : "";
+    if (extensions.length > 20 || serverName.includes("lxd")) {
+      const identity = {
+        kind: "lxd",
+        detail:
+          "FORTRESS_API_URL appears to target an LXD daemon (detected /1.0 metadata), not Linus Fortress API.",
+      };
+      apiIdentityCache.value = identity;
+      apiIdentityCache.checkedAt = now;
+      return identity;
+    }
+  } catch (err) {
+    // Ignore probe failures and keep the original request error.
+  }
+  apiIdentityCache.value = null;
+  apiIdentityCache.checkedAt = now;
+  return null;
 }
 
 const app = express();
@@ -593,7 +647,14 @@ async function fortressRequest(method, apiPath, body, tokenOverride) {
         : typeof payload === "string"
         ? payload
         : response.statusText;
-    const error = new Error(detail || `Fortress API request failed (${response.status})`);
+    let resolvedDetail = detail || `Fortress API request failed (${response.status})`;
+    if (response.status === 404 || response.status === 405) {
+      const identity = await detectApiIdentity();
+      if (identity && identity.kind === "lxd") {
+        resolvedDetail = `${resolvedDetail} ${identity.detail} If LXD and Fortress share :8443 on different hosts, ensure FORTRESS_API_URL points to the Fortress host/IP.`;
+      }
+    }
+    const error = new Error(resolvedDetail);
     error.status = response.status;
     error.payload = payload;
     error.method = method;

@@ -75,8 +75,13 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add stage-level app-home fallbacks for leaf/fullscreen app views so opening main apps without child cards never renders a blank stage.
 - Done: Add richer per-item app-home actions for main ops (route refresh/delete, site deploy/backup, VM start/stop/snapshot).
 - Done: Add Puppeteer-based visual regression coverage for all top-level app homes using deterministic screenshot hashes.
+- Done: Add Puppeteer interaction coverage for app-card bridge open/close sequencing, row-edge alignment, and sibling non-interference during collapse.
+- Done: Add create-container wizard step validation (name/image/resources) with unavailable-image blocking and inline debug visibility from image catalog metadata.
+- Done: Ensure Check Update + Reload triggers browser reload after successful API completion and cover it with Puppeteer automation.
+- Done: Improve browser-side debugging by surfacing backend fortress-status errors (including LXD endpoint mismatch hints) in the Debug panel/event log.
 - Next: Add copy/export controls for latest debug payloads from the UI Debug panel to speed up browser-side troubleshooting.
 - Next: Continue expanding app-home dashboards with richer per-item actions (route/site/VM quick controls), container sub-app homes, and visual regression coverage for stage rendering.
+- Next: Add a CI lane with a real LXD daemon fixture (including Fedora remotes output variants) to validate image availability discovery end-to-end beyond mocked unit tests.
 
 ## Path 9: Bootstrap and run tooling (short term)
 - Done: Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).

@@ -51,6 +51,7 @@ const state = {
   events: [],
   debug: {
     lastError: null,
+    lastFortressErrorSignature: null,
   },
   probedContainers: new Set(),
   probeInFlight: false,
@@ -371,6 +372,17 @@ const WIZARD_MODE_LABELS = {
   "site-rollback": "Site Rollback",
   "site-services": "Restart Site Services",
 };
+
+const CREATE_WIZARD_FALLBACK_IMAGES = [
+  { name: "ubuntu:lts", resolved_name: "ubuntu:lts", label: "Ubuntu (latest LTS)", available: true },
+  { name: "debian:12", resolved_name: "debian:12", label: "Debian 12", available: true },
+  {
+    name: "images:almalinux/9/cloud",
+    resolved_name: "images:almalinux/9/cloud",
+    label: "AlmaLinux 9 (cloud)",
+    available: true,
+  },
+];
 
 const iconMap = {
   compass: `
@@ -3033,6 +3045,90 @@ function wizardStepTotal(mode) {
   return WIZARD_STEP_COUNTS[mode] || 1;
 }
 
+function createWizardImageOptions() {
+  if (state.images && Array.isArray(state.images.popular) && state.images.popular.length) {
+    return state.images.popular;
+  }
+  return CREATE_WIZARD_FALLBACK_IMAGES;
+}
+
+function findImageOption(alias, options = createWizardImageOptions()) {
+  const normalized = String(alias || "").trim();
+  if (!normalized) {
+    return null;
+  }
+  return (
+    options.find((item) => {
+      if (!item || typeof item !== "object") {
+        return false;
+      }
+      const resolved = String(item.resolved_name || "").trim();
+      const name = String(item.name || "").trim();
+      return normalized === resolved || normalized === name;
+    }) || null
+  );
+}
+
+function validateCreateContainerStep(stepIndex) {
+  const step = Number.isFinite(stepIndex) ? Number(stepIndex) : Number(state.wizard.step) || 0;
+  const form = state.wizard.form || {};
+  if (step === 0) {
+    const name = String(form.name || "").trim();
+    if (!name) {
+      return { valid: false, message: "Container name is required" };
+    }
+    if (/\s/.test(name)) {
+      return { valid: false, message: "Container name cannot include spaces" };
+    }
+    const distro = String(form.distro || "").trim();
+    if (!distro) {
+      return { valid: false, message: "Container image is required" };
+    }
+    const options = createWizardImageOptions();
+    const option = findImageOption(distro, options);
+    if (option && option.available === false) {
+      const reason = option.reason ? String(option.reason) : "selected image is unavailable on configured remotes";
+      return { valid: false, message: `Image '${distro}' is unavailable: ${reason}` };
+    }
+    if (!option && Array.isArray(state.images.popular) && state.images.popular.length) {
+      return { valid: false, message: `Image '${distro}' is not in the current catalog. Refresh and choose an available image.` };
+    }
+    return { valid: true, message: "" };
+  }
+  if (step === 1) {
+    const cpu = String(form.cpu_limit || "").trim();
+    const ram = String(form.ram_limit || "").trim();
+    const disk = String(form.disk_limit || "").trim();
+    if (!cpu || !ram || !disk) {
+      return { valid: false, message: "CPU, RAM, and disk limits are required" };
+    }
+    if (/^\d+(\.\d+)?$/.test(cpu) && Number(cpu) <= 0) {
+      return { valid: false, message: "CPU limit must be greater than zero" };
+    }
+    return { valid: true, message: "" };
+  }
+  return { valid: true, message: "" };
+}
+
+function validateWizardStepForAdvance(mode, stepIndex) {
+  if (mode === "create-container") {
+    return validateCreateContainerStep(stepIndex);
+  }
+  return { valid: true, message: "" };
+}
+
+function validateWizardBeforeSubmit(mode) {
+  if (mode === "create-container") {
+    for (const step of [0, 1]) {
+      const validation = validateCreateContainerStep(step);
+      if (!validation.valid) {
+        return validation;
+      }
+    }
+  }
+  return { valid: true, message: "" };
+}
+
 function buildOperationFacts() {
   const wizard = state.wizard;
   if (!wizard.active || !wizard.mode) {
@@ -3177,14 +3273,8 @@ function renderWizard() {
   if (wizard.mode === "create-container") {
     steps = ["Identity", "Resources", "Confirm"];
     if (wizard.step === 0) {
-      const optionsSource =
-        state.images && state.images.popular && state.images.popular.length
-          ? state.images.popular
-          : [
-              { name: "ubuntu:lts", resolved_name: "ubuntu:lts", label: "Ubuntu (latest LTS)", available: true },
-              { name: "debian:12", resolved_name: "debian:12", label: "Debian 12", available: true },
-              { name: "images:almalinux/9/cloud", resolved_name: "images:almalinux/9/cloud", label: "AlmaLinux 9 (cloud)", available: true },
-            ];
+      const optionsSource = createWizardImageOptions();
+      const selectedOption = findImageOption(wizard.form.distro, optionsSource);
       const distroOptions = optionsSource
         .map((item) => {
           const value = item.resolved_name || item.name;
@@ -3192,9 +3282,11 @@ function renderWizard() {
           const suffix = item.available === false ? " (unavailable)" : "";
           const renderedLabel =
             item.resolved_name && item.resolved_name !== item.name
-              ? `${item.label || item.name} — ${item.resolved_name}`
+              ? `${item.label || item.name} - ${item.resolved_name}`
               : item.label || item.name;
-          return `<option value="${value}" ${wizard.form.distro === value ? "selected" : ""} ${disabled}>${renderedLabel}${suffix}</option>`;
+          return `<option value="${escapeHtml(value)}" ${wizard.form.distro === value ? "selected" : ""} ${disabled}>${escapeHtml(
+            renderedLabel
+          )}${escapeHtml(suffix)}</option>`;
         })
         .join("");
       const presetsList = optionsSource
@@ -3208,7 +3300,7 @@ function renderWizard() {
             : "";
           return `
           <div class="tag">
-            <span>${item.label || item.name}</span>
+            <span>${escapeHtml(item.label || item.name)}</span>
             ${sourcePill}
             ${availability}
             ${removeButton}
@@ -3216,6 +3308,36 @@ function renderWizard() {
         `;
         })
         .join("");
+      const selectedRemote = selectedOption && selectedOption.remote ? `<span class="pill">${escapeHtml(selectedOption.remote)}</span>` : "";
+      const selectedSource = selectedOption && selectedOption.source ? `<span class="pill">${escapeHtml(selectedOption.source)}</span>` : "";
+      const selectedAvailability =
+        selectedOption && selectedOption.available === false
+          ? `<span class="pill danger">unavailable</span>`
+          : `<span class="pill running">available</span>`;
+      const selectedReason =
+        selectedOption && selectedOption.available === false && selectedOption.reason
+          ? `<div class="event-item error">${escapeHtml(String(selectedOption.reason))}</div>`
+          : "";
+      const selectedDebug =
+        selectedOption && selectedOption.available === false && selectedOption.debug
+          ? `<details><summary>Debug details</summary><pre>${escapeHtml(
+              JSON.stringify(selectedOption.debug, null, 2)
+            )}</pre></details>`
+          : "";
+      const selectedImageMarkup = selectedOption
+        ? `
+          <div class="event-item">
+            <div><strong>Selected image</strong> ${escapeHtml(selectedOption.resolved_name || selectedOption.name || "")}</div>
+            <div class="card-meta">
+              ${selectedAvailability}
+              ${selectedRemote}
+              ${selectedSource}
+            </div>
+            ${selectedReason}
+            ${selectedDebug}
+          </div>
+        `
+        : `<div class="event-item"><strong>Selected image</strong> ${escapeHtml(wizard.form.distro || "(none)")}</div>`;
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-name">Container name</label>
@@ -3233,6 +3355,7 @@ function renderWizard() {
             <button class="action ghost mini" data-wizard-action="refresh-images" type="button">Refresh</button>
           </div>
         </div>
+        ${selectedImageMarkup}
         <div class="wizard-field">
           <label>Add image preset</label>
           <div class="wizard-inline">
@@ -4271,7 +4394,7 @@ function renderWizard() {
     })
     .join("");
 
-  const errorMarkup = wizard.error ? `<div class="event-item error">${wizard.error}</div>` : "";
+  const errorMarkup = wizard.error ? `<div class="event-item error">${escapeHtml(wizard.error)}</div>` : "";
   const backDisabled = wizard.step === 0 || wizard.busy ? "disabled" : "";
   const nextDisabled = wizard.busy ? "disabled" : "";
   const pagesMarkup = steps
@@ -4703,6 +4826,27 @@ function captureDebugError(error, context = {}) {
     console.error("[lizard-debug] API error", payload);
   }
   renderDebugPanel();
+}
+
+function syncFortressStatusDebug() {
+  const fortress = state.fortress && typeof state.fortress === "object" ? state.fortress : {};
+  const errorMessage =
+    fortress.status === "error" && fortress.error ? String(fortress.error).trim() : "";
+  if (!errorMessage) {
+    state.debug.lastFortressErrorSignature = null;
+    return;
+  }
+  const signature = `fortress:${errorMessage}`;
+  if (signature === state.debug.lastFortressErrorSignature) {
+    return;
+  }
+  state.debug.lastFortressErrorSignature = signature;
+  const error = new Error(errorMessage);
+  error.details = fortress;
+  error.path = "/status";
+  error.method = "GET";
+  captureDebugError(error, { path: "/status", method: "GET" });
+  logEvent("error", errorMessage);
 }
 
 async function apiRequest(path, options = {}) {
@@ -6203,6 +6347,12 @@ async function handleWizardAction(action, payload = {}) {
     }
     const steps = wizardStepTotal(state.wizard.mode);
     if (state.wizard.step < steps - 1) {
+      const validation = validateWizardStepForAdvance(state.wizard.mode, state.wizard.step);
+      if (!validation.valid) {
+        state.wizard.error = validation.message;
+        renderWizard();
+        return;
+      }
       setWizardStep(state.wizard.step + 1);
       renderWizard();
       return;
@@ -6212,6 +6362,10 @@ async function handleWizardAction(action, payload = {}) {
     renderWizard();
     try {
       if (state.wizard.mode === "create-container") {
+        const validation = validateWizardBeforeSubmit(state.wizard.mode);
+        if (!validation.valid) {
+          throw new Error(validation.message);
+        }
         const payload = {
           name: state.wizard.form.name.trim(),
           distro: state.wizard.form.distro,
@@ -6629,6 +6783,7 @@ async function loadGraph(options = {}) {
   state.rootId = response.rootId || "home";
   state.containers = response.containers || [];
   state.fortress = response.fortress || { status: "unknown" };
+  syncFortressStatusDebug();
   buildNodeIndex(state.nodes);
   if (!state.selectedId || !state.nodesById.has(state.selectedId)) {
     state.selectedId = state.rootId;
