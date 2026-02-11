@@ -558,17 +558,29 @@ ensure_certbot() {
   fi
 }
 
-ensure_lxd_initialized() {
+find_lxc_binary() {
   local lxc_bin=""
-  local lxd_bin=""
   lxc_bin=$(command -v lxc || true)
-  lxd_bin=$(command -v lxd || true)
   if [[ -z "${lxc_bin}" && -x /snap/bin/lxc ]]; then
     lxc_bin="/snap/bin/lxc"
   fi
+  printf '%s' "${lxc_bin}"
+}
+
+find_lxd_binary() {
+  local lxd_bin=""
+  lxd_bin=$(command -v lxd || true)
   if [[ -z "${lxd_bin}" && -x /snap/bin/lxd ]]; then
     lxd_bin="/snap/bin/lxd"
   fi
+  printf '%s' "${lxd_bin}"
+}
+
+ensure_lxd_initialized() {
+  local lxc_bin=""
+  local lxd_bin=""
+  lxc_bin=$(find_lxc_binary)
+  lxd_bin=$(find_lxd_binary)
   if [[ -z "${lxc_bin}" ]]; then
     log "lxc not found; container features will be unavailable."
     return 0
@@ -581,10 +593,141 @@ ensure_lxd_initialized() {
     log "lxd command not found; cannot run lxd init."
     return 0
   fi
-  if prompt_yes_no "Run 'lxd init --auto' now?" "N"; then
-    "${lxd_bin}" init --auto
+  log "LXD is installed but not initialized; running 'lxd init --auto'."
+  if ! "${lxd_bin}" init --auto >/dev/null 2>&1; then
+    log "Warning: automatic 'lxd init --auto' failed. Container APIs may fail until LXD is initialized."
+    return 0
+  fi
+  if "${lxc_bin}" info >/dev/null 2>&1; then
+    log "LXD initialization completed."
   else
-    log "Skipping LXD init. Container APIs will fail until LXD is initialized."
+    log "Warning: LXD still appears unavailable after auto-init."
+  fi
+}
+
+select_lxd_storage_pool() {
+  local lxc_bin=$1
+  local raw=""
+  raw=$("${lxc_bin}" storage list --format json 2>/dev/null || true)
+  if [[ -z "${raw}" ]]; then
+    printf ''
+    return 0
+  fi
+  FORTRESS_STORAGE_POOLS_JSON="${raw}" python3 - <<'PY'
+import json
+import os
+
+raw = os.environ.get("FORTRESS_STORAGE_POOLS_JSON", "")
+if not raw:
+    raise SystemExit(0)
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError:
+    raise SystemExit(0)
+
+names = []
+seen = set()
+
+def add(value):
+    if not isinstance(value, str):
+        return
+    normalized = value.strip()
+    lowered = normalized.lower()
+    if not normalized or lowered in seen:
+        return
+    seen.add(lowered)
+    names.append(normalized)
+
+if isinstance(payload, list):
+    for item in payload:
+        if isinstance(item, dict):
+            add(item.get("name") or item.get("Name"))
+        else:
+            add(item)
+elif isinstance(payload, dict):
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            add(value.get("name") or value.get("Name"))
+        add(key)
+elif isinstance(payload, str):
+    add(payload)
+
+for preferred in ("default", "local"):
+    for name in names:
+        if name.lower() == preferred:
+            print(name)
+            raise SystemExit(0)
+
+if names:
+    print(names[0])
+PY
+}
+
+find_default_profile_root_device() {
+  local lxc_bin=$1
+  local device=""
+  while IFS= read -r device; do
+    device=$(printf '%s' "${device}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ -z "${device}" ]]; then
+      continue
+    fi
+    local dtype=""
+    local dpath=""
+    dtype=$("${lxc_bin}" profile device get default "${device}" type 2>/dev/null || true)
+    dpath=$("${lxc_bin}" profile device get default "${device}" path 2>/dev/null || true)
+    if [[ "${dtype}" == "disk" && "${dpath}" == "/" ]]; then
+      printf '%s' "${device}"
+      return 0
+    fi
+  done < <("${lxc_bin}" profile device list default 2>/dev/null || true)
+  return 1
+}
+
+ensure_lxd_root_disk_profile() {
+  local lxc_bin=""
+  lxc_bin=$(find_lxc_binary)
+  if [[ -z "${lxc_bin}" ]]; then
+    return 0
+  fi
+  if ! "${lxc_bin}" info >/dev/null 2>&1; then
+    log "LXD daemon unreachable; skipping default profile root disk checks."
+    return 0
+  fi
+  local pool=""
+  pool=$(select_lxd_storage_pool "${lxc_bin}")
+  if [[ -z "${pool}" ]]; then
+    log "No LXD storage pool detected; attempting to create 'default' (dir) pool."
+    if "${lxc_bin}" storage create default dir >/dev/null 2>&1; then
+      pool="default"
+      log "Created LXD storage pool '${pool}'."
+    else
+      log "Warning: unable to detect or create an LXD storage pool; container launch may fail."
+      return 0
+    fi
+  fi
+  if ! "${lxc_bin}" profile show default >/dev/null 2>&1; then
+    log "LXD profile 'default' missing; creating it."
+    if ! "${lxc_bin}" profile create default >/dev/null 2>&1; then
+      log "Warning: unable to create LXD profile 'default'."
+      return 0
+    fi
+  fi
+  local root_device=""
+  root_device=$(find_default_profile_root_device "${lxc_bin}" || true)
+  if [[ -z "${root_device}" ]]; then
+    log "Adding LXD default profile root disk device on pool '${pool}'."
+    if ! "${lxc_bin}" profile device add default root disk path=/ pool="${pool}" >/dev/null 2>&1; then
+      log "Warning: failed to add default profile root disk device."
+    fi
+    return 0
+  fi
+  local root_pool=""
+  root_pool=$("${lxc_bin}" profile device get default "${root_device}" pool 2>/dev/null || true)
+  if [[ -z "${root_pool}" ]]; then
+    log "Setting pool '${pool}' on LXD default profile root device '${root_device}'."
+    if ! "${lxc_bin}" profile device set default "${root_device}" pool "${pool}" >/dev/null 2>&1; then
+      log "Warning: failed to set pool on default profile root device '${root_device}'."
+    fi
   fi
 }
 
@@ -1062,6 +1205,8 @@ main() {
       ensure_snap_lxd
     fi
   fi
+  ensure_lxd_initialized
+  ensure_lxd_root_disk_profile
   stop_existing_instances
 
   if [[ "${first_run}" == "1" ]]; then
@@ -1071,7 +1216,6 @@ main() {
     ensure_python_env
     ensure_node_deps
     ensure_certbot "$manager"
-    ensure_lxd_initialized
     if [[ "${is_almalinux}" == "1" ]]; then
       maybe_harden_ssh
     fi

@@ -37,7 +37,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Lizard UI recipe apply flow surfaces `probe.health_checks` summaries with severity badges, and Packages includes a `/system/upgrade` wizard plus a `/system/update-reload` action for git pull + migration + restart flows
 - `POST /containers/expose` supports bulk interface/port exposure to a container with port ranges, protocol selection, per-interface upstream selection, and optional firewall allowlists (rolls back devices and firewall rules on failure)
 - Sites API exposes backup inventory via `GET /sites/{site_id}/backups` (metadata stored under `/var/lib/fortress/site_backups`)
-- `run-server.sh` now ensures missing OS packages on subsequent runs, supports AlmaLinux snap-based LXD installs, and can optionally harden SSH by creating a sudo user and disabling root login
+- `run-server.sh` now ensures missing OS packages on subsequent runs, supports AlmaLinux snap-based LXD installs, auto-runs `lxd init --auto` when needed, auto-heals the default LXD profile root disk device/pool, and can optionally harden SSH by creating a sudo user and disabling root login
 - `run-client.sh` provides an interactive helper for CLI/WebUI connection setup against remote APIs
 
 ## Project structure (tree)

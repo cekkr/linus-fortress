@@ -17,8 +17,126 @@ SKIP_SERVICE=${SKIP_SERVICE:-}
 FORCE_RESET=${FORCE_RESET:-}
 
 dnf -y install python3 python3-pip python3-virtualenv git openssl
+if ! command -v lxc >/dev/null 2>&1 || ! command -v lxd >/dev/null 2>&1; then
+  if ! dnf -y install lxd lxc; then
+    echo "Warning: unable to install lxd/lxc via dnf; container APIs may be unavailable." >&2
+  fi
+fi
+
+select_lxd_storage_pool() {
+  local raw=""
+  raw=$(lxc storage list --format json 2>/dev/null || true)
+  if [ -z "${raw}" ]; then
+    printf ''
+    return 0
+  fi
+  FORTRESS_STORAGE_POOLS_JSON="${raw}" python3 - <<'PY'
+import json
+import os
+
+raw = os.environ.get("FORTRESS_STORAGE_POOLS_JSON", "")
+if not raw:
+    raise SystemExit(0)
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError:
+    raise SystemExit(0)
+
+names = []
+seen = set()
+
+def add(value):
+    if not isinstance(value, str):
+        return
+    normalized = value.strip()
+    lowered = normalized.lower()
+    if not normalized or lowered in seen:
+        return
+    seen.add(lowered)
+    names.append(normalized)
+
+if isinstance(payload, list):
+    for item in payload:
+        if isinstance(item, dict):
+            add(item.get("name") or item.get("Name"))
+        else:
+            add(item)
+elif isinstance(payload, dict):
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            add(value.get("name") or value.get("Name"))
+        add(key)
+elif isinstance(payload, str):
+    add(payload)
+
+for preferred in ("default", "local"):
+    for name in names:
+        if name.lower() == preferred:
+            print(name)
+            raise SystemExit(0)
+
+if names:
+    print(names[0])
+PY
+}
+
+find_default_profile_root_device() {
+  local device=""
+  while IFS= read -r device; do
+    device=$(printf '%s' "${device}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [ -z "${device}" ] && continue
+    local dtype=""
+    local dpath=""
+    dtype=$(lxc profile device get default "${device}" type 2>/dev/null || true)
+    dpath=$(lxc profile device get default "${device}" path 2>/dev/null || true)
+    if [ "${dtype}" = "disk" ] && [ "${dpath}" = "/" ]; then
+      printf '%s' "${device}"
+      return 0
+    fi
+  done < <(lxc profile device list default 2>/dev/null || true)
+  return 1
+}
+
+ensure_lxd_ready() {
+  if ! command -v lxc >/dev/null 2>&1 || ! command -v lxd >/dev/null 2>&1; then
+    echo "Warning: lxc/lxd not installed; container APIs may be unavailable." >&2
+    return 0
+  fi
+  if ! lxc info >/dev/null 2>&1; then
+    echo "Initializing LXD with lxd init --auto"
+    if ! lxd init --auto >/dev/null 2>&1; then
+      echo "Warning: automatic lxd init failed; continue setup but container APIs may fail." >&2
+      return 0
+    fi
+  fi
+  local pool=""
+  pool=$(select_lxd_storage_pool)
+  if [ -z "${pool}" ]; then
+    if lxc storage create default dir >/dev/null 2>&1; then
+      pool="default"
+    else
+      echo "Warning: no LXD storage pool found; container launch may fail." >&2
+      return 0
+    fi
+  fi
+  if ! lxc profile show default >/dev/null 2>&1; then
+    lxc profile create default >/dev/null 2>&1 || true
+  fi
+  local root_device=""
+  root_device=$(find_default_profile_root_device || true)
+  if [ -z "${root_device}" ]; then
+    lxc profile device add default root disk path=/ pool="${pool}" >/dev/null 2>&1 || true
+    return 0
+  fi
+  local root_pool=""
+  root_pool=$(lxc profile device get default "${root_device}" pool 2>/dev/null || true)
+  if [ -z "${root_pool}" ]; then
+    lxc profile device set default "${root_device}" pool "${pool}" >/dev/null 2>&1 || true
+  fi
+}
 
 mkdir -p /var/lib/fortress /etc/fortress/ssl
+ensure_lxd_ready
 
 if [ ! -d "${INSTALL_DIR}/.git" ]; then
   if [ -z "${REPO_URL}" ]; then

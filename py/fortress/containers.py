@@ -23,6 +23,7 @@ DEBIAN_VERSION_PATTERN = re.compile(r"^(?P<version>\d+)$")
 PUBLIC_IMAGE_PRODUCT_PATTERN = re.compile(r"^(?P<distro>[^:]+):(?P<release>[^:]+):(?P<arch>[^:]+):(?P<variant>[^:]+)$")
 PUBLIC_IMAGE_INDEX_URL = os.environ.get("FORTRESS_PUBLIC_IMAGE_INDEX_URL", "https://images.linuxcontainers.org/streams/v1/index.json")
 PUBLIC_IMAGE_ARCHES = {"amd64", "x86_64"}
+MISSING_ROOT_DEVICE_MARKERS = ("failed getting root disk", "no root device could be found")
 
 try:
     PUBLIC_IMAGE_INDEX_TIMEOUT_SECONDS = float(os.environ.get("FORTRESS_PUBLIC_IMAGE_INDEX_TIMEOUT_SECONDS", "4"))
@@ -238,7 +239,31 @@ def create_container(
 ) -> None:
     resolved_alias = resolve_image_alias(distro)
     ensure_image_available(resolved_alias)
-    run_command(["lxc", "launch", resolved_alias, name])
+    try:
+        run_command(["lxc", "launch", resolved_alias, name])
+    except HTTPException as exc:
+        detail = str(exc.detail or "")
+        lowered = detail.lower()
+        if not any(marker in lowered for marker in MISSING_ROOT_DEVICE_MARKERS):
+            raise
+        pools = list_storage_pools()
+        selected_pool = _select_launch_storage_pool(pools)
+        if not selected_pool:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"{detail.rstrip()} LXD has no usable storage pool for root disks. "
+                    "Run `lxd init` (or add a storage pool and root disk device in profile `default`) and retry."
+                ),
+            ) from exc
+        try:
+            run_command(["lxc", "launch", "--storage", selected_pool, resolved_alias, name])
+        except HTTPException as retry_exc:
+            retry_detail = str(retry_exc.detail or "")
+            raise HTTPException(
+                status_code=500,
+                detail=f"{detail.rstrip()} Retry with storage pool '{selected_pool}' failed: {retry_detail}",
+            ) from retry_exc
     run_command(["lxc", "config", "set", name, "limits.cpu", cpu_limit])
     run_command(["lxc", "config", "set", name, "limits.memory", ram_limit])
     run_command(["lxc", "config", "set", name, "security.nesting", "true"])
@@ -596,6 +621,59 @@ def list_lxd_remotes() -> Set[str]:
     except Exception:
         logging.exception("Failed to list LXD remotes")
         return set()
+
+
+def list_storage_pools() -> List[str]:
+    """Return configured LXD storage pool names."""
+    try:
+        raw = run_command(["lxc", "storage", "list", "--format", "json"])
+        pools = json.loads(raw)
+    except Exception:
+        logging.exception("Failed to list LXD storage pools")
+        return []
+    names: List[str] = []
+    seen: Set[str] = set()
+
+    def add_name(candidate: Optional[str]) -> None:
+        if not isinstance(candidate, str):
+            return
+        normalized = candidate.strip()
+        if not normalized:
+            return
+        lowered = normalized.lower()
+        if lowered in seen:
+            return
+        seen.add(lowered)
+        names.append(normalized)
+
+    if isinstance(pools, list):
+        for pool in pools:
+            if isinstance(pool, dict):
+                add_name(_dict_value_case_insensitive(pool, "name"))
+            elif isinstance(pool, str):
+                add_name(pool)
+        return names
+    if isinstance(pools, dict):
+        for key, value in pools.items():
+            candidate = _dict_value_case_insensitive(value, "name") if isinstance(value, dict) else None
+            if not candidate and isinstance(key, str):
+                candidate = key
+            add_name(candidate if isinstance(candidate, str) else None)
+        return names
+    if isinstance(pools, str):
+        add_name(pools)
+    return names
+
+
+def _select_launch_storage_pool(pools: List[str]) -> Optional[str]:
+    if not pools:
+        return None
+    preferred_names = ("default", "local")
+    for preferred in preferred_names:
+        for pool in pools:
+            if pool.strip().lower() == preferred:
+                return pool
+    return pools[0]
 
 
 def list_remote_images(remote: str, limit: int = 250) -> List[Dict[str, Any]]:

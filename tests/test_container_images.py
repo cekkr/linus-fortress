@@ -128,6 +128,84 @@ class ContainerImageRemoteTests(unittest.TestCase):
         self.assertNotIn("--limit", calls[2])
 
 
+class ContainerCreateLaunchTests(unittest.TestCase):
+    def test_create_container_retries_with_storage_pool_when_root_device_missing(self) -> None:
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            if cmd == ["lxc", "launch", "ubuntu:24.04", "demo"]:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "System Error: Error: Failed instance creation: Failed creating instance record: "
+                        "Failed initialising instance: Failed getting root disk: No root device could be found"
+                    ),
+                )
+            if cmd == ["lxc", "storage", "list", "--format", "json"]:
+                return json.dumps([{"name": "default"}])
+            if cmd == ["lxc", "launch", "--storage", "default", "ubuntu:24.04", "demo"]:
+                return ""
+            if cmd[:4] == ["lxc", "config", "set", "demo"]:
+                return ""
+            if cmd[:5] == ["lxc", "config", "device", "set", "demo"]:
+                return ""
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with (
+            mock.patch.object(container_ops, "resolve_image_alias", return_value="ubuntu:24.04"),
+            mock.patch.object(container_ops, "ensure_image_available", return_value={}),
+            mock.patch.object(container_ops, "run_command", side_effect=fake_run),
+        ):
+            container_ops.create_container("demo", "ubuntu:lts", "2", "1GB", "10GB")
+
+        self.assertIn(["lxc", "launch", "ubuntu:24.04", "demo"], calls)
+        self.assertIn(["lxc", "storage", "list", "--format", "json"], calls)
+        self.assertIn(["lxc", "launch", "--storage", "default", "ubuntu:24.04", "demo"], calls)
+
+    def test_create_container_returns_actionable_error_when_no_storage_pool(self) -> None:
+        def fake_run(cmd):
+            if cmd == ["lxc", "launch", "ubuntu:24.04", "demo"]:
+                raise HTTPException(
+                    status_code=500,
+                    detail="System Error: Error: Failed getting root disk: No root device could be found",
+                )
+            if cmd == ["lxc", "storage", "list", "--format", "json"]:
+                return json.dumps([])
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with (
+            mock.patch.object(container_ops, "resolve_image_alias", return_value="ubuntu:24.04"),
+            mock.patch.object(container_ops, "ensure_image_available", return_value={}),
+            mock.patch.object(container_ops, "run_command", side_effect=fake_run),
+        ):
+            with self.assertRaises(HTTPException) as exc:
+                container_ops.create_container("demo", "ubuntu:lts", "2", "1GB", "10GB")
+
+        self.assertEqual(exc.exception.status_code, 500)
+        self.assertIn("no usable storage pool", str(exc.exception.detail).lower())
+
+    def test_create_container_does_not_retry_for_unrelated_launch_error(self) -> None:
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            if cmd == ["lxc", "launch", "ubuntu:24.04", "demo"]:
+                raise HTTPException(status_code=500, detail="System Error: launch failed: random failure")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with (
+            mock.patch.object(container_ops, "resolve_image_alias", return_value="ubuntu:24.04"),
+            mock.patch.object(container_ops, "ensure_image_available", return_value={}),
+            mock.patch.object(container_ops, "run_command", side_effect=fake_run),
+        ):
+            with self.assertRaises(HTTPException) as exc:
+                container_ops.create_container("demo", "ubuntu:lts", "2", "1GB", "10GB")
+
+        self.assertIn("random failure", str(exc.exception.detail))
+        self.assertEqual(calls, [["lxc", "launch", "ubuntu:24.04", "demo"]])
+
+
 class PopularImageEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()

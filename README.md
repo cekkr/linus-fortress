@@ -103,7 +103,7 @@ If systemd fails to start the UI due to a Node.js path (common when `node` point
 Host assumptions:
 - Linux distro with `apt`, `dnf`, or `yum` (Ubuntu/Debian or AlmaLinux/RHEL-like).
 - `nginx` plus `ufw` (apt) or `firewalld` (dnf/yum) for routing and firewall ops.
-- `lxc`/`lxd` for container APIs; on AlmaLinux the script installs LXD via snap (snapd) when missing and ensures `/snap/bin` is reachable for service/screen runs. It can run `lxd init --auto` if LXD is installed.
+- `lxc`/`lxd` for container APIs; on AlmaLinux the script installs LXD via snap (snapd) when missing and ensures `/snap/bin` is reachable for service/screen runs. `run-server.sh` now auto-runs `lxd init --auto` when needed and auto-heals the `default` profile root disk device/pool so container creation avoids `No root device could be found` failures.
 - `certbot` for automated Let's Encrypt issuance/renewal (the script attempts to install it when possible).
 - The script checks for missing OS packages on each run and installs them when possible.
 - On SELinux-enforcing hosts (AlmaLinux/RHEL), systemd may need proper file contexts; if you run as a service from `/root` or `/home`, consider moving the repo to `/opt/linus-fortress` or relabeling it.
