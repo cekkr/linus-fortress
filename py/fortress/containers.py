@@ -1070,9 +1070,25 @@ def find_latest_ubuntu_lts_alias() -> Optional[str]:
     except Exception:
         logging.exception("Failed to query ubuntu: images")
         return None
+    if isinstance(images, dict):
+        # Some LXD versions/wrappers may return object envelopes instead of a bare list.
+        metadata_images = images.get("metadata")
+        listed_images = images.get("images")
+        if isinstance(metadata_images, list):
+            images = metadata_images
+        elif isinstance(listed_images, list):
+            images = listed_images
+    if not isinstance(images, list):
+        logging.warning("Unexpected payload type from ubuntu image listing: %s", type(images).__name__)
+        return None
     aliases: Set[str] = set()
     for image in images:
-        for alias in image.get("aliases", []):
+        if not isinstance(image, dict):
+            continue
+        aliases_payload = image.get("aliases") or []
+        if not isinstance(aliases_payload, list):
+            continue
+        for alias in aliases_payload:
             name = alias.get("name") if isinstance(alias, dict) else alias
             if not isinstance(name, str):
                 continue

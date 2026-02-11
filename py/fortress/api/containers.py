@@ -172,11 +172,28 @@ def build_container_router(
     router = APIRouter()
     logger = logging.getLogger(__name__)
 
-    def _load_image_store() -> Dict[str, Any]:
+    def _load_image_store() -> Any:
         return load_json(popular_images_db, {"popular": []}, label="popular images")
 
     def _save_image_store(payload: Dict[str, Any]) -> None:
         save_json(popular_images_db, payload, indent=2)
+
+    def _extract_popular_store_entries(store_payload: Any) -> List[Any]:
+        if isinstance(store_payload, list):
+            # Legacy format: store file was a bare list of entries.
+            return store_payload
+        if isinstance(store_payload, dict):
+            popular = store_payload.get("popular")
+            if isinstance(popular, list):
+                return popular
+        return []
+
+    def _normalize_popular_name(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if value is None:
+            return ""
+        return str(value).strip()
 
     def _fallback_popular_images() -> List[Dict[str, str]]:
         latest = container_ops.find_latest_ubuntu_lts_alias()
@@ -190,18 +207,26 @@ def build_container_router(
 
     def _list_custom_popular_entries() -> List[Dict[str, str]]:
         store = _load_image_store()
-        popular = store.get("popular") or []
+        popular = _extract_popular_store_entries(store)
         seen = set()
         entries: List[Dict[str, str]] = []
         for item in popular:
-            name = item.get("name") if isinstance(item, dict) else str(item)
-            if not name:
+            if isinstance(item, dict):
+                raw_name = item.get("name")
+                if raw_name is None:
+                    # Legacy key used by older presets.
+                    raw_name = item.get("alias")
+                raw_label = item.get("label")
+            else:
+                raw_name = item
+                raw_label = None
+            normalized = _normalize_popular_name(raw_name)
+            if not normalized:
                 continue
-            normalized = name.strip()
             if normalized in seen:
                 continue
             seen.add(normalized)
-            label = item.get("label") if isinstance(item, dict) else None
+            label = _normalize_popular_name(raw_label) if raw_label is not None else ""
             resolved = normalized
             try:
                 resolved = container_ops.resolve_image_alias(normalized)
@@ -214,7 +239,11 @@ def build_container_router(
         return entries
 
     def _list_popular_entries() -> List[Dict[str, Any]]:
-        discovered = container_ops.discover_popular_images()
+        try:
+            discovered = container_ops.discover_popular_images()
+        except Exception:
+            logger.exception("Failed to discover popular images from LXD; falling back to saved presets/defaults")
+            discovered = []
         custom = _list_custom_popular_entries()
         fallback = _fallback_popular_images()
         seen = set()
@@ -249,7 +278,7 @@ def build_container_router(
         return entries
 
     def _inspect_entry(entry: Dict[str, Any], remotes: Optional[List[str]] = None) -> Dict[str, Any]:
-        name = entry.get("name", "").strip()
+        name = str(entry.get("name") or "").strip()
         resolved_hint = str(entry.get("resolved_name") or "").strip()
         resolved = resolved_hint or container_ops.resolve_image_alias(name)
         remote, alias = container_ops.parse_image_alias(resolved)
