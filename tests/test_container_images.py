@@ -72,6 +72,58 @@ class ContainerImageRemoteTests(unittest.TestCase):
         self.assertEqual(exc.exception.status_code, 400)
         self.assertIn("LXD remote 'images' is not configured", exc.exception.detail)
 
+    def test_list_remote_images_retries_without_limit_on_old_lxc(self) -> None:
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            if "--limit" in cmd:
+                raise HTTPException(status_code=500, detail="System Error: Error: unknown flag: --limit")
+            return json.dumps(
+                [
+                    {
+                        "architecture": "x86_64",
+                        "aliases": [{"name": "22.04"}],
+                        "properties": {"os": "Ubuntu"},
+                    }
+                ]
+            )
+
+        with mock.patch.object(containers, "run_command", side_effect=fake_run):
+            images = containers.list_remote_images("ubuntu", limit=25)
+        self.assertEqual(len(images), 1)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertIn("--limit", calls[0])
+        self.assertNotIn("--limit", calls[1])
+
+    def test_ensure_image_available_retries_without_limit_on_old_lxc(self) -> None:
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            if cmd[:3] == ["lxc", "remote", "list"]:
+                return json.dumps([{"name": "images"}])
+            if "--limit" in cmd:
+                raise HTTPException(status_code=500, detail="System Error: Error: unknown flag: --limit")
+            return json.dumps(
+                [
+                    {
+                        "architecture": "x86_64",
+                        "type": "container",
+                        "aliases": [{"name": "ubuntu/noble/cloud"}],
+                        "properties": {"os": "Ubuntu", "release": "24.04"},
+                    }
+                ]
+            )
+
+        with mock.patch.object(containers, "run_command", side_effect=fake_run):
+            image = containers.ensure_image_available("images:ubuntu/noble/cloud")
+
+        self.assertEqual(image.get("properties", {}).get("release"), "24.04")
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertIn("--limit", calls[1])
+        self.assertNotIn("--limit", calls[2])
+
 
 if __name__ == "__main__":
     unittest.main()

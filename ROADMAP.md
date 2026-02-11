@@ -79,6 +79,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add create-container wizard step validation (name/image/resources) with unavailable-image blocking and inline debug visibility from image catalog metadata.
 - Done: Ensure Check Update + Reload triggers browser reload after successful API completion and cover it with Puppeteer automation.
 - Done: Improve browser-side debugging by surfacing backend fortress-status errors (including LXD endpoint mismatch hints) in the Debug panel/event log.
+- Done: Harden container image availability discovery for older LXD CLIs by retrying `lxc image list` without `--limit` when unsupported.
 - Next: Add copy/export controls for latest debug payloads from the UI Debug panel to speed up browser-side troubleshooting.
 - Next: Continue expanding app-home dashboards with richer per-item actions (route/site/VM quick controls), container sub-app homes, and visual regression coverage for stage rendering.
 - Next: Add a CI lane with a real LXD daemon fixture (including Fedora remotes output variants) to validate image availability discovery end-to-end beyond mocked unit tests.

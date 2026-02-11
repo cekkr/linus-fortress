@@ -544,6 +544,23 @@ def _dict_value_case_insensitive(payload: Any, *keys: str) -> Optional[Any]:
     return None
 
 
+def _run_lxc_image_list_json(base_args: List[str], limit: Optional[int] = None) -> Any:
+    args = list(base_args) + ["--format", "json"]
+    use_limit = limit is not None
+    if use_limit:
+        args.extend(["--limit", str(max(int(limit), 1))])
+    try:
+        raw = run_command(args)
+        return json.loads(raw)
+    except HTTPException as exc:
+        detail = str(exc.detail).lower()
+        if use_limit and "unknown flag" in detail and "--limit" in detail:
+            retry_args = list(base_args) + ["--format", "json"]
+            raw = run_command(retry_args)
+            return json.loads(raw)
+        raise
+
+
 def list_lxd_remotes() -> Set[str]:
     """Return the set of configured LXD remotes."""
     try:
@@ -586,10 +603,7 @@ def list_remote_images(remote: str, limit: int = 250) -> List[Dict[str, Any]]:
     if not remote:
         return []
     try:
-        raw = run_command(
-            ["lxc", "image", "list", f"{remote}:", "--format", "json", "--limit", str(max(limit, 1))]
-        )
-        payload = json.loads(raw)
+        payload = _run_lxc_image_list_json(["lxc", "image", "list", f"{remote}:"], limit=limit)
     except Exception:
         logging.exception("Failed to list images for LXD remote '%s'", remote)
         return []
@@ -1014,12 +1028,11 @@ def ensure_image_available(alias: str) -> Dict[str, Any]:
             ),
         )
     if remote and image_alias:
-        lookup_args = ["lxc", "image", "list", f"{remote}:", image_alias, "--format", "json", "--limit", "1"]
+        lookup_args = ["lxc", "image", "list", f"{remote}:", image_alias]
     else:
-        lookup_args = ["lxc", "image", "list", alias, "--format", "json", "--limit", "1"]
+        lookup_args = ["lxc", "image", "list", alias]
     try:
-        info_raw = run_command(lookup_args)
-        images = json.loads(info_raw)
+        images = _run_lxc_image_list_json(lookup_args, limit=1)
     except HTTPException as exc:
         detail = str(exc.detail)
         logging.error("Image lookup failed for %s: %s", alias, detail)
@@ -1053,8 +1066,7 @@ def find_latest_ubuntu_lts_alias() -> Optional[str]:
     if "ubuntu" not in remotes:
         return None
     try:
-        raw = run_command(["lxc", "image", "list", "ubuntu:", "--format", "json", "--limit", "100"])
-        images = json.loads(raw)
+        images = _run_lxc_image_list_json(["lxc", "image", "list", "ubuntu:"], limit=100)
     except Exception:
         logging.exception("Failed to query ubuntu: images")
         return None
