@@ -25,7 +25,7 @@
   --action-ghost-border: rgba(33, 46, 30, 0.2);
   --action-ghost-fg: #20311f;
   --pill-bg: rgba(0, 0, 0, 0.08);
-  --pill-fg: #1f2f1c;
+  --pill-fg: inherit;
   --pill-running-bg: rgba(140, 207, 85, 0.25);
   --pill-running-fg: #2a3b1f;
   --pill-stopped-bg: rgba(216, 107, 92, 0.18);

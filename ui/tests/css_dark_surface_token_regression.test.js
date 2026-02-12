@@ -327,6 +327,17 @@ test("dark surface visual regression stays stable for row-more panel and wizard"
     await page.addStyleTag({
       content: "*,*::before,*::after{animation:none !important;transition:none !important;}",
     });
+    await page.addStyleTag({
+      content: `
+        .app-row,
+        .app-card-frame,
+        .app-card-tab,
+        .row-more-content {
+          --unibody-bg-x: 0px !important;
+          --unibody-bg-y: 0px !important;
+        }
+      `,
+    });
     await loginWithDelegatedToken(page);
 
     const expanded = await page.evaluate(() => {
