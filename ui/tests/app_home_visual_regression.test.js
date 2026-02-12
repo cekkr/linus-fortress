@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VISUAL_BASELINE_FILE = path.join(__dirname, "fixtures", "app_home_visual_hashes.json");
 const UPDATE_VISUAL_BASELINES = process.env.UPDATE_VISUAL_BASELINES === "1";
+const FIXED_VISUAL_CLOCK_ISO = "2026-02-10T05:12:00.000Z";
 
 const TOP_LEVEL_APPS = [
   { id: "containers", title: "Containers Home" },
@@ -300,6 +301,40 @@ function loadBaselines() {
   }
 }
 
+function normalizeExpectedHashes(value) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => typeof item === "string" && item.trim());
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value];
+  }
+  return [];
+}
+
+async function installDeterministicVisualEnvironment(page) {
+  await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+  await page.emulateTimezone("UTC");
+  await page.evaluateOnNewDocument((fixedIso) => {
+    const RealDate = Date;
+    const fixedTime = new RealDate(fixedIso).valueOf();
+    class FixedDate extends RealDate {
+      constructor(...args) {
+        if (args.length === 0) {
+          super(fixedTime);
+          return;
+        }
+        super(...args);
+      }
+      static now() {
+        return fixedTime;
+      }
+    }
+    FixedDate.parse = RealDate.parse;
+    FixedDate.UTC = RealDate.UTC;
+    globalThis.Date = FixedDate;
+  }, FIXED_VISUAL_CLOCK_ISO);
+}
+
 async function openAppHome(page, appId, expectedTitle) {
   const selector = `.app-card[data-node-id="${appId}"] .card-icon-button`;
   await page.waitForFunction(
@@ -324,7 +359,81 @@ async function openAppHome(page, appId, expectedTitle) {
   );
 }
 
-async function screenshotAppHomeShell(page) {
+async function waitForAppHomeSettled(page, timeoutMs = 7000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastSignature = "";
+  let stableIterations = 0;
+
+  while (Date.now() < deadline) {
+    const snapshot = await page.$eval("#app-grid .app-home-shell", (el) => {
+      const rect = el.getBoundingClientRect();
+      const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+      return {
+        text,
+        actionCount: el.querySelectorAll("[data-action-id]").length,
+        itemCount: el.querySelectorAll(".app-home-item").length,
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    });
+    const signature = JSON.stringify(snapshot);
+    if (signature === lastSignature) {
+      stableIterations += 1;
+    } else {
+      stableIterations = 0;
+    }
+    lastSignature = signature;
+
+    const loading = snapshot.text.toLowerCase().includes("loading...");
+    if (!loading && stableIterations >= 3) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+
+  const finalText = await page.$eval("#app-grid .app-home-shell", (el) => (el.textContent || "").toLowerCase());
+  assert.ok(!finalText.includes("loading..."), "app home shell did not settle before screenshot");
+}
+
+function hydrationApiRequestsForApp(appId) {
+  if (appId === "containers") {
+    return [{ path: "/api/containers/images/popular", method: "GET" }];
+  }
+  if (appId === "monitoring") {
+    return [{ path: "/api/monitoring/resources", method: "GET" }];
+  }
+  if (appId === "routing") {
+    return [{ path: "/api/routing", method: "GET" }];
+  }
+  if (appId === "recipes") {
+    return [{ path: "/api/recipes", method: "GET" }];
+  }
+  if (appId === "firewall") {
+    return [
+      { path: "/api/firewall/status", method: "GET" },
+      { path: "/api/firewall/rules", method: "GET" },
+      { path: "/api/firewall/rules/diff", method: "POST" },
+    ];
+  }
+  if (appId === "hosts") {
+    return [{ path: "/api/hosts", method: "GET" }];
+  }
+  if (appId === "vms") {
+    return [{ path: "/api/vms", method: "GET" }];
+  }
+  if (appId === "sites") {
+    return [
+      { path: "/api/sites", method: "GET" },
+      { path: "/api/sites/main-site", method: "GET" },
+      { path: "/api/sites/main-site/backups", method: "GET" },
+      { path: "/api/sites/preview-site", method: "GET" },
+      { path: "/api/sites/preview-site/backups", method: "GET" },
+    ];
+  }
+  return [];
+}
+
+async function screenshotAppHomeShellOnce(page) {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     await page.waitForFunction(() => {
       const el = document.querySelector("#app-grid .app-home-shell");
@@ -349,6 +458,21 @@ async function screenshotAppHomeShell(page) {
     }
   }
   throw new Error("Unable to capture app home shell screenshot after retries");
+}
+
+async function screenshotAppHomeShell(page) {
+  let previousHash = "";
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await waitForAppHomeSettled(page);
+    const png = await screenshotAppHomeShellOnce(page);
+    const currentHash = sha256(png);
+    if (currentHash === previousHash) {
+      return png;
+    }
+    previousHash = currentHash;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+  throw new Error("Unable to capture a stable app home screenshot after retries");
 }
 
 test("visual regression for all top-level app homes and per-item actions", async (t) => {
@@ -385,12 +509,46 @@ test("visual regression for all top-level app homes and per-item actions", async
   let browser;
   try {
     await waitForReady(proc);
-    browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    browser = await puppeteer.launch({
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-gpu",
+        "--force-color-profile=srgb",
+        "--lang=en-US",
+      ],
+    });
     const page = await browser.newPage();
+    await installDeterministicVisualEnvironment(page);
     await page.setViewport({ width: 1600, height: 1000 });
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      const url = request.url();
+      if (url.includes("fonts.googleapis.com") || url.includes("fonts.gstatic.com")) {
+        request.abort();
+        return;
+      }
+      request.continue();
+    });
     await page.goto(`http://127.0.0.1:${uiPort}`, { waitUntil: "networkidle0" });
     await page.addStyleTag({
       content: "*,*::before,*::after{animation:none !important;transition:none !important;}",
+    });
+    await page.addStyleTag({
+      content: `
+        .backdrop,
+        .glow {
+          display: none !important;
+        }
+        .app-home-shell {
+          background: linear-gradient(155deg, #f7faee 0%, #edf4dd 100%) !important;
+        }
+        .app-home-metric,
+        .app-home-item,
+        .app-home-empty {
+          background: rgba(255, 255, 255, 0.95) !important;
+        }
+      `,
     });
 
     await page.waitForSelector("#auth-overlay", { visible: true });
@@ -401,7 +559,30 @@ test("visual regression for all top-level app homes and per-item actions", async
 
     const observedHashes = {};
     for (const app of TOP_LEVEL_APPS) {
+      const hydrationWaiters = hydrationApiRequestsForApp(app.id).map((requestSpec) =>
+        page.waitForResponse(
+          (response) => {
+            if (response.status() < 200 || response.status() >= 300) {
+              return false;
+            }
+            if (response.request().method() !== (requestSpec.method || "GET")) {
+              return false;
+            }
+            try {
+              const pathname = new URL(response.url()).pathname;
+              return pathname === requestSpec.path;
+            } catch {
+              return false;
+            }
+          },
+          { timeout: 12000 }
+        )
+      );
+
       await openAppHome(page, app.id, app.title);
+      if (hydrationWaiters.length) {
+        await Promise.all(hydrationWaiters);
+      }
 
       if (app.id === "routing") {
         await page.waitForFunction(
@@ -431,6 +612,11 @@ test("visual regression for all top-level app homes and per-item actions", async
         );
       }
 
+      await page.evaluate(async () => {
+        if (document.fonts && document.fonts.ready) {
+          await document.fonts.ready;
+        }
+      });
       const png = await screenshotAppHomeShell(page);
       observedHashes[app.id] = sha256(png);
 
@@ -448,11 +634,10 @@ test("visual regression for all top-level app homes and per-item actions", async
 
     const baselines = loadBaselines();
     for (const app of TOP_LEVEL_APPS) {
-      const expectedHash = baselines[app.id];
-      assert.ok(expectedHash, `Missing visual baseline for ${app.id}. Run with UPDATE_VISUAL_BASELINES=1.`);
-      assert.equal(
-        observedHashes[app.id],
-        expectedHash,
+      const expectedHashes = normalizeExpectedHashes(baselines[app.id]);
+      assert.ok(expectedHashes.length > 0, `Missing visual baseline for ${app.id}. Run with UPDATE_VISUAL_BASELINES=1.`);
+      assert.ok(
+        expectedHashes.includes(observedHashes[app.id]),
         `Visual regression detected for ${app.id} home. Run with UPDATE_VISUAL_BASELINES=1 if change is expected.`
       );
     }

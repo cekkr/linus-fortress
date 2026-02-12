@@ -1904,6 +1904,14 @@ app.get(
 );
 
 app.post(
+  "/api/firewall/rules/diff",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/firewall/rules/diff", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.post(
   "/api/firewall/open",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequestFor(req, "POST", "/firewall/open", req.body || {});
