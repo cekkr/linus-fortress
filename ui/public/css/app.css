@@ -15,9 +15,36 @@
   --fiber-dark-texture:
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 4px),
     repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0, rgba(0, 0, 0, 0.16) 1px, transparent 1px, transparent 5px);
-  --glass-dark: rgba(7, 11, 9, 0.36);
-  --glass-dark-strong: rgba(5, 8, 7, 0.52);
-  --glass-dark-border: rgba(236, 243, 254, 0.26);
+  --surface-dark-bg: rgba(7, 11, 9, 0.36);
+  --surface-dark-strong: rgba(5, 8, 7, 0.52);
+  --surface-dark-border: rgba(236, 243, 254, 0.26);
+  --glass-dark: var(--surface-dark-bg);
+  --glass-dark-strong: var(--surface-dark-strong);
+  --glass-dark-border: var(--surface-dark-border);
+  --action-ghost-bg: rgba(33, 46, 30, 0.12);
+  --action-ghost-border: rgba(33, 46, 30, 0.2);
+  --action-ghost-fg: #20311f;
+  --pill-bg: rgba(0, 0, 0, 0.08);
+  --pill-fg: #1f2f1c;
+  --pill-running-bg: rgba(140, 207, 85, 0.25);
+  --pill-running-fg: #2a3b1f;
+  --pill-stopped-bg: rgba(216, 107, 92, 0.18);
+  --pill-stopped-fg: #5f1f1f;
+  --pill-danger-bg: rgba(216, 107, 92, 0.24);
+  --pill-danger-fg: #5f1f1f;
+  --pill-soon-bg: rgba(242, 192, 107, 0.25);
+  --pill-soon-fg: #5f3d12;
+  --pill-install-bg: rgba(140, 207, 85, 0.25);
+  --pill-install-fg: #2a3b1f;
+  --event-item-bg: rgba(0, 0, 0, 0.05);
+  --event-item-border: rgba(0, 0, 0, 0.06);
+  --event-item-fg: inherit;
+  --event-item-error-bg: rgba(216, 107, 92, 0.12);
+  --event-item-error-border: rgba(216, 107, 92, 0.4);
+  --event-item-error-fg: inherit;
+  --event-item-summary: #3f4f34;
+  --event-item-pre-bg: rgba(0, 0, 0, 0.05);
+  --event-item-pre-fg: inherit;
   --unibody-surface:
     var(--fiber-dark-texture),
     linear-gradient(180deg, #4e535c 0%, #40454d 50%, #333840 100%);
@@ -777,6 +804,36 @@ body {
   animation: rowMoreAperture 0.42s var(--legacy-swing) both;
 }
 
+.app-card.expanded .app-card-frame,
+.app-card.expanded .app-card-tab,
+.row-more-content,
+.wizard-stage {
+  --action-ghost-bg: var(--surface-dark-strong);
+  --action-ghost-border: var(--surface-dark-border);
+  --action-ghost-fg: #f0f4f9;
+  --pill-bg: var(--surface-dark-bg);
+  --pill-fg: #f0f5ff;
+  --pill-running-bg: rgba(99, 146, 59, 0.44);
+  --pill-running-fg: #e6f6c8;
+  --pill-install-bg: rgba(99, 146, 59, 0.44);
+  --pill-install-fg: #e6f6c8;
+  --pill-stopped-bg: rgba(153, 52, 43, 0.45);
+  --pill-stopped-fg: #ffe1dc;
+  --pill-danger-bg: rgba(169, 59, 49, 0.5);
+  --pill-danger-fg: #ffe1dc;
+  --pill-soon-bg: rgba(161, 118, 49, 0.45);
+  --pill-soon-fg: #ffe9c7;
+  --event-item-bg: var(--surface-dark-bg);
+  --event-item-border: var(--surface-dark-border);
+  --event-item-fg: #eaf5d5;
+  --event-item-error-bg: rgba(110, 34, 28, 0.42);
+  --event-item-error-border: rgba(216, 107, 92, 0.55);
+  --event-item-error-fg: #ffe4df;
+  --event-item-summary: rgba(236, 242, 250, 0.88);
+  --event-item-pre-bg: var(--surface-dark-strong);
+  --event-item-pre-fg: #f0f5ff;
+}
+
 .row-more-nav {
   display: flex;
   flex-wrap: wrap;
@@ -1394,43 +1451,39 @@ body {
     0 2px 4px rgba(4, 6, 9, 0.35);
 }
 
-.app-card.expanded .pill {
-  background: var(--glass-dark);
-  color: #f0f5ff;
-}
-
 .pill {
   padding: 4px 8px;
   border-radius: 999px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.7px;
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--pill-bg);
+  color: var(--pill-fg);
 }
 
 .pill.running {
-  background: rgba(140, 207, 85, 0.25);
-  color: #2a3b1f;
+  background: var(--pill-running-bg);
+  color: var(--pill-running-fg);
 }
 
 .pill.stopped {
-  background: rgba(216, 107, 92, 0.18);
-  color: #5f1f1f;
+  background: var(--pill-stopped-bg);
+  color: var(--pill-stopped-fg);
 }
 
 .pill.danger {
-  background: rgba(216, 107, 92, 0.24);
-  color: #5f1f1f;
+  background: var(--pill-danger-bg);
+  color: var(--pill-danger-fg);
 }
 
 .pill.soon {
-  background: rgba(242, 192, 107, 0.25);
-  color: #5f3d12;
+  background: var(--pill-soon-bg);
+  color: var(--pill-soon-fg);
 }
 
 .pill.install {
-  background: rgba(140, 207, 85, 0.25);
-  color: #2a3b1f;
+  background: var(--pill-install-bg);
+  color: var(--pill-install-fg);
 }
 
 .card-actions {
@@ -1455,17 +1508,10 @@ body {
 }
 
 .action.ghost {
-  background: rgba(33, 46, 30, 0.12);
-  color: #20311f;
+  background: var(--action-ghost-bg);
+  color: var(--action-ghost-fg);
   box-shadow: none;
-  border: 1px solid rgba(33, 46, 30, 0.2);
-}
-
-.row-more-content .action.ghost,
-.wizard-stage .action.ghost {
-  background: var(--glass-dark-strong);
-  border-color: var(--glass-dark-border);
-  color: #f0f4f9;
+  border: 1px solid var(--action-ghost-border);
 }
 
 .action.danger {
@@ -1764,25 +1810,6 @@ body {
   background: rgba(255, 255, 255, 0.85);
 }
 
-.wizard-stage .event-item {
-  background: var(--glass-dark);
-  border-color: var(--glass-dark-border);
-}
-
-.wizard-stage .event-item.error {
-  background: rgba(110, 34, 28, 0.42);
-  border-color: rgba(216, 107, 92, 0.55);
-}
-
-.wizard-stage .event-item summary {
-  color: rgba(236, 242, 250, 0.88);
-}
-
-.wizard-stage .event-item pre {
-  background: var(--glass-dark-strong);
-  color: #f0f5ff;
-}
-
 @keyframes wizardSlideForward {
   from {
     opacity: 0.55;
@@ -1820,13 +1847,15 @@ body {
 .event-item {
   padding: 8px 10px;
   border-radius: 10px;
-  background: rgba(0, 0, 0, 0.05);
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: var(--event-item-bg);
+  border: 1px solid var(--event-item-border);
+  color: var(--event-item-fg);
 }
 
 .event-item.error {
-  border-color: rgba(216, 107, 92, 0.4);
-  background: rgba(216, 107, 92, 0.12);
+  border-color: var(--event-item-error-border);
+  background: var(--event-item-error-bg);
+  color: var(--event-item-error-fg);
 }
 
 .meter {
@@ -1872,7 +1901,8 @@ body {
 .preview .event-item pre {
   white-space: pre-wrap;
   font-size: 11px;
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--event-item-pre-bg);
+  color: var(--event-item-pre-fg);
   padding: 8px;
   border-radius: 8px;
   margin-top: 6px;
@@ -1889,7 +1919,7 @@ body {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: #3f4f34;
+  color: var(--event-item-summary);
 }
 
 .event-item pre,
@@ -1898,7 +1928,8 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 11px;
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--event-item-pre-bg);
+  color: var(--event-item-pre-fg);
   border-radius: 8px;
   padding: 8px;
   max-height: 240px;
