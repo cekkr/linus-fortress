@@ -15,6 +15,9 @@
   --fiber-dark-texture:
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0, rgba(255, 255, 255, 0.04) 1px, transparent 1px, transparent 4px),
     repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0, rgba(0, 0, 0, 0.16) 1px, transparent 1px, transparent 5px);
+  --glass-dark: rgba(7, 11, 9, 0.36);
+  --glass-dark-strong: rgba(5, 8, 7, 0.52);
+  --glass-dark-border: rgba(236, 243, 254, 0.26);
   --unibody-surface:
     var(--fiber-dark-texture),
     linear-gradient(180deg, #4e535c 0%, #40454d 50%, #333840 100%);
@@ -785,7 +788,7 @@ body {
 .row-more-nav-link {
   border: 1px solid rgba(236, 243, 254, 0.32);
   border-radius: 999px;
-  background: rgba(236, 243, 254, 0.14);
+  background: var(--glass-dark);
   color: #f0f5ff;
   padding: 3px 8px;
   font-size: 10px;
@@ -795,7 +798,7 @@ body {
 }
 
 .row-more-nav-link:hover {
-  background: rgba(236, 243, 254, 0.22);
+  background: var(--glass-dark-strong);
 }
 
 .row-more-nav-sep {
@@ -922,7 +925,7 @@ body {
 .row-graph-meter {
   height: 7px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--glass-dark);
   overflow: hidden;
 }
 
@@ -953,7 +956,7 @@ body {
 
 .row-more-actions .action.ghost {
   border: 1px solid rgba(239, 242, 247, 0.32);
-  background: rgba(239, 242, 247, 0.11);
+  background: var(--glass-dark-strong);
   color: #f0f4f9;
 }
 
@@ -1392,7 +1395,7 @@ body {
 }
 
 .app-card.expanded .pill {
-  background: rgba(233, 241, 255, 0.16);
+  background: var(--glass-dark);
   color: #f0f5ff;
 }
 
@@ -1456,6 +1459,13 @@ body {
   color: #20311f;
   box-shadow: none;
   border: 1px solid rgba(33, 46, 30, 0.2);
+}
+
+.row-more-content .action.ghost,
+.wizard-stage .action.ghost {
+  background: var(--glass-dark-strong);
+  border-color: var(--glass-dark-border);
+  color: #f0f4f9;
 }
 
 .action.danger {
@@ -1550,7 +1560,7 @@ body {
   min-width: 240px;
   height: 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--glass-dark);
   overflow: hidden;
 }
 
@@ -1576,8 +1586,8 @@ body {
   padding: 8px 10px;
   border-radius: 10px;
   text-align: left;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--glass-dark);
+  border: 1px solid var(--glass-dark-border);
   color: #eaf5d5;
   font-size: 11px;
   text-transform: uppercase;
@@ -1598,12 +1608,13 @@ body {
 }
 
 .wizard-step.active {
-  background: rgba(140, 207, 85, 0.25);
-  border-color: rgba(140, 207, 85, 0.4);
+  background: var(--glass-dark-strong);
+  border-color: rgba(140, 207, 85, 0.55);
 }
 
 .wizard-step.done {
   border-color: rgba(140, 207, 85, 0.24);
+  background: var(--glass-dark);
 }
 
 .wizard-step.locked {
@@ -1647,7 +1658,7 @@ body {
 .wizard-page-placeholder {
   border-radius: 12px;
   border: 1px dashed rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--glass-dark);
   min-height: 210px;
   display: grid;
   place-items: center;
@@ -1725,7 +1736,7 @@ body {
 
 .tag-remove {
   border: none;
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--glass-dark-strong);
   color: #f1f7dc;
   width: 18px;
   height: 18px;
@@ -1751,6 +1762,25 @@ body {
 
 .operation-panel {
   background: rgba(255, 255, 255, 0.85);
+}
+
+.wizard-stage .event-item {
+  background: var(--glass-dark);
+  border-color: var(--glass-dark-border);
+}
+
+.wizard-stage .event-item.error {
+  background: rgba(110, 34, 28, 0.42);
+  border-color: rgba(216, 107, 92, 0.55);
+}
+
+.wizard-stage .event-item summary {
+  color: rgba(236, 242, 250, 0.88);
+}
+
+.wizard-stage .event-item pre {
+  background: var(--glass-dark-strong);
+  color: #f0f5ff;
 }
 
 @keyframes wizardSlideForward {
