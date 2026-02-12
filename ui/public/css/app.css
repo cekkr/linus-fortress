@@ -48,6 +48,7 @@
   --unibody-surface:
     var(--fiber-dark-texture),
     linear-gradient(180deg, #4e535c 0%, #40454d 50%, #333840 100%);
+  --app-card-height: 86px;
   --legacy-swing: cubic-bezier(0.215, 0.61, 0.355, 1);
   --row-more-fixed-height: 430px;
   --grid-gap: 20px;
@@ -1190,7 +1191,7 @@ body {
 
 .app-card {
   position: relative;
-  height: 74px;
+  height: var(--app-card-height, 86px);
   opacity: 1;
   overflow: visible;
 }
@@ -1207,7 +1208,7 @@ body {
 
 .app-card-frame {
   position: relative;
-  height: 74px;
+  height: var(--app-card-height, 86px);
   border-radius: 6px;
   border: 1px solid #b9bec6;
   border-bottom-color: #8c939e;
@@ -1275,7 +1276,7 @@ body {
   position: absolute;
   left: 0;
   right: 0;
-  top: 73px;
+  top: calc(var(--app-card-height, 86px) - 1px);
   bottom: auto;
   height: 0;
   opacity: 0;

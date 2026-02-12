@@ -259,6 +259,10 @@ let cardTransitionBusy = false;
 let queuedExpandNodeId = null;
 let bridgeSyncRafId = null;
 let bridgeSyncLoopUntil = 0;
+let layoutGuardRafId = null;
+let layoutGuardLastCardHeight = 0;
+let layoutGuardResizeObserver = null;
+let layoutGuardMutationObserver = null;
 const FAST_ACTION_OPTIONS = [
   {
     id: "refresh",
@@ -1896,6 +1900,101 @@ function scheduleGridRelayout() {
   }, 120);
 }
 
+function parsePx(raw, fallback = 0) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  const num = Number.parseFloat(value.endsWith("px") ? value.slice(0, -2) : value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function currentGridCardHeightPx() {
+  if (!elements.grid) {
+    return 86;
+  }
+  const fromStyle = getComputedStyle(elements.grid).getPropertyValue("--app-card-height");
+  if (fromStyle && fromStyle.trim()) {
+    return parsePx(fromStyle, 86);
+  }
+  const fromRoot = getComputedStyle(document.documentElement).getPropertyValue("--app-card-height");
+  return parsePx(fromRoot, 86) || 86;
+}
+
+function measureRequiredGridCardHeightPx() {
+  if (!elements.grid) {
+    return 0;
+  }
+  const frames = Array.from(elements.grid.querySelectorAll(".app-card-frame"));
+  if (!frames.length) {
+    return 0;
+  }
+  let required = currentGridCardHeightPx();
+  // Avoid runaway growth if a bad render creates extreme scroll heights.
+  const cap = 140;
+
+  for (const frame of frames) {
+    const style = getComputedStyle(frame);
+    const borderY = parsePx(style.borderTopWidth) + parsePx(style.borderBottomWidth);
+    const scroll = frame.scrollHeight;
+    const client = frame.clientHeight;
+    if (scroll > client + 1) {
+      required = Math.max(required, scroll + borderY);
+    }
+  }
+
+  return Math.min(cap, Math.ceil(required));
+}
+
+function applyGridCardHeightPx(nextHeight) {
+  if (!elements.grid) {
+    return;
+  }
+  const baseline = 86;
+  const target = Math.max(baseline, Math.ceil(Number(nextHeight) || baseline));
+  const current = currentGridCardHeightPx();
+  if (target <= current + 0.5 || target === layoutGuardLastCardHeight) {
+    return;
+  }
+  layoutGuardLastCardHeight = target;
+  elements.grid.style.setProperty("--app-card-height", `${target}px`);
+  // Card heights change row geometry; keep connectors/background alignment in sync.
+  window.requestAnimationFrame(() => {
+    syncBridgeGeometry();
+  });
+}
+
+function scheduleLayoutGuardCheck() {
+  if (layoutGuardRafId) {
+    return;
+  }
+  layoutGuardRafId = window.requestAnimationFrame(() => {
+    layoutGuardRafId = null;
+    const required = measureRequiredGridCardHeightPx();
+    if (required) {
+      applyGridCardHeightPx(required);
+    }
+  });
+}
+
+function startLayoutGuard() {
+  if (!elements.grid) {
+    return;
+  }
+  scheduleLayoutGuardCheck();
+
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => scheduleLayoutGuardCheck()).catch(() => {});
+  }
+
+  try {
+    layoutGuardResizeObserver = new ResizeObserver(() => scheduleLayoutGuardCheck());
+    layoutGuardResizeObserver.observe(elements.grid);
+  } catch {
+    // ResizeObserver may be unavailable in older browsers.
+  }
+
+  layoutGuardMutationObserver = new MutationObserver(() => scheduleLayoutGuardCheck());
+  layoutGuardMutationObserver.observe(elements.grid, { childList: true, subtree: true });
+}
+
 function safeNodeSelectorValue(nodeId) {
   return String(nodeId || "")
     .replace(/\\/g, "\\\\")
@@ -1991,8 +2090,10 @@ function syncBridgeGeometry() {
     bridge.style.setProperty("--connector-left-px", `${left.toFixed(2)}px`);
     bridge.style.setProperty("--connector-width-px", `${width.toFixed(2)}px`);
 
-    const anchorX = frameRect.left;
-    const anchorY = frameRect.top;
+    // Anchor unibody background to the row coordinate system so the gradient layer always
+    // fills the whole row-more panel (even when the expanded card is not the first column).
+    const anchorX = rowRect.left;
+    const anchorY = rowRect.top;
     const applyUnibodyOffset = (element, rect) => {
       if (!element || !rect) {
         return;
@@ -2004,7 +2105,9 @@ function syncBridgeGeometry() {
     if (tab) {
       applyUnibodyOffset(tab, tab.getBoundingClientRect());
     }
-    applyUnibodyOffset(bridge, bridgeRect);
+    // Bridge background is rendered via ::before which is positioned at the expanded
+    // card's left edge, so use the expanded card X coordinate for proper alignment.
+    applyUnibodyOffset(bridge, { left: frameRect.left, top: bridgeRect.top });
     if (panel) {
       applyUnibodyOffset(panel, panel.getBoundingClientRect());
     }
@@ -7010,6 +7113,7 @@ window.addEventListener("DOMContentLoaded", () => {
   loadFastActionsPreference();
   renderDebugPanel();
   bindEvents();
+  startLayoutGuard();
   window.addEventListener("resize", scheduleGridRelayout);
   if (elements.authForm) {
     elements.authForm.addEventListener("submit", handleLogin);
