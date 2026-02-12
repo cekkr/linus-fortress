@@ -24,6 +24,7 @@ PUBLIC_IMAGE_PRODUCT_PATTERN = re.compile(r"^(?P<distro>[^:]+):(?P<release>[^:]+
 PUBLIC_IMAGE_INDEX_URL = os.environ.get("FORTRESS_PUBLIC_IMAGE_INDEX_URL", "https://images.linuxcontainers.org/streams/v1/index.json")
 PUBLIC_IMAGE_ARCHES = {"amd64", "x86_64"}
 MISSING_ROOT_DEVICE_MARKERS = ("failed getting root disk", "no root device could be found")
+PROFILE_ROOT_MODIFY_MARKERS = ("from profile", "cannot be modified", "root")
 
 try:
     PUBLIC_IMAGE_INDEX_TIMEOUT_SECONDS = float(os.environ.get("FORTRESS_PUBLIC_IMAGE_INDEX_TIMEOUT_SECONDS", "4"))
@@ -268,7 +269,28 @@ def create_container(
     run_command(["lxc", "config", "set", name, "limits.memory", ram_limit])
     run_command(["lxc", "config", "set", name, "security.nesting", "true"])
     if disk_limit:
+        _set_root_disk_limit(name, disk_limit)
+
+
+def _set_root_disk_limit(name: str, disk_limit: str) -> None:
+    try:
         run_command(["lxc", "config", "device", "set", name, "root", "size", disk_limit])
+    except HTTPException as exc:
+        detail = str(exc.detail or "")
+        lowered = detail.lower()
+        if not all(marker in lowered for marker in PROFILE_ROOT_MODIFY_MARKERS):
+            raise
+        try:
+            run_command(["lxc", "config", "device", "override", name, "root", f"size={disk_limit}"])
+            return
+        except HTTPException as override_exc:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"{detail.rstrip()} Retry via profile device override failed: "
+                    f"{str(override_exc.detail or '').rstrip()}"
+                ),
+            ) from override_exc
 
 
 def delete_container(name: str) -> None:

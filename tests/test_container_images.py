@@ -206,6 +206,74 @@ class ContainerCreateLaunchTests(unittest.TestCase):
         self.assertEqual(calls, [["lxc", "launch", "ubuntu:24.04", "demo"]])
 
 
+class ContainerCreateDiskLimitTests(unittest.TestCase):
+    def test_create_container_overrides_profile_root_device_when_root_from_profile(self) -> None:
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            if cmd == ["lxc", "launch", "ubuntu:24.04", "demo"]:
+                return ""
+            if cmd == ["lxc", "config", "set", "demo", "limits.cpu", "2"]:
+                return ""
+            if cmd == ["lxc", "config", "set", "demo", "limits.memory", "1GB"]:
+                return ""
+            if cmd == ["lxc", "config", "set", "demo", "security.nesting", "true"]:
+                return ""
+            if cmd == ["lxc", "config", "device", "set", "demo", "root", "size", "10GB"]:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        'System Error: Error: Device "root" from profile(s) ["default"] cannot be modified '
+                        'for individual instance "demo": Override device or modify profile instead'
+                    ),
+                )
+            if cmd == ["lxc", "config", "device", "override", "demo", "root", "size=10GB"]:
+                return ""
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with (
+            mock.patch.object(container_ops, "resolve_image_alias", return_value="ubuntu:24.04"),
+            mock.patch.object(container_ops, "ensure_image_available", return_value={}),
+            mock.patch.object(container_ops, "run_command", side_effect=fake_run),
+        ):
+            container_ops.create_container("demo", "ubuntu:lts", "2", "1GB", "10GB")
+
+        self.assertIn(["lxc", "config", "device", "override", "demo", "root", "size=10GB"], calls)
+
+    def test_create_container_fails_when_profile_root_override_fails(self) -> None:
+        def fake_run(cmd):
+            if cmd == ["lxc", "launch", "ubuntu:24.04", "demo"]:
+                return ""
+            if cmd == ["lxc", "config", "set", "demo", "limits.cpu", "2"]:
+                return ""
+            if cmd == ["lxc", "config", "set", "demo", "limits.memory", "1GB"]:
+                return ""
+            if cmd == ["lxc", "config", "set", "demo", "security.nesting", "true"]:
+                return ""
+            if cmd == ["lxc", "config", "device", "set", "demo", "root", "size", "10GB"]:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        'System Error: Error: Device "root" from profile(s) ["default"] cannot be modified '
+                        'for individual instance "demo": Override device or modify profile instead'
+                    ),
+                )
+            if cmd == ["lxc", "config", "device", "override", "demo", "root", "size=10GB"]:
+                raise HTTPException(status_code=500, detail="System Error: override failed")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with (
+            mock.patch.object(container_ops, "resolve_image_alias", return_value="ubuntu:24.04"),
+            mock.patch.object(container_ops, "ensure_image_available", return_value={}),
+            mock.patch.object(container_ops, "run_command", side_effect=fake_run),
+        ):
+            with self.assertRaises(HTTPException) as exc:
+                container_ops.create_container("demo", "ubuntu:lts", "2", "1GB", "10GB")
+        self.assertEqual(exc.exception.status_code, 500)
+        self.assertIn("Retry via profile device override failed", str(exc.exception.detail))
+
+
 class PopularImageEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
