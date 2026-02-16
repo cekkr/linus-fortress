@@ -712,7 +712,7 @@ Body:
 - Body: `{"rollback_id": "fw-20240301-120000"}`.
 
 #### `GET /firewall/ddos` and `PUT /firewall/ddos`
-- Manage anti-DDoS profiles (rate limits, connection caps, ban lists, allowlists) with safe rollback and observability. `conn_limit` uses iptables when available.
+- Manage anti-DDoS profiles (rate limits, connection caps, ban lists, allowlists) with safe rollback and observability. `conn_limit` uses `iptables` when present and falls back to `nftables` when `iptables` is unavailable, with allowlist bypass rules applied before conn-limit drops.
 
 ### Package Management (permission `package_manage`, scoped if `container_name` set)
 
@@ -902,7 +902,7 @@ Body:
 - Configure `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` as the active signing key for recipe exports; optional `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS` supports signature verification during key rotation.
 - Optional runtime paths: `FORTRESS_LOG_PATH` overrides the API log file target and `FORTRESS_COMMAND_LOG_DB` overrides the SQLite audit DB path.
 - ACME HTTP-01 challenges are served from `/var/lib/fortress/acme-challenges`; override via `FORTRESS_ACME_CHALLENGE_DIR`.
-- Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), manage nginx reloads, invoke `certbot`, and run package commands (`apt-get`, `dnf`, or `yum`).
+- Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), manage nginx reloads, invoke `certbot`, run package commands (`apt-get`, `dnf`, or `yum`), and manage conn-limit tooling (`iptables` and/or `nft`) when anti-DDoS conn caps are enabled.
 
 ## Client CLI (`fortress-cli.py`)
 

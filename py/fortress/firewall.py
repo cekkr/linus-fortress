@@ -9,6 +9,11 @@ from fastapi import HTTPException
 
 from fortress.system import run_command
 
+NFT_DDOS_TABLE_FAMILY = "inet"
+NFT_DDOS_TABLE = "fortress"
+NFT_DDOS_CHAIN = "input"
+NFT_DDOS_CHAIN_SPEC = "{ type filter hook input priority -10 ; policy accept ; }"
+
 
 def detect_firewall_backend() -> str:
     if shutil.which("ufw"):
@@ -19,6 +24,16 @@ def detect_firewall_backend() -> str:
 
 def _iptables_available() -> bool:
     return shutil.which("iptables") is not None
+
+def _nft_available() -> bool:
+    return shutil.which("nft") is not None
+
+def detect_connlimit_backend() -> Optional[str]:
+    if _iptables_available():
+        return "iptables"
+    if _nft_available():
+        return "nftables"
+    return None
 
 def _connlimit_rule_args(protocol: str, port: int, limit: int) -> List[str]:
     return [
@@ -39,6 +54,18 @@ def _connlimit_rule_args(protocol: str, port: int, limit: int) -> List[str]:
         "tcp-reset",
     ]
 
+def _connlimit_allowlist_rule_args(protocol: str, port: int, source: str) -> List[str]:
+    return [
+        "-p",
+        protocol,
+        "-s",
+        source,
+        "--dport",
+        str(port),
+        "-j",
+        "ACCEPT",
+    ]
+
 def _iptables_rule_exists(rule_args: List[str]) -> bool:
     try:
         run_command(["iptables", "-C", "INPUT"] + rule_args)
@@ -46,17 +73,135 @@ def _iptables_rule_exists(rule_args: List[str]) -> bool:
     except HTTPException:
         return False
 
-def _apply_connlimit_rule(port: int, limit: int) -> None:
+def _apply_connlimit_rule(port: int, limit: int, allowlist: Optional[List[str]] = None) -> None:
     rule_args = _connlimit_rule_args("tcp", port, limit)
-    if _iptables_rule_exists(rule_args):
-        return
-    run_command(["iptables", "-I", "INPUT"] + rule_args)
+    if not _iptables_rule_exists(rule_args):
+        run_command(["iptables", "-I", "INPUT"] + rule_args)
+    for source in reversed(allowlist or []):
+        allow_args = _connlimit_allowlist_rule_args("tcp", port, source)
+        if _iptables_rule_exists(allow_args):
+            continue
+        run_command(["iptables", "-I", "INPUT"] + allow_args)
 
-def _remove_connlimit_rule(port: int, limit: int) -> None:
+def _remove_connlimit_rule(port: int, limit: int, allowlist: Optional[List[str]] = None) -> None:
+    for source in allowlist or []:
+        allow_args = _connlimit_allowlist_rule_args("tcp", port, source)
+        if not _iptables_rule_exists(allow_args):
+            continue
+        run_command(["iptables", "-D", "INPUT"] + allow_args)
     rule_args = _connlimit_rule_args("tcp", port, limit)
     if not _iptables_rule_exists(rule_args):
         return
     run_command(["iptables", "-D", "INPUT"] + rule_args)
+
+def _sanitize_nft_tag(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]", "_", value)
+
+def _build_nft_rule_tag(kind: str, port: int, limit: Optional[int] = None, source: Optional[str] = None) -> str:
+    parts = ["fortress", "ddos", kind, str(port)]
+    if limit is not None:
+        parts.append(str(limit))
+    if source:
+        parts.append(_sanitize_nft_tag(source))
+    return "-".join(parts)
+
+def _nft_chain_output() -> str:
+    return run_command(["nft", "-a", "list", "chain", NFT_DDOS_TABLE_FAMILY, NFT_DDOS_TABLE, NFT_DDOS_CHAIN])
+
+def _nft_find_rule_handles(rule_tag: str) -> List[str]:
+    try:
+        output = _nft_chain_output()
+    except HTTPException:
+        return []
+    handles: List[str] = []
+    pattern = re.compile(r'comment "([^"]+)".*# handle (\d+)')
+    for line in output.splitlines():
+        match = pattern.search(line)
+        if not match:
+            continue
+        if match.group(1) != rule_tag:
+            continue
+        handles.append(match.group(2))
+    return handles
+
+def _nft_rule_exists(rule_tag: str) -> bool:
+    return bool(_nft_find_rule_handles(rule_tag))
+
+def _nft_delete_rule_by_tag(rule_tag: str) -> None:
+    handles = _nft_find_rule_handles(rule_tag)
+    for handle in sorted(handles, key=int, reverse=True):
+        run_command(["nft", "delete", "rule", NFT_DDOS_TABLE_FAMILY, NFT_DDOS_TABLE, NFT_DDOS_CHAIN, "handle", handle])
+
+def _ensure_nft_ddos_chain() -> None:
+    try:
+        run_command(["nft", "list", "table", NFT_DDOS_TABLE_FAMILY, NFT_DDOS_TABLE])
+    except HTTPException:
+        run_command(["nft", "add", "table", NFT_DDOS_TABLE_FAMILY, NFT_DDOS_TABLE])
+    try:
+        run_command(["nft", "list", "chain", NFT_DDOS_TABLE_FAMILY, NFT_DDOS_TABLE, NFT_DDOS_CHAIN])
+    except HTTPException:
+        run_command(["nft", "add", "chain", NFT_DDOS_TABLE_FAMILY, NFT_DDOS_TABLE, NFT_DDOS_CHAIN, NFT_DDOS_CHAIN_SPEC])
+
+def _apply_nft_connlimit_rule(port: int, limit: int, allowlist: Optional[List[str]] = None) -> None:
+    _ensure_nft_ddos_chain()
+    for source in allowlist or []:
+        allow_tag = _build_nft_rule_tag("allow", port, source=source)
+        if _nft_rule_exists(allow_tag):
+            continue
+        run_command(
+            [
+                "nft",
+                "add",
+                "rule",
+                NFT_DDOS_TABLE_FAMILY,
+                NFT_DDOS_TABLE,
+                NFT_DDOS_CHAIN,
+                "tcp",
+                "dport",
+                str(port),
+                "ip",
+                "saddr",
+                source,
+                "accept",
+                "comment",
+                allow_tag,
+            ]
+        )
+    conn_tag = _build_nft_rule_tag("connlimit", port, limit=limit)
+    _nft_delete_rule_by_tag(conn_tag)
+    run_command(
+        [
+            "nft",
+            "add",
+            "rule",
+            NFT_DDOS_TABLE_FAMILY,
+            NFT_DDOS_TABLE,
+            NFT_DDOS_CHAIN,
+            "tcp",
+            "dport",
+            str(port),
+            "ct",
+            "state",
+            "new",
+            "ct",
+            "count",
+            "over",
+            str(limit),
+            "reject",
+            "with",
+            "tcp",
+            "reset",
+            "comment",
+            conn_tag,
+        ]
+    )
+
+def _remove_nft_connlimit_rule(port: int, limit: int, allowlist: Optional[List[str]] = None) -> None:
+    for source in allowlist or []:
+        allow_tag = _build_nft_rule_tag("allow", port, source=source)
+        _nft_delete_rule_by_tag(allow_tag)
+    conn_tag = _build_nft_rule_tag("connlimit", port, limit=limit)
+    _nft_delete_rule_by_tag(conn_tag)
 
 
 def _build_firewalld_rich_rule(source: Optional[str], protocol: str, port: int, allow: bool, limit: Optional[str] = None) -> str:
@@ -429,14 +574,18 @@ def apply_ddos_policy(policy: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     if conn_limit:
         if protocol != "tcp":
             warnings.append("conn_limit only supported for tcp")
-        elif not _iptables_available():
-            warnings.append("conn_limit requires iptables")
         else:
-            if allowlist:
-                warnings.append("conn_limit ignores allowlist ordering")
-            for port in ports:
-                _apply_connlimit_rule(int(port), int(conn_limit))
-                effective_rules.append(f"connlimit {port}/{protocol} {conn_limit}")
+            conn_backend = detect_connlimit_backend()
+            if conn_backend is None:
+                warnings.append("conn_limit requires iptables or nftables")
+            elif conn_backend == "iptables":
+                for port in ports:
+                    _apply_connlimit_rule(int(port), int(conn_limit), allowlist=allowlist)
+                    effective_rules.append(f"connlimit {port}/{protocol} {conn_limit} via iptables")
+            else:
+                for port in ports:
+                    _apply_nft_connlimit_rule(int(port), int(conn_limit), allowlist=allowlist)
+                    effective_rules.append(f"connlimit {port}/{protocol} {conn_limit} via nftables")
     return effective_rules, warnings
 
 
@@ -477,8 +626,13 @@ def remove_ddos_policy(policy: Dict[str, Any]) -> List[str]:
                 run_command(["firewall-cmd", "--reload"])
                 removed.append(f"limit {port}/{protocol} {limit_value}")
     conn_limit = policy.get("conn_limit")
-    if conn_limit and protocol == "tcp" and _iptables_available():
-        for port in ports:
-            _remove_connlimit_rule(int(port), int(conn_limit))
-            removed.append(f"connlimit {port}/{protocol} {conn_limit}")
+    if conn_limit and protocol == "tcp":
+        if _iptables_available():
+            for port in ports:
+                _remove_connlimit_rule(int(port), int(conn_limit), allowlist=allowlist)
+                removed.append(f"connlimit {port}/{protocol} {conn_limit} via iptables")
+        if _nft_available():
+            for port in ports:
+                _remove_nft_connlimit_rule(int(port), int(conn_limit), allowlist=allowlist)
+                removed.append(f"connlimit {port}/{protocol} {conn_limit} via nftables")
     return removed

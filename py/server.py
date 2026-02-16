@@ -40,6 +40,7 @@ from fortress.firewall import (
     apply_ddos_policy,
     apply_firewall_rule,
     apply_firewall_rules,
+    detect_connlimit_backend,
     get_ddos_policy,
     get_firewall_status,
     list_firewall_rules,
@@ -1257,8 +1258,12 @@ def firewall_ddos_update(
         if policy.get("conn_limit"):
             if policy.get("protocol", "tcp") != "tcp":
                 warnings.append("conn_limit only supported for tcp")
-            elif not shutil.which("iptables"):
-                warnings.append("conn_limit requires iptables")
+            else:
+                conn_backend = detect_connlimit_backend()
+                if conn_backend is None:
+                    warnings.append("conn_limit requires iptables or nftables")
+                else:
+                    effective_rules.append(f"conn_limit backend {conn_backend}")
         if policy.get("rate_limit_per_sec"):
             effective_rules.append("rate_limit enabled")
     else:

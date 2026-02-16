@@ -3523,6 +3523,7 @@ components:
           type: integer
         conn_limit:
           type: integer
+          description: Per-source TCP concurrent-connection cap (iptables preferred, nftables fallback).
         ban_minutes:
           type: integer
         allowlist:
@@ -3557,6 +3558,7 @@ components:
           $ref: "#/components/schemas/DdosPolicy"
         effective_rules:
           type: array
+          description: Effective rule actions applied or planned, including conn-limit backend selection.
           items:
             type: string
         warnings:

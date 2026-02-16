@@ -109,8 +109,9 @@ Acceptance criteria:
 - WebUI exposes a minimal firewall dashboard and the CLI includes one-command rule operations.
 Done:
 - Add conn-limit enforcement via iptables when available.
+- Add nftables conn-limit fallback with allowlist-aware ordering for anti-DDoS profiles.
 Next:
-- Add nftables conn-limit support and allowlist-aware ordering for anti-DDoS profiles.
+- Expose conn-limit backend/rule-handle diagnostics in firewall API/WebUI status views for troubleshooting.
 
 ### Path 10.2: LAMP recipes (container-ready)
 Milestones:

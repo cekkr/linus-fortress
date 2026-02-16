@@ -13,6 +13,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Routing entries persist in `/var/lib/fortress/routes.json` and generate nginx vhosts under `/etc/nginx/sites-available` (symlinked into `sites-enabled`)
 - `py/fortress/system.py` owns the shared `run_command` helper used by server and container management
 - py/server.py also manages host/container package operations (apt/dnf/yum), firewall rules (ufw + firewalld), site lifecycle APIs (including php.ini overrides), TLS automation, system upgrades, update-reload orchestration, and migrations
+- `py/fortress/firewall.py` now applies anti-DDoS `conn_limit` caps with iptables-first fallback to nftables and enforces allowlist bypass ordering before conn-limit drops
 - `/monitoring/resources` exposes structured host+container metrics plus alert flags for automation against anomalous usage/malware-like spikes
 - Security posture assumes strong adversaries; prefer least privilege, audit trails, and rollback on failure
 - Master API key is optional (set via `FORTRESS_API_KEY`/`API_SECRET_KEY`) and should be disabled after bootstrap; delegated tokens are preferred long-term
