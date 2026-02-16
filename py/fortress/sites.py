@@ -1,7 +1,7 @@
 import re
 import secrets
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Literal, Tuple
+from typing import Any, Dict, List, Optional, Literal, Tuple, Union
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -12,9 +12,22 @@ from fortress.storage import load_json_dict, save_json
 SITE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
+class SiteFpmPoolTuning(BaseModel):
+    name: Optional[str] = None
+    pm: Optional[Literal["static", "dynamic", "ondemand"]] = None
+    max_children: Optional[int] = Field(default=None, ge=1, le=4096)
+    start_servers: Optional[int] = Field(default=None, ge=0, le=4096)
+    min_spare_servers: Optional[int] = Field(default=None, ge=0, le=4096)
+    max_spare_servers: Optional[int] = Field(default=None, ge=0, le=4096)
+    max_requests: Optional[int] = Field(default=None, ge=0, le=1000000)
+    process_idle_timeout: Optional[str] = None
+    request_terminate_timeout: Optional[str] = None
+    additional_overrides: Dict[str, str] = Field(default_factory=dict)
+
+
 class SiteRuntime(BaseModel):
     php_version: Optional[str] = None
-    fpm_pool: Optional[str] = None
+    fpm_pool: Optional[Union[str, SiteFpmPoolTuning]] = None
     user: Optional[str] = None
     group: Optional[str] = None
     php_ini_overrides: Dict[str, str] = Field(default_factory=dict)
@@ -215,13 +228,41 @@ def update_site_record(site_id: str, payload: SiteUpdateRequest, sites: Dict[str
         if key in updates and updates[key] is not None:
             record[key] = updates[key]
     if "runtime" in updates and updates["runtime"] is not None:
-        record["runtime"] = updates["runtime"].dict()
+        runtime_updates = (
+            updates["runtime"]
+            if isinstance(updates["runtime"], dict)
+            else updates["runtime"].dict(exclude_unset=True)
+        )
+        merged_runtime = dict(record.get("runtime") or {})
+        merged_runtime.update(runtime_updates)
+        record["runtime"] = merged_runtime
     if "database" in updates and updates["database"] is not None:
-        record["database"] = updates["database"].dict()
+        database_updates = (
+            updates["database"]
+            if isinstance(updates["database"], dict)
+            else updates["database"].dict(exclude_unset=True)
+        )
+        merged_database = dict(record.get("database") or {})
+        merged_database.update(database_updates)
+        record["database"] = merged_database
     if "routing" in updates and updates["routing"] is not None:
-        record["routing"] = updates["routing"].dict()
+        routing_updates = (
+            updates["routing"]
+            if isinstance(updates["routing"], dict)
+            else updates["routing"].dict(exclude_unset=True)
+        )
+        merged_routing = dict(record.get("routing") or {})
+        merged_routing.update(routing_updates)
+        record["routing"] = merged_routing
     if "tls" in updates and updates["tls"] is not None:
-        record["tls"] = updates["tls"].dict()
+        tls_updates = (
+            updates["tls"]
+            if isinstance(updates["tls"], dict)
+            else updates["tls"].dict(exclude_unset=True)
+        )
+        merged_tls = dict(record.get("tls") or {})
+        merged_tls.update(tls_updates)
+        record["tls"] = merged_tls
     record["updated_at"] = utc_now()
     if site_id != record.get("name"):
         sites.pop(site_id, None)

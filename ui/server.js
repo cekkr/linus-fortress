@@ -1653,6 +1653,14 @@ app.get(
   })
 );
 
+app.get(
+  "/api/sites/:site_id/tls/status",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}/tls/status`);
+    res.json(payload);
+  })
+);
+
 app.post(
   "/api/sites",
   asyncHandler(async (req, res) => {
@@ -1798,6 +1806,15 @@ app.get(
   "/api/recipes",
   asyncHandler(async (req, res) => {
     const payload = await fortressRequestFor(req, "GET", "/recipes");
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/recipes/health-history",
+  asyncHandler(async (req, res) => {
+    const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+    const payload = await fortressRequestFor(req, "GET", `/recipes/health-history${qs}`);
     res.json(payload);
   })
 );

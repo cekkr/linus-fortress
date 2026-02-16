@@ -26,6 +26,8 @@ const state = {
   recipesLoading: false,
   recipeReports: new Map(),
   recipeReportOrder: [],
+  recipeHealthHistory: new Map(),
+  recipeHealthHistoryLoading: new Set(),
   hosts: [],
   hostsLoading: false,
   systemUpgrade: {
@@ -195,6 +197,18 @@ const state = {
     siteServices: {
       site_id: "",
       services: "",
+      update_runtime: false,
+      fpm_pool_name: "www",
+      fpm_pm: "dynamic",
+      fpm_max_children: "",
+      fpm_start_servers: "",
+      fpm_min_spare_servers: "",
+      fpm_max_spare_servers: "",
+      fpm_max_requests: "",
+      fpm_process_idle_timeout: "",
+      fpm_request_terminate_timeout: "",
+      fpm_overrides: "",
+      restart_services: true,
     },
     host: {
       name: "",
@@ -376,7 +390,7 @@ const WIZARD_MODE_LABELS = {
   "site-deploy": "Deploy Site",
   "site-backup": "Site Backup",
   "site-rollback": "Site Rollback",
-  "site-services": "Restart Site Services",
+  "site-services": "Site Runtime & Services",
 };
 
 const CREATE_WIZARD_FALLBACK_IMAGES = [
@@ -913,9 +927,37 @@ function resetSiteRollbackWizard(siteId) {
 }
 
 function resetSiteServicesWizard(siteId) {
+  const detail = siteId ? state.siteDetails.get(siteId) || null : null;
+  const runtime = detail && detail.runtime && typeof detail.runtime === "object" ? detail.runtime : {};
+  const rawFpmPool = runtime && runtime.fpm_pool !== undefined ? runtime.fpm_pool : null;
+  const fpmPool =
+    rawFpmPool && typeof rawFpmPool === "object" ? rawFpmPool : {};
+  const fpmPoolName =
+    rawFpmPool && typeof rawFpmPool === "string"
+      ? rawFpmPool
+      : fpmPool.name || "www";
+  const additionalOverrides =
+    fpmPool && typeof fpmPool.additional_overrides === "object" ? fpmPool.additional_overrides : {};
+  const overridesBlock = Object.entries(additionalOverrides)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
   state.wizard.siteServices = {
     site_id: siteId || "",
     services: "",
+    update_runtime: false,
+    fpm_pool_name: fpmPoolName,
+    fpm_pm: fpmPool.pm || "dynamic",
+    fpm_max_children: fpmPool.max_children !== undefined && fpmPool.max_children !== null ? String(fpmPool.max_children) : "",
+    fpm_start_servers: fpmPool.start_servers !== undefined && fpmPool.start_servers !== null ? String(fpmPool.start_servers) : "",
+    fpm_min_spare_servers:
+      fpmPool.min_spare_servers !== undefined && fpmPool.min_spare_servers !== null ? String(fpmPool.min_spare_servers) : "",
+    fpm_max_spare_servers:
+      fpmPool.max_spare_servers !== undefined && fpmPool.max_spare_servers !== null ? String(fpmPool.max_spare_servers) : "",
+    fpm_max_requests: fpmPool.max_requests !== undefined && fpmPool.max_requests !== null ? String(fpmPool.max_requests) : "",
+    fpm_process_idle_timeout: fpmPool.process_idle_timeout || "",
+    fpm_request_terminate_timeout: fpmPool.request_terminate_timeout || "",
+    fpm_overrides: overridesBlock,
+    restart_services: true,
   };
 }
 
@@ -2405,8 +2447,12 @@ function renderRoutingPreview(node) {
 function renderRecipesPreview(node) {
   const scopedContainer =
     node && node.context && node.context.container ? String(node.context.container) : "";
+  const historyKey = recipeHealthHistoryKey(scopedContainer);
+  const healthHistory = state.recipeHealthHistory.get(historyKey) || null;
+  const healthHistoryLoading = state.recipeHealthHistoryLoading.has(historyKey);
   const latestReport = getLatestRecipeApplyReport(scopedContainer || null);
   const reportMarkup = renderRecipeApplyReport(latestReport, scopedContainer);
+  const trendMarkup = renderRecipeHealthHistory(healthHistory, scopedContainer, healthHistoryLoading);
   let body = "";
   if (state.recipesLoading) {
     body = `<div>Loading recipes...</div>`;
@@ -2445,6 +2491,7 @@ function renderRecipesPreview(node) {
         : ""
     }
     ${reportMarkup}
+    ${trendMarkup}
     ${body}
   `;
 }
@@ -2819,6 +2866,27 @@ function renderSitesPreview(node) {
           ? `${routing.listen_address || "0.0.0.0"}:${routing.listen_port || 80} → ${routing.container_interface || "eth0"}:${routing.container_port || 80}`
           : "not set";
       const tlsLabel = tls.mode ? `${tls.mode}${tls.cert_name ? ` (${tls.cert_name})` : ""}` : "disabled";
+      const tlsStatus = detail.tls_status && typeof detail.tls_status === "object" ? detail.tls_status : {};
+      const tlsState = tlsStatus.status ? String(tlsStatus.status) : "unknown";
+      let tlsStateClass = "soon";
+      if (tlsState === "valid") {
+        tlsStateClass = "running";
+      } else if (["missing", "expired", "error"].includes(tlsState)) {
+        tlsStateClass = "danger";
+      } else if (tlsState === "disabled") {
+        tlsStateClass = "stopped";
+      }
+      const tlsStatusMessage = tlsStatus.message ? String(tlsStatus.message) : "status unavailable";
+      const tlsExpiryLabel = tlsStatus.expires_at ? new Date(tlsStatus.expires_at).toLocaleString() : "";
+      const tlsRenewalMode = tlsStatus.auto_renewal_supported ? "auto-renew enabled" : "manual renewal";
+      const tlsDaysRemaining =
+        tlsStatus.days_remaining !== null && tlsStatus.days_remaining !== undefined
+          ? Number(tlsStatus.days_remaining)
+          : null;
+      const tlsDaysLabel =
+        tlsDaysRemaining !== null && Number.isFinite(tlsDaysRemaining)
+          ? `${tlsDaysRemaining.toFixed(2)} days`
+          : null;
       const dbLabel =
         database && (database.engine || database.name || database.username)
           ? `${database.engine || "db"} ${database.name || ""} ${database.username ? `as ${database.username}` : ""}`
@@ -2860,6 +2928,8 @@ function renderSitesPreview(node) {
             ${detailsLoading ? `<span class="pill">loading...</span>` : ""}
             ${site.runtime && site.runtime.php_version ? `<span class="pill">PHP ${site.runtime.php_version}</span>` : ""}
             <span class="pill">${domains.length ? `${domains.length + 1} domains` : "1 domain"}</span>
+            <span class="pill ${tlsStateClass}">TLS ${tlsState}</span>
+            ${tlsStatus.renewal_due ? `<span class="pill soon">renew soon</span>` : ""}
           </div>
           <div class="preview-meta">
             <div>
@@ -2868,7 +2938,15 @@ function renderSitesPreview(node) {
             </div>
             <div>
               <strong>TLS</strong>
-              <span>${tlsLabel}</span>
+              <span>${tlsLabel} • ${tlsStatusMessage}</span>
+            </div>
+            <div>
+              <strong>TLS renewal</strong>
+              <span>${tlsRenewalMode}${tlsDaysLabel ? ` • ${tlsDaysLabel} left` : ""}</span>
+            </div>
+            <div>
+              <strong>TLS expiry</strong>
+              <span>${tlsExpiryLabel || "unknown"}</span>
             </div>
             <div>
               <strong>Domains</strong>
@@ -2892,7 +2970,7 @@ function renderSitesPreview(node) {
             <button class="action ghost" data-action-id="site-deploy" data-site="${site.id}" data-node-id="${node.id}">Deploy</button>
             <button class="action ghost" data-action-id="site-backup" data-site="${site.id}" data-node-id="${node.id}">Backup</button>
             <button class="action ghost" data-action-id="site-rollback" data-site="${site.id}" data-node-id="${node.id}">Rollback</button>
-            <button class="action ghost" data-action-id="site-services" data-site="${site.id}" data-node-id="${node.id}">Restart services</button>
+            <button class="action ghost" data-action-id="site-services" data-site="${site.id}" data-node-id="${node.id}">Runtime & services</button>
             <button class="action ghost" data-action-id="site-logs" data-site="${site.id}" data-node-id="${node.id}">Logs</button>
             <button class="action ghost" data-action-id="site-health" data-site="${site.id}" data-node-id="${node.id}">Health</button>
           </div>
@@ -3322,6 +3400,7 @@ function buildOperationFacts() {
   } else if (wizard.mode === "site-services") {
     facts.push(["Site", wizard.siteServices.site_id || "(pending)"]);
     facts.push(["Services", wizard.siteServices.services || "default"]);
+    facts.push(["Runtime update", wizard.siteServices.update_runtime ? "yes" : "no"]);
   } else if (wizard.mode === "filemanager") {
     facts.push(["Container", wizard.context.container || "(pending)"]);
     facts.push(["User", wizard.filemanager.username || "(pending)"]);
@@ -4431,6 +4510,7 @@ function renderWizard() {
     const siteId = wizard.siteServices.site_id;
     steps = ["Services", "Confirm"];
     if (wizard.step === 0) {
+      const tuningDisabled = wizard.siteServices.update_runtime ? "" : "disabled";
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-site-services-id">Site</label>
@@ -4440,11 +4520,79 @@ function renderWizard() {
           <label for="wiz-site-services-list">Services (comma separated, optional)</label>
           <input id="wiz-site-services-list" name="services" data-wizard-group="siteServices" value="${wizard.siteServices.services}" placeholder="php-fpm,nginx" />
         </div>
+        <div class="wizard-field">
+          <label for="wiz-site-runtime-update">Update PHP-FPM pool tuning</label>
+          <input id="wiz-site-runtime-update" type="checkbox" name="update_runtime" data-wizard-group="siteServices" ${
+            wizard.siteServices.update_runtime ? "checked" : ""
+          } />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-pool">FPM pool name</label>
+          <input id="wiz-site-fpm-pool" name="fpm_pool_name" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_pool_name}" placeholder="www" ${tuningDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-pm">PM mode</label>
+          <select id="wiz-site-fpm-pm" name="fpm_pm" data-wizard-group="siteServices" ${tuningDisabled}>
+            <option value="dynamic" ${wizard.siteServices.fpm_pm === "dynamic" ? "selected" : ""}>dynamic</option>
+            <option value="ondemand" ${wizard.siteServices.fpm_pm === "ondemand" ? "selected" : ""}>ondemand</option>
+            <option value="static" ${wizard.siteServices.fpm_pm === "static" ? "selected" : ""}>static</option>
+          </select>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-max-children">pm.max_children</label>
+          <input id="wiz-site-fpm-max-children" name="fpm_max_children" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_max_children}" placeholder="40" ${tuningDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-start-servers">pm.start_servers</label>
+          <input id="wiz-site-fpm-start-servers" name="fpm_start_servers" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_start_servers}" placeholder="8" ${tuningDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-min-spare">pm.min_spare_servers</label>
+          <input id="wiz-site-fpm-min-spare" name="fpm_min_spare_servers" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_min_spare_servers}" placeholder="4" ${tuningDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-max-spare">pm.max_spare_servers</label>
+          <input id="wiz-site-fpm-max-spare" name="fpm_max_spare_servers" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_max_spare_servers}" placeholder="12" ${tuningDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-max-requests">pm.max_requests</label>
+          <input id="wiz-site-fpm-max-requests" name="fpm_max_requests" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_max_requests}" placeholder="1000" ${tuningDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-idle-timeout">pm.process_idle_timeout</label>
+          <input id="wiz-site-fpm-idle-timeout" name="fpm_process_idle_timeout" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_process_idle_timeout}" placeholder="10s" ${tuningDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-terminate-timeout">request_terminate_timeout</label>
+          <input id="wiz-site-fpm-terminate-timeout" name="fpm_request_terminate_timeout" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_request_terminate_timeout}" placeholder="60s" ${tuningDisabled} />
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-fpm-overrides">Additional overrides (key=value per line)</label>
+          <textarea id="wiz-site-fpm-overrides" name="fpm_overrides" data-wizard-group="siteServices" rows="3" placeholder="pm.status_path=/fpm-status" ${tuningDisabled}>${wizard.siteServices.fpm_overrides}</textarea>
+        </div>
+        <div class="wizard-field">
+          <label for="wiz-site-services-restart">Restart services after update</label>
+          <input id="wiz-site-services-restart" type="checkbox" name="restart_services" data-wizard-group="siteServices" ${
+            wizard.siteServices.restart_services ? "checked" : ""
+          } />
+        </div>
       `;
     } else {
-      nextLabel = wizard.busy ? "Restarting..." : "Restart";
+      nextLabel = wizard.busy
+        ? wizard.siteServices.update_runtime
+          ? "Applying..."
+          : "Restarting..."
+        : wizard.siteServices.update_runtime
+        ? "Apply"
+        : "Restart";
       bodyMarkup = `
-        <div>Restart services for ${siteId || "(missing)"}.</div>
+        <div>Apply service/runtime changes for ${siteId || "(missing)"}.</div>
+        <div class="preview-meta">
+          <div><strong>Services</strong><span>${wizard.siteServices.services || "default (web + php-fpm)"}</span></div>
+          <div><strong>Runtime tuning</strong><span>${wizard.siteServices.update_runtime ? "enabled" : "off"}</span></div>
+          <div><strong>Pool</strong><span>${wizard.siteServices.fpm_pool_name || "www"}</span></div>
+          <div><strong>Restart</strong><span>${wizard.siteServices.restart_services ? "yes" : "no"}</span></div>
+        </div>
       `;
     }
   } else if (wizard.mode === "host-create") {
@@ -4667,6 +4815,9 @@ async function hydrateNode(id) {
   if (!nodeId) {
     return;
   }
+  const node = getNode(nodeId);
+  const scopedRecipeContainer =
+    node && node.context && node.context.container ? String(node.context.container) : "";
   try {
     if (nodeId === "containers") {
       await loadPopularImages();
@@ -4674,6 +4825,7 @@ async function hydrateNode(id) {
       await loadRoutes();
     } else if (nodeId === "recipes" || nodeId.endsWith(":container-recipes")) {
       await loadRecipes();
+      await loadRecipeHealthHistory(scopedRecipeContainer, { silent: true });
     } else if (nodeId === "hosts") {
       await loadHosts();
     } else if (nodeId === "monitoring") {
@@ -4776,6 +4928,45 @@ function parseMultiline(raw) {
     .filter(Boolean);
 }
 
+function parseKeyValueBlock(raw, label = "Values") {
+  const overrides = {};
+  if (raw === null || raw === undefined) {
+    return overrides;
+  }
+  for (const line of String(raw).split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const idx = trimmed.indexOf("=");
+    if (idx === -1) {
+      throw new Error(`${label} entries must use key=value format`);
+    }
+    const key = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
+    if (!key) {
+      throw new Error(`${label} keys cannot be empty`);
+    }
+    overrides[key] = value;
+  }
+  return overrides;
+}
+
+function parseIntegerField(raw, label, minValue = 0) {
+  const text = raw === null || raw === undefined ? "" : String(raw).trim();
+  if (!text) {
+    return undefined;
+  }
+  if (!/^-?\d+$/.test(text)) {
+    throw new Error(`${label} must be an integer`);
+  }
+  const parsed = Number.parseInt(text, 10);
+  if (parsed < minValue) {
+    throw new Error(`${label} must be >= ${minValue}`);
+  }
+  return parsed;
+}
+
 function escapeHtml(value) {
   if (value === null || value === undefined) {
     return "";
@@ -4865,6 +5056,120 @@ function recipeHealthSummaryLabel(report) {
     return "";
   }
   return `${passed} pass, ${failed} fail, ${skipped} skipped`;
+}
+
+function recipeHealthHistoryKey(containerName = "") {
+  const normalized = String(containerName || "").trim();
+  return normalized || "__all__";
+}
+
+function recipeTrendStatusClass(status) {
+  const normalized = String(status || "unknown").toLowerCase();
+  if (normalized === "valid" || normalized === "pass") {
+    return "running";
+  }
+  if (normalized === "expiring_soon" || normalized === "warning" || normalized === "unknown") {
+    return "soon";
+  }
+  if (normalized === "disabled" || normalized === "skipped") {
+    return "stopped";
+  }
+  return "danger";
+}
+
+function renderRecipeTrendSparkline(series, label = "Failure trend") {
+  const rows = Array.isArray(series) ? series.slice(-24) : [];
+  if (rows.length < 2) {
+    return "";
+  }
+  const values = rows.map((item) => {
+    const passed = Number(item && item.passed) || 0;
+    const failed = Number(item && item.failed) || 0;
+    const skipped = Number(item && item.skipped) || 0;
+    const total = passed + failed + skipped;
+    if (!total) {
+      return 0;
+    }
+    return (failed / total) * 100;
+  });
+  const max = Math.max(...values, 1);
+  const width = 180;
+  const height = 40;
+  const step = values.length > 1 ? width / (values.length - 1) : width;
+  const points = values
+    .map((value, index) => {
+      const x = index * step;
+      const y = height - (value / max) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const last = values[values.length - 1];
+  return `
+    <div class="sparkline">
+      <div class="sparkline-label">${escapeHtml(label)} (${last.toFixed(1)}%)</div>
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        <polyline fill="none" stroke="var(--danger)" stroke-width="2" points="${points}" />
+      </svg>
+    </div>
+  `;
+}
+
+function renderRecipeHealthHistory(historyPayload, scopedTarget = "", loading = false) {
+  if (loading) {
+    return `
+      <div class="event-item">
+        <div><strong>LAMP health trend</strong></div>
+        <div class="card-meta"><span class="pill">loading...</span></div>
+      </div>
+    `;
+  }
+  const payload = historyPayload && typeof historyPayload === "object" ? historyPayload : {};
+  const entries = Array.isArray(payload.entries) ? payload.entries : [];
+  const trend = payload.trend && typeof payload.trend === "object" ? payload.trend : {};
+  const totals = trend.totals && typeof trend.totals === "object" ? trend.totals : {};
+  const runs = Number(trend.runs) || 0;
+  if (!runs && !entries.length) {
+    return `
+      <div class="event-item">
+        <div><strong>LAMP health trend</strong> — ${scopedTarget ? `container ${escapeHtml(scopedTarget)}` : "all targets"}</div>
+        <div class="card-meta"><span class="pill">no history yet</span></div>
+      </div>
+    `;
+  }
+  const failedRuns = Number(trend.failed_runs) || 0;
+  const passRate = trend.pass_rate === null || trend.pass_rate === undefined ? null : Number(trend.pass_rate);
+  const series = Array.isArray(trend.series) ? trend.series : [];
+  const recentEntriesMarkup = entries
+    .slice(0, 4)
+    .map((entry) => {
+      const summary = entry && typeof entry.summary === "object" ? entry.summary : {};
+      const failed = Number(summary.failed) || 0;
+      const status = failed > 0 ? "fail" : "pass";
+      const requested = entry && entry.requested_recipe ? String(entry.requested_recipe) : "recipe";
+      const timestamp = entry && entry.timestamp ? String(entry.timestamp) : "";
+      return `
+        <div class="card-meta">
+          <span class="pill ${recipeTrendStatusClass(status)}">${status}</span>
+          <span class="pill">${escapeHtml(requested)}</span>
+          ${timestamp ? `<span class="pill">${escapeHtml(new Date(timestamp).toLocaleString())}</span>` : ""}
+          <span class="pill">p${Number(summary.passed) || 0} / f${failed} / s${Number(summary.skipped) || 0}</span>
+        </div>
+      `;
+    })
+    .join("");
+  return `
+    <div class="event-item">
+      <div><strong>LAMP health trend</strong> — ${scopedTarget ? `container ${escapeHtml(scopedTarget)}` : "all targets"}</div>
+      <div class="card-meta">
+        <span class="pill">${runs} runs</span>
+        <span class="pill ${failedRuns ? "danger" : "running"}">${failedRuns} failed runs</span>
+        ${passRate !== null && Number.isFinite(passRate) ? `<span class="pill">pass rate ${passRate.toFixed(2)}%</span>` : ""}
+        <span class="pill">checks p${Number(totals.passed) || 0} / f${Number(totals.failed) || 0} / s${Number(totals.skipped) || 0}</span>
+      </div>
+      ${renderRecipeTrendSparkline(series)}
+      ${recentEntriesMarkup}
+    </div>
+  `;
 }
 
 function renderRecipeApplyReport(report, scopedTarget = "") {
@@ -5563,6 +5868,44 @@ async function loadRecipes(options = {}) {
   }
 }
 
+async function loadRecipeHealthHistory(containerName = "", options = {}) {
+  const normalizedContainer = String(containerName || "").trim();
+  const key = recipeHealthHistoryKey(normalizedContainer);
+  state.recipeHealthHistoryLoading.add(key);
+  if (!options.silent) {
+    renderPreview();
+  }
+  try {
+    const params = new URLSearchParams();
+    if (normalizedContainer) {
+      params.set("container_name", normalizedContainer);
+    }
+    if (options.recipeName) {
+      params.set("recipe_name", String(options.recipeName));
+    }
+    if (options.limit !== undefined && options.limit !== null) {
+      params.set("limit", String(options.limit));
+    }
+    const qs = params.toString();
+    const payload = await apiRequest(`/api/recipes/health-history${qs ? `?${qs}` : ""}`);
+    state.recipeHealthHistory.set(key, payload || {});
+    if (options.log) {
+      const runs = payload && payload.trend && payload.trend.runs ? payload.trend.runs : 0;
+      logEvent("success", `Recipe health history refreshed (${runs} runs)`);
+    }
+    return payload || {};
+  } catch (err) {
+    if (!options.silent) {
+      logEvent("error", err.message || "Failed to load recipe health history");
+    }
+    return null;
+  } finally {
+    state.recipeHealthHistoryLoading.delete(key);
+    renderPreview();
+    refreshSelectedLeafHome();
+  }
+}
+
 async function seedRecipes(overwrite = false) {
   const response = await apiRequest("/api/recipes/seed", {
     method: "POST",
@@ -5701,9 +6044,15 @@ async function loadSiteDetails(siteId, options = {}) {
   state.siteDetailsLoading.add(siteId);
   renderPreview();
   try {
-    const payload = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}`);
+    const [payload, tlsPayload] = await Promise.all([
+      apiRequest(`/api/sites/${encodeURIComponent(siteId)}`),
+      apiRequest(`/api/sites/${encodeURIComponent(siteId)}/tls/status`).catch(() => null),
+    ]);
     const detail = payload && payload.site ? payload.site : null;
     if (detail) {
+      if (tlsPayload && typeof tlsPayload === "object" && tlsPayload.tls_status) {
+        detail.tls_status = tlsPayload.tls_status;
+      }
       state.siteDetails.set(siteId, detail);
       if (options.includeBackups) {
         await loadSiteBackups(siteId, { silent: true });
@@ -6102,6 +6451,8 @@ async function handleAction(actionId, node, params = {}) {
 
   if (actionId === "recipes-refresh") {
     await loadRecipes({ log: true });
+    const scopedContainer = node && node.context && node.context.container ? String(node.context.container) : "";
+    await loadRecipeHealthHistory(scopedContainer, { silent: true });
     return;
   }
 
@@ -6638,10 +6989,20 @@ async function handleWizardAction(action, payload = {}) {
         const baseMessage =
           response.message ||
           (recipe.dry_run ? `Plan generated for ${recipeName}` : `Recipe ${recipeName} applied`);
+        const healthRecord =
+          response &&
+          response.health_history &&
+          typeof response.health_history === "object" &&
+          response.health_history.id
+            ? ` • history ${response.health_history.id}`
+            : "";
         logEvent(
           "success",
-          healthSummary ? `${baseMessage} • Health: ${healthSummary}` : baseMessage
+          healthSummary ? `${baseMessage} • Health: ${healthSummary}${healthRecord}` : `${baseMessage}${healthRecord}`
         );
+        if (!recipe.dry_run) {
+          await loadRecipeHealthHistory(target || "", { silent: true });
+        }
         renderPreview();
         if (target) {
           await probeContainerServices(target, { updateLabels: true, log: false });
@@ -6874,12 +7235,79 @@ async function handleWizardAction(action, payload = {}) {
         if (!siteId) {
           throw new Error("Site ID is required");
         }
-        const services = parseCsv(state.wizard.siteServices.services);
-        const response = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}/services/restart`, {
-          method: "POST",
-          body: JSON.stringify({ services: services.length ? services : undefined }),
-        });
-        logEvent("success", response.message || `Services restarted for ${siteId}`);
+        const serviceState = state.wizard.siteServices;
+        const updateRuntime = Boolean(serviceState.update_runtime);
+        const restartServices = Boolean(serviceState.restart_services);
+        if (!updateRuntime && !restartServices) {
+          throw new Error("Enable runtime tuning and/or service restart");
+        }
+
+        let updateResponse = null;
+        if (updateRuntime) {
+          const fpmPool = {
+            name: (serviceState.fpm_pool_name || "www").trim() || "www",
+            pm: (serviceState.fpm_pm || "dynamic").trim() || "dynamic",
+          };
+          const maxChildren = parseIntegerField(serviceState.fpm_max_children, "pm.max_children", 1);
+          const startServers = parseIntegerField(serviceState.fpm_start_servers, "pm.start_servers", 0);
+          const minSpare = parseIntegerField(serviceState.fpm_min_spare_servers, "pm.min_spare_servers", 0);
+          const maxSpare = parseIntegerField(serviceState.fpm_max_spare_servers, "pm.max_spare_servers", 0);
+          const maxRequests = parseIntegerField(serviceState.fpm_max_requests, "pm.max_requests", 0);
+          if (maxChildren !== undefined) {
+            fpmPool.max_children = maxChildren;
+          }
+          if (startServers !== undefined) {
+            fpmPool.start_servers = startServers;
+          }
+          if (minSpare !== undefined) {
+            fpmPool.min_spare_servers = minSpare;
+          }
+          if (maxSpare !== undefined) {
+            fpmPool.max_spare_servers = maxSpare;
+          }
+          if (maxRequests !== undefined) {
+            fpmPool.max_requests = maxRequests;
+          }
+          const idleTimeout = String(serviceState.fpm_process_idle_timeout || "").trim();
+          if (idleTimeout) {
+            fpmPool.process_idle_timeout = idleTimeout;
+          }
+          const terminateTimeout = String(serviceState.fpm_request_terminate_timeout || "").trim();
+          if (terminateTimeout) {
+            fpmPool.request_terminate_timeout = terminateTimeout;
+          }
+          const overrides = parseKeyValueBlock(serviceState.fpm_overrides, "Additional overrides");
+          if (Object.keys(overrides).length) {
+            fpmPool.additional_overrides = overrides;
+          }
+          updateResponse = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}`, {
+            method: "PUT",
+            body: JSON.stringify({
+              runtime: {
+                fpm_pool: fpmPool,
+              },
+            }),
+          });
+        }
+
+        let restartResponse = null;
+        if (restartServices) {
+          const services = parseCsv(serviceState.services);
+          restartResponse = await apiRequest(`/api/sites/${encodeURIComponent(siteId)}/services/restart`, {
+            method: "POST",
+            body: JSON.stringify({ services: services.length ? services : undefined }),
+          });
+        }
+
+        const messages = [];
+        if (updateResponse && updateResponse.message) {
+          messages.push(String(updateResponse.message));
+        }
+        if (restartResponse && restartResponse.message) {
+          messages.push(String(restartResponse.message));
+        }
+        logEvent("success", messages.join(" • ") || `Site runtime/services updated for ${siteId}`);
+        await loadSiteDetails(siteId, { includeBackups: true, silent: true });
         state.wizard.active = false;
         state.wizard.mode = null;
       } else if (state.wizard.mode === "filemanager") {
@@ -7069,6 +7497,9 @@ function bindEvents() {
       state.wizard.siteRollback[target.name] = value;
     } else if (group === "siteServices") {
       state.wizard.siteServices[target.name] = value;
+      if (target.name === "update_runtime") {
+        renderWizard();
+      }
     } else if (group === "imagePreset") {
       state.wizard.imagePreset[target.name] = value;
     } else {

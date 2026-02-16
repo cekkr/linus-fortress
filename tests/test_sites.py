@@ -46,6 +46,32 @@ class SiteRecordTests(unittest.TestCase):
         self.assertEqual(record["primary_domain"], "new.example.com")
         self.assertEqual(record["docroot"], "/var/www/new")
 
+    def test_update_site_runtime_merge_preserves_existing_values(self) -> None:
+        sites = {}
+        payload = SiteCreateRequest(
+            name="app",
+            primary_domain="app.example.com",
+            container_name="web01",
+            docroot="/var/www/app",
+            runtime={"php_version": "8.2", "php_ini_overrides": {"memory_limit": "256M"}},
+        )
+        create_site_record(payload, sites)
+        update_payload = SiteUpdateRequest(
+            runtime={
+                "fpm_pool": {
+                    "name": "www",
+                    "pm": "dynamic",
+                    "max_children": 40,
+                }
+            }
+        )
+        record = update_site_record("app", update_payload, sites)
+        runtime = record.get("runtime") or {}
+        self.assertEqual(runtime.get("php_version"), "8.2")
+        self.assertEqual(runtime.get("php_ini_overrides"), {"memory_limit": "256M"})
+        self.assertEqual(runtime.get("fpm_pool", {}).get("name"), "www")
+        self.assertEqual(runtime.get("fpm_pool", {}).get("max_children"), 40)
+
     def test_update_site_rejects_duplicate_name(self) -> None:
         sites = {}
         payload = SiteCreateRequest(

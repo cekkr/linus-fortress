@@ -128,8 +128,10 @@ Done:
 - LAMP recipes accept `php_version`, `db_root_password`, `db_name`, `db_user`, and `db_password` parameters for PHP/DB bootstrapping.
 - `/recipes/apply` now appends LAMP-aware `probe.health_checks` with service/process checks, port probes, and config validations.
 - Lizard UI recipe apply flow now surfaces `probe.health_checks` with pass/fail/skipped severity badges and check summaries.
+- Add persisted recipe health history storage (`/var/lib/fortress/recipe_health_history.json`) and `/recipes/health-history` trend endpoint.
+- Surface recipe health history trend cards in Lizard UI (run totals, pass rate, failure trend sparkline, recent runs).
 Next:
-- Add persisted recipe health history/trend views for repeated applies per container.
+- Add optional trend-based alerts (for repeated failed runs) into monitoring cards/webhooks.
 
 ### Path 10.3: WebUI admin authentication hardening
 Milestones:
@@ -163,9 +165,10 @@ Done:
 - Support php.ini override injection during site updates.
 Progress:
 - WebUI surfaces per-site routing/TLS/runtime/database details and backup lists with rollback triggers.
+- Add TLS status/renewal state in WebUI (`tls_status` + `/sites/{site_id}/tls/status`).
+- Add PHP-FPM pool tuning during site updates (runtime `fpm_pool` controls in API + WebUI wizard).
 Next:
-- Surface TLS status/renewal state in WebUI.
-- Add PHP-FPM pool tuning during site updates.
+- Add explicit TLS renewal failure history/audit cards in WebUI (not just latest cert status).
 
 ### Path 10.5: Auto-upgrade + migrations
 Milestones:

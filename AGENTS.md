@@ -21,6 +21,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Recipe definitions now track semantic `version`, lifecycle timestamps, and change `history` entries; export/import uses `fortress.recipe-bundle.v1` bundles with checksum + optional HMAC signatures, with key-rotation verification via active + previous signing keys
 - LAMP recipe bundle supports PHP version selection and optional DB bootstrap parameters (`db_root_password`, `db_name`, `db_user`, `db_password`)
 - LAMP recipe applies now include structured post-apply health checks (`probe.health_checks`) for service status, port probes, and config validation when targeting containers
+- Recipe health checks are now persisted in `/var/lib/fortress/recipe_health_history.json`; `GET /recipes/health-history` exposes filtered history + trend aggregates
 - A new fortress.audit module powers the SQLite-based command register that captures all API activity plus container exec behaviour for investigation
 - `py/fortress/recipes.py` holds recipe models, dependency resolution, and template rendering
 - `py/fortress/migrations.py` manages schema-registry migrations with plan/apply/rollback and a patch ledger
@@ -36,6 +37,8 @@ This file contains the directives for AIs and must be kept current with the mini
 - Lizard UI now presents wizards as a full-stage horizontal sliding experience and includes a Containers live image catalog panel with remote filters and direct availability refresh
 - Lizard UI now includes a dedicated Settings app for global operations (system upgrade/update-reload) plus a configurable fast-actions horizontal menu persisted in browser settings
 - Lizard UI recipe apply flow surfaces `probe.health_checks` summaries with severity badges, and Packages includes a `/system/upgrade` wizard plus a `/system/update-reload` action for git pull + migration + restart flows
+- Lizard UI Recipes now surfaces persisted health trend cards (runs/pass-rate/failure trend + recent entries) and Sites surfaces TLS renewal/certificate status
+- Sites API/WebUI now support runtime `fpm_pool` tuning updates (pm mode, process caps, timeout directives, and extra overrides) during site update/service operations
 - `POST /containers/expose` supports bulk interface/port exposure to a container with port ranges, protocol selection, per-interface upstream selection, and optional firewall allowlists (rolls back devices and firewall rules on failure)
 - Sites API exposes backup inventory via `GET /sites/{site_id}/backups` (metadata stored under `/var/lib/fortress/site_backups`)
 - `run-server.sh` now ensures missing OS packages on subsequent runs, supports AlmaLinux snap-based LXD installs, auto-runs `lxd init --auto` when needed, auto-heals the default LXD profile root disk device/pool, and can optionally harden SSH by creating a sudo user and disabling root login
@@ -79,6 +82,7 @@ This file contains the directives for AIs and must be kept current with the mini
 |   |-- container_images.json
 |   |-- hosts.json
 |   |-- monitoring_history.json
+|   |-- recipe_health_history.json
 |   |-- recipes.json
 |   |-- routes.json
 |   |-- sites.json
@@ -107,6 +111,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/api/containers.py`: `/container/create`, `/container/{name}`, `/access/external/*`, `/container/users/*`, `/container/groups`, `/containers/connect/*`
 - `py/fortress/api/containers.py`: `/containers/images/popular`, `/containers/images/popular/remove`
 - `py/server.py`: `/status`, `/monitoring/resources`, `/routing`, `/routing/add`, `/routing/{domain}`, `/tls/renew`, `/api-users*`, `/firewall/*`, `/packages/*`, `/system/upgrade`, `/system/update-reload`, `/recipes*`, `/sites*`, `/migrations*`, `/backup/*`, `/restore`
+- `py/server.py`: `/recipes/health-history`, `/sites/{site_id}/tls/status`
 - `py/server.py`: `/vms*` (VM registry, start/stop/status, snapshots, SSH provisioning/probing)
 - `py/server.py`: `/hosts*` (SSH-managed host registry, provisioning/probing, saved states)
 - `api-v1.yaml`: canonical OpenAPI reference; README.md mirrors route summaries and permissions

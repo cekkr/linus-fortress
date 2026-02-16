@@ -52,6 +52,7 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
         self.module.ROUTING_DB = os.path.join(self.tmpdir.name, "routes.json")
         self.module.SITES_DB = os.path.join(self.tmpdir.name, "sites.json")
         self.module.SITE_BACKUP_DIR = os.path.join(self.tmpdir.name, "site_backups")
+        self.module.RECIPE_HEALTH_HISTORY_DB = os.path.join(self.tmpdir.name, "recipe_health_history.json")
         self.module.FIREWALL_ROLLBACK_DIR = os.path.join(self.tmpdir.name, "firewall_rollbacks")
         self.module.FIREWALL_DDOS_POLICY_PATH = os.path.join(self.tmpdir.name, "ddos_policy.json")
 
@@ -74,6 +75,7 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
         self._write_json(self.module.API_USERS_DB, {})
         self._write_json(self.module.ROUTING_DB, {})
         self._write_json(self.module.SITES_DB, {})
+        self._write_json(self.module.RECIPE_HEALTH_HISTORY_DB, {"entries": []})
         self._write_json(self.module.FIREWALL_DDOS_POLICY_PATH, {"enabled": False})
 
     def _cleanup_module(self) -> None:
@@ -141,6 +143,17 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
                 "token-apply",
                 "token-manage",
             ),
+            (
+                lambda token: self.module.recipe_health_history(
+                    container_name=None,
+                    recipe_name=None,
+                    limit=30,
+                    x_api_key=None,
+                    x_user_token=token,
+                ),
+                "token-apply",
+                "token-manage",
+            ),
         ]
 
         for call, allowed_token, denied_token in matrix:
@@ -168,6 +181,23 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
         self._expect_denied(
             lambda: self.module.apply_recipe(
                 self.module.RecipeApplyRequest(recipe_name="base", container_name="beta", dry_run=True),
+                x_api_key=None,
+                x_user_token="token-scoped",
+            )
+        )
+        history_allowed = self.module.recipe_health_history(
+            container_name="alpha",
+            recipe_name=None,
+            limit=20,
+            x_api_key=None,
+            x_user_token="token-scoped",
+        )
+        self.assertIsInstance(history_allowed, dict)
+        self._expect_denied(
+            lambda: self.module.recipe_health_history(
+                container_name="beta",
+                recipe_name=None,
+                limit=20,
                 x_api_key=None,
                 x_user_token="token-scoped",
             )
@@ -454,6 +484,17 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
         with (
             mock.patch.object(self.module, "_resolve_runtime_identity", return_value=("www-data", "www-data")),
             mock.patch.object(self.module, "_ensure_docroot"),
+            mock.patch.object(self.module, "_apply_php_ini_overrides", return_value={"applied": False, "removed": False}),
+            mock.patch.object(
+                self.module,
+                "_apply_php_fpm_pool_tuning",
+                return_value={"pool": "www", "applied": True, "removed": False, "directives": ["pm", "pm.max_children"]},
+            ),
+            mock.patch.object(
+                self.module,
+                "_restart_site_services",
+                return_value={"restarted": ["php-fpm"], "failed": []},
+            ),
             mock.patch.object(self.module, "_apply_site_routing"),
             mock.patch.object(self.module, "_remove_nginx_route"),
             mock.patch.object(self.module, "load_routes", return_value={}),
@@ -476,6 +517,8 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
 
             fetched = self.module.get_site("app", x_api_key=None, x_user_token="token-sites-read")
             self.assertEqual(fetched.get("site", {}).get("container_name"), "alpha")
+            tls_status = self.module.site_tls_status("app", x_api_key=None, x_user_token="token-sites-read")
+            self.assertIn("tls_status", tls_status)
 
             backup_id = "app-test-backup"
             self._write_json(
@@ -500,6 +543,19 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
                 x_user_token="token-sites-manage",
             )
             self.assertEqual(updated.get("site", {}).get("docroot"), "/srv/www/app")
+            runtime_updated = self.module.update_site(
+                "app",
+                self.module.SiteUpdateRequest(
+                    runtime={"fpm_pool": {"name": "www", "pm": "dynamic", "max_children": 50}}
+                ),
+                x_api_key=None,
+                x_user_token="token-sites-manage",
+            )
+            self.assertIn("runtime", runtime_updated)
+            self.assertIn("fpm_pool", runtime_updated.get("runtime", {}))
+            self._expect_denied(
+                lambda: self.module.site_tls_status("app", x_api_key=None, x_user_token="token-none")
+            )
 
             deleted = self.module.delete_site("app", x_api_key=None, x_user_token="token-sites-manage")
             self.assertIsInstance(deleted, dict)

@@ -764,6 +764,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+  /sites/{site_id}/tls/status:
+    get:
+      summary: Retrieve TLS renewal/certificate status for a website
+      tags: [Sites]
+      parameters:
+        - in: path
+          name: site_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: TLS status detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  site_id:
+                    type: string
+                  tls_status:
+                    $ref: "#/components/schemas/SiteTlsStatus"
   /sites/{site_id}/deploy:
     post:
       summary: Deploy website content
@@ -1705,6 +1727,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RecipePlanResponse"
+  /recipes/health-history:
+    get:
+      summary: List persisted recipe health history and trend metrics
+      tags: [Recipes]
+      parameters:
+        - in: query
+          name: container_name
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: recipe_name
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            default: 30
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Health history and trend
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeHealthHistoryResponse"
   /backup/{container_name}:
     post:
       summary: Trigger encrypted LXD backup
@@ -3640,6 +3692,14 @@ components:
             type: string
         probe:
           $ref: "#/components/schemas/RecipeApplyProbe"
+        health_history:
+          type: object
+          properties:
+            id:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
     RecipePlanResponse:
       type: object
       properties:
@@ -3655,13 +3715,123 @@ components:
           type: array
           items:
             type: string
+    RecipeHealthHistoryEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        container_name:
+          type: string
+        requested_recipe:
+          type: string
+        applied_recipes:
+          type: array
+          items:
+            type: string
+        recipes:
+          type: array
+          items:
+            type: string
+        summary:
+          $ref: "#/components/schemas/RecipeHealthSummary"
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeHealthCheck"
+    RecipeHealthTrendPoint:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        container_name:
+          type: string
+        requested_recipe:
+          type: string
+        passed:
+          type: integer
+        failed:
+          type: integer
+        skipped:
+          type: integer
+    RecipeHealthTrend:
+      type: object
+      properties:
+        runs:
+          type: integer
+        failed_runs:
+          type: integer
+        pass_rate:
+          type: number
+          nullable: true
+        totals:
+          $ref: "#/components/schemas/RecipeHealthSummary"
+        series:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeHealthTrendPoint"
+    RecipeHealthHistoryResponse:
+      type: object
+      properties:
+        container_name:
+          type: string
+          nullable: true
+        recipe_name:
+          type: string
+          nullable: true
+        limit:
+          type: integer
+        total:
+          type: integer
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeHealthHistoryEntry"
+        trend:
+          $ref: "#/components/schemas/RecipeHealthTrend"
+    SiteFpmPoolTuning:
+      type: object
+      properties:
+        name:
+          type: string
+        pm:
+          type: string
+          enum: [static, dynamic, ondemand]
+        max_children:
+          type: integer
+          minimum: 1
+        start_servers:
+          type: integer
+          minimum: 0
+        min_spare_servers:
+          type: integer
+          minimum: 0
+        max_spare_servers:
+          type: integer
+          minimum: 0
+        max_requests:
+          type: integer
+          minimum: 0
+        process_idle_timeout:
+          type: string
+        request_terminate_timeout:
+          type: string
+        additional_overrides:
+          type: object
+          additionalProperties:
+            type: string
     SiteRuntime:
       type: object
       properties:
         php_version:
           type: string
         fpm_pool:
-          type: string
+          oneOf:
+            - type: string
+            - $ref: "#/components/schemas/SiteFpmPoolTuning"
         user:
           type: string
         group:
@@ -3711,6 +3881,41 @@ components:
           type: integer
         redirect_http:
           type: boolean
+    SiteTlsStatus:
+      type: object
+      properties:
+        mode:
+          type: string
+        cert_name:
+          type: string
+          nullable: true
+        cert_path:
+          type: string
+          nullable: true
+        checked_at:
+          type: string
+          format: date-time
+        auto_renewal_supported:
+          type: boolean
+        renewal_due:
+          type: boolean
+          nullable: true
+        status:
+          type: string
+          enum: [disabled, missing, unknown, error, expired, expiring_soon, valid]
+        message:
+          type: string
+        enabled:
+          type: boolean
+        certificate_present:
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        days_remaining:
+          type: number
+          nullable: true
     SiteRouting:
       type: object
       properties:
@@ -3754,6 +3959,8 @@ components:
               $ref: "#/components/schemas/SiteRouting"
             tls:
               $ref: "#/components/schemas/SiteTls"
+            tls_status:
+              $ref: "#/components/schemas/SiteTlsStatus"
             created_at:
               type: string
             updated_at:

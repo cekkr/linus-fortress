@@ -1,6 +1,3 @@
-import uvicorn
-from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
-from pydantic import BaseModel, Field
 import os
 import re
 import shlex
@@ -9,12 +6,17 @@ import secrets
 import sys
 import logging
 import subprocess
-from typing import Optional, List, Dict, Literal, Union, Any, Tuple
-from datetime import datetime
-from cryptography.fernet import Fernet
-import base64
 import hashlib
+import base64
+import uuid
 from contextvars import ContextVar
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Literal, Union, Any, Tuple
+
+import uvicorn
+from cryptography.fernet import Fernet
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
+from pydantic import BaseModel, Field
 
 from fortress.auth import (
     DEFAULT_API_SECRET,
@@ -196,6 +198,7 @@ ROUTING_DB = "/var/lib/fortress/routes.json"
 MONITORING_HISTORY_DB = "/var/lib/fortress/monitoring_history.json"
 SITES_DB = "/var/lib/fortress/sites.json"
 SITE_BACKUP_DIR = "/var/lib/fortress/site_backups"
+RECIPE_HEALTH_HISTORY_DB = "/var/lib/fortress/recipe_health_history.json"
 MIGRATIONS_DIR = "/var/lib/fortress/migrations"
 SCHEMA_DIR = os.environ.get("FORTRESS_SCHEMA_DIR", os.path.join(BASE_DIR, "schemas"))
 ACME_CHALLENGE_DIR = os.environ.get("FORTRESS_ACME_CHALLENGE_DIR", "/var/lib/fortress/acme-challenges")
@@ -203,6 +206,7 @@ FIREWALL_STATE_DIR = "/var/lib/fortress/firewall"
 FIREWALL_ROLLBACK_DIR = os.path.join(FIREWALL_STATE_DIR, "rollbacks")
 FIREWALL_DDOS_POLICY_PATH = os.path.join(FIREWALL_STATE_DIR, "ddos_policy.json")
 POPULAR_IMAGES_DB = "/var/lib/fortress/container_images.json"
+RECIPE_HEALTH_HISTORY_MAX = max(1, int(os.environ.get("FORTRESS_RECIPE_HEALTH_HISTORY_MAX", "500")))
 RECIPE_BUNDLE_SIGNING_KEY = os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEY")
 RECIPE_BUNDLE_SIGNING_KEYS = _parse_signing_key_list(os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS"))
 
@@ -242,6 +246,7 @@ MIGRATION_ENGINE = MigrationEngine(
         "sites": SITES_DB,
         "monitoring_history": MONITORING_HISTORY_DB,
         "container_images": POPULAR_IMAGES_DB,
+        "recipe_health_history": RECIPE_HEALTH_HISTORY_DB,
     },
 )
 
@@ -1927,6 +1932,125 @@ def _collect_lamp_health_report(container_name: str, targets: Dict[str, Any]) ->
         "summary": summary,
     }
 
+
+def _load_recipe_health_history_store() -> Dict[str, Any]:
+    payload = load_json(RECIPE_HEALTH_HISTORY_DB, {"entries": []}, label="recipe health history")
+    if isinstance(payload, dict):
+        entries = payload.get("entries")
+        if isinstance(entries, list):
+            return {"entries": entries}
+    if isinstance(payload, list):
+        return {"entries": payload}
+    return {"entries": []}
+
+
+def _save_recipe_health_history_store(payload: Dict[str, Any]) -> None:
+    save_json(RECIPE_HEALTH_HISTORY_DB, payload)
+
+
+def _trim_recipe_health_check_details(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    max_len = 400
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}... (truncated)"
+
+
+def _sanitize_recipe_health_checks(checks: Any) -> List[Dict[str, Any]]:
+    if not isinstance(checks, list):
+        return []
+    sanitized: List[Dict[str, Any]] = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        entry = {
+            "type": str(check.get("type") or "check"),
+            "name": str(check.get("name") or check.get("id") or "unnamed"),
+            "status": str(check.get("status") or "unknown"),
+        }
+        details = _trim_recipe_health_check_details(check.get("details"))
+        if details:
+            entry["details"] = details
+        if check.get("id"):
+            entry["id"] = str(check.get("id"))
+        sanitized.append(entry)
+    return sanitized
+
+
+def _append_recipe_health_history_entry(
+    container_name: str,
+    requested_recipe: str,
+    applied_recipes: List[str],
+    report: Dict[str, Any],
+) -> Dict[str, Any]:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    checks = _sanitize_recipe_health_checks(report.get("checks"))
+    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    entry = {
+        "id": f"rh-{uuid.uuid4().hex[:12]}",
+        "timestamp": now,
+        "container_name": container_name,
+        "requested_recipe": requested_recipe,
+        "applied_recipes": [str(name) for name in applied_recipes if name],
+        "recipes": [str(name) for name in report.get("recipes", []) if name],
+        "summary": {
+            "passed": int(summary.get("passed") or 0),
+            "failed": int(summary.get("failed") or 0),
+            "skipped": int(summary.get("skipped") or 0),
+        },
+        "checks": checks,
+    }
+    store = _load_recipe_health_history_store()
+    entries = store.get("entries") if isinstance(store.get("entries"), list) else []
+    entries.append(entry)
+    max_entries = max(1, int(RECIPE_HEALTH_HISTORY_MAX))
+    if len(entries) > max_entries:
+        entries = entries[-max_entries:]
+    store["entries"] = entries
+    _save_recipe_health_history_store(store)
+    return entry
+
+
+def _build_recipe_health_trend(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    totals = {"passed": 0, "failed": 0, "skipped": 0}
+    failed_runs = 0
+    series: List[Dict[str, Any]] = []
+    for item in entries:
+        summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+        passed = int(summary.get("passed") or 0)
+        failed = int(summary.get("failed") or 0)
+        skipped = int(summary.get("skipped") or 0)
+        totals["passed"] += passed
+        totals["failed"] += failed
+        totals["skipped"] += skipped
+        if failed > 0:
+            failed_runs += 1
+        series.append(
+            {
+                "timestamp": item.get("timestamp"),
+                "container_name": item.get("container_name"),
+                "requested_recipe": item.get("requested_recipe"),
+                "passed": passed,
+                "failed": failed,
+                "skipped": skipped,
+            }
+        )
+    runs = len(entries)
+    pass_rate = None
+    if runs:
+        pass_rate = round(((runs - failed_runs) / runs) * 100, 2)
+    return {
+        "runs": runs,
+        "failed_runs": failed_runs,
+        "pass_rate": pass_rate,
+        "totals": totals,
+        "series": series,
+    }
+
 @app.get("/recipes")
 def list_recipes(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_list", "recipes_manage", x_api_key, x_user_token)
@@ -1946,6 +2070,54 @@ def list_recipes(x_api_key: Optional[str] = Header(default=None), x_user_token: 
         })
     audit_api("recipes_list", details={"count": len(response)})
     return {"recipes": response}
+
+@app.get("/recipes/health-history")
+def recipe_health_history(
+    container_name: Optional[str] = None,
+    recipe_name: Optional[str] = None,
+    limit: int = 30,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    auth_context = authorize("recipes_health_history", "recipes_apply", x_api_key, x_user_token, containers=container_name)
+    if container_name and auth_context.get("allowed_containers"):
+        enforce_container_scope(auth_context, container_name)
+    normalized_limit = max(1, min(200, int(limit or 30)))
+    store = _load_recipe_health_history_store()
+    entries = store.get("entries") if isinstance(store.get("entries"), list) else []
+    filtered: List[Dict[str, Any]] = []
+    allowed_containers = auth_context.get("allowed_containers")
+    recipe_filter = recipe_name.strip() if isinstance(recipe_name, str) else None
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        entry_container = str(item.get("container_name") or "")
+        if container_name and entry_container != container_name:
+            continue
+        if allowed_containers and entry_container not in allowed_containers:
+            continue
+        if recipe_filter:
+            requested = str(item.get("requested_recipe") or "")
+            applied = [str(name) for name in item.get("applied_recipes", []) if name]
+            if requested != recipe_filter and recipe_filter not in applied:
+                continue
+        filtered.append(item)
+    filtered.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+    limited_entries = filtered[:normalized_limit]
+    trend = _build_recipe_health_trend(list(reversed(filtered)))
+    audit_api(
+        "recipes_health_history",
+        target=container_name or "all",
+        details={"count": len(limited_entries), "total": len(filtered), "recipe": recipe_filter},
+    )
+    return {
+        "container_name": container_name,
+        "recipe_name": recipe_filter,
+        "limit": normalized_limit,
+        "total": len(filtered),
+        "entries": limited_entries,
+        "trend": trend,
+    }
 
 @app.get("/recipes/{name}")
 def get_recipe(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
@@ -2238,6 +2410,7 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
                 run_command(["sh", "-c", command])
         applied.append(recipe_name)
     probe = {}
+    health_history_entry = None
     if payload.container_name and payload.probe_services:
         from fortress.containers import probe_container_services
 
@@ -2248,6 +2421,12 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
         lamp_targets = collect_lamp_health_targets(applied)
         if lamp_targets.get("detected"):
             probe["health_checks"] = _collect_lamp_health_report(payload.container_name, lamp_targets)
+            health_history_entry = _append_recipe_health_history_entry(
+                payload.container_name,
+                payload.recipe_name,
+                applied,
+                probe["health_checks"],
+            )
     audit_api(
         "recipes_apply_complete",
         target=payload.container_name or "host",
@@ -2256,9 +2435,10 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
             "applied": applied,
             "probe": bool(probe),
             "health_failures": probe.get("health_checks", {}).get("summary", {}).get("failed"),
+            "health_recorded": bool(health_history_entry),
         },
     )
-    return {
+    response = {
         "message": "Recipe applied",
         "recipe": payload.recipe_name,
         "applied": applied,
@@ -2266,6 +2446,12 @@ def apply_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(
         "plan": _format_recipe_plan(steps),
         "probe": probe,
     }
+    if health_history_entry is not None:
+        response["health_history"] = {
+            "id": health_history_entry.get("id"),
+            "timestamp": health_history_entry.get("timestamp"),
+        }
+    return response
 
 @app.post("/recipes/plan")
 def plan_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
@@ -2288,6 +2474,7 @@ def plan_recipe(payload: RecipeApplyRequest, x_api_key: Optional[str] = Header(d
     audit_api("recipes_plan", target=payload.container_name or "host", details={"recipe": payload.recipe_name, "plan": plan})
     return {"recipe": payload.recipe_name, "container": payload.container_name, "plan": _format_recipe_plan(steps), "dependencies": plan}
 
+
 # --- WEBSITE MANAGEMENT ---
 
 def _load_site_store() -> Dict[str, Dict[str, Any]]:
@@ -2298,6 +2485,109 @@ def _resolve_site_record(sites: Dict[str, Dict[str, Any]], site_id: str) -> Dict
     if not record:
         raise HTTPException(status_code=404, detail="Site not found")
     return record
+
+
+def _parse_certificate_expiry(raw_value: str) -> Optional[datetime]:
+    text = str(raw_value or "").strip()
+    if text.startswith("notAfter="):
+        text = text.split("=", 1)[1].strip()
+    if not text:
+        return None
+    for fmt in ("%b %d %H:%M:%S %Y %Z", "%b %d %H:%M:%S %Y GMT"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _resolve_site_tls_status(site: Dict[str, Any]) -> Dict[str, Any]:
+    tls = site.get("tls") if isinstance(site.get("tls"), dict) else {}
+    mode = str(tls.get("mode") or "disabled").lower()
+    cert_path = str(tls.get("cert_path") or "").strip() or None
+    cert_name = str(tls.get("cert_name") or site.get("primary_domain") or "").strip() or None
+    status: Dict[str, Any] = {
+        "mode": mode,
+        "cert_name": cert_name,
+        "cert_path": cert_path,
+        "checked_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "auto_renewal_supported": mode == "letsencrypt",
+        "renewal_due": None,
+        "status": "unknown",
+    }
+    if mode == "disabled":
+        status.update(
+            {
+                "enabled": False,
+                "status": "disabled",
+                "message": "TLS is disabled for this site",
+                "certificate_present": False,
+            }
+        )
+        return status
+    status["enabled"] = True
+    if not cert_path:
+        status.update(
+            {
+                "status": "missing",
+                "message": "TLS certificate path is not configured",
+                "certificate_present": False,
+            }
+        )
+        return status
+    cert_exists = os.path.isfile(cert_path)
+    status["certificate_present"] = cert_exists
+    if not cert_exists:
+        status.update(
+            {
+                "status": "missing",
+                "message": "TLS certificate file is missing on disk",
+            }
+        )
+        return status
+    if not shutil.which("openssl"):
+        status.update(
+            {
+                "status": "unknown",
+                "message": "openssl is unavailable; expiry could not be read",
+            }
+        )
+        return status
+    try:
+        output = run_command(["openssl", "x509", "-in", cert_path, "-noout", "-enddate"])
+        expires_at = _parse_certificate_expiry(output)
+        if expires_at is None:
+            status.update(
+                {
+                    "status": "unknown",
+                    "message": "Unable to parse certificate expiry timestamp",
+                }
+            )
+            return status
+        now = datetime.now(timezone.utc)
+        seconds_left = int((expires_at - now).total_seconds())
+        days_left = round(seconds_left / 86400, 2)
+        status["expires_at"] = expires_at.isoformat().replace("+00:00", "Z")
+        status["days_remaining"] = days_left
+        status["renewal_due"] = days_left <= 30
+        if seconds_left <= 0:
+            status["status"] = "expired"
+            status["message"] = "TLS certificate is expired"
+        elif days_left <= 30:
+            status["status"] = "expiring_soon"
+            status["message"] = "TLS certificate expires within 30 days"
+        else:
+            status["status"] = "valid"
+            status["message"] = "TLS certificate is valid"
+    except HTTPException as exc:
+        status.update(
+            {
+                "status": "error",
+                "message": f"Failed to inspect TLS certificate: {exc.detail}",
+            }
+        )
+    return status
 
 def _container_user_exists(container_name: str, username: str) -> bool:
     try:
@@ -2322,6 +2612,7 @@ def _ensure_docroot(container_name: str, docroot: str, user: str, group: str) ->
     exec_in_container(container_name, ["sh", "-c", f"mkdir -p {docroot_q} && chown -R {user}:{group} {docroot_q}"])
 
 PHP_VERSION_PATTERN = re.compile(r"^\d+\.\d+$")
+FPM_TIMEOUT_PATTERN = re.compile(r"^\d+(?:ms|s|m|h|d)?$")
 
 def _container_dir_exists(container_name: str, path: str) -> bool:
     try:
@@ -2400,6 +2691,148 @@ def _apply_php_ini_overrides(container_name: str, site_id: str, runtime: Dict[st
     cmd = f"mkdir -p {shlex.quote(ini_dir)} && cat <<'{delimiter}' > {shlex.quote(ini_path)}\n{content}{delimiter}\n"
     exec_in_container(container_name, ["sh", "-c", cmd])
     return {"path": ini_path, "applied": True, "removed": False}
+
+
+def _resolve_php_fpm_pool_dir(container_name: str, php_version: Optional[str]) -> Optional[str]:
+    candidates: List[str] = []
+    resolved_version = php_version or _detect_php_version(container_name)
+    if resolved_version:
+        candidates.append(f"/etc/php/{resolved_version}/fpm/pool.d")
+    candidates.append("/etc/php-fpm.d")
+    for path in candidates:
+        if _container_dir_exists(container_name, path):
+            return path
+    return None
+
+
+def _normalize_fpm_pool_tuning(raw_config: Any) -> Dict[str, Any]:
+    if raw_config is None:
+        return {"name": "www", "directives": {}}
+    if isinstance(raw_config, str):
+        name = raw_config.strip() or "www"
+        return {"name": name, "directives": {}}
+    if not isinstance(raw_config, dict):
+        raise HTTPException(status_code=400, detail="runtime.fpm_pool must be null, string, or object")
+
+    pool_name = str(raw_config.get("name") or "www").strip() or "www"
+    directives: Dict[str, str] = {}
+
+    if raw_config.get("pm") is not None:
+        pm_value = str(raw_config.get("pm")).strip().lower()
+        if pm_value not in {"static", "dynamic", "ondemand"}:
+            raise HTTPException(status_code=400, detail="runtime.fpm_pool.pm must be static, dynamic, or ondemand")
+        directives["pm"] = pm_value
+
+    numeric_mappings = [
+        ("max_children", "pm.max_children"),
+        ("start_servers", "pm.start_servers"),
+        ("min_spare_servers", "pm.min_spare_servers"),
+        ("max_spare_servers", "pm.max_spare_servers"),
+        ("max_requests", "pm.max_requests"),
+    ]
+    numeric_values: Dict[str, int] = {}
+    for source_key, directive_key in numeric_mappings:
+        value = raw_config.get(source_key)
+        if value is None:
+            continue
+        try:
+            int_value = int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"runtime.fpm_pool.{source_key} must be an integer")
+        if int_value < 0:
+            raise HTTPException(status_code=400, detail=f"runtime.fpm_pool.{source_key} must be >= 0")
+        numeric_values[source_key] = int_value
+        directives[directive_key] = str(int_value)
+
+    timeout_mappings = [
+        ("process_idle_timeout", "pm.process_idle_timeout"),
+        ("request_terminate_timeout", "request_terminate_timeout"),
+    ]
+    for source_key, directive_key in timeout_mappings:
+        value = raw_config.get(source_key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text or not FPM_TIMEOUT_PATTERN.match(text):
+            raise HTTPException(status_code=400, detail=f"runtime.fpm_pool.{source_key} must be a timeout value (e.g. 30s)")
+        directives[directive_key] = text
+
+    additional = raw_config.get("additional_overrides") or {}
+    if not isinstance(additional, dict):
+        raise HTTPException(status_code=400, detail="runtime.fpm_pool.additional_overrides must be an object")
+    for key, value in additional.items():
+        key_str = str(key).strip()
+        value_str = "" if value is None else str(value).strip()
+        if not key_str:
+            continue
+        if "\n" in key_str or "\n" in value_str:
+            raise HTTPException(status_code=400, detail="runtime.fpm_pool.additional_overrides entries cannot contain newlines")
+        directives[key_str] = value_str
+
+    pm_mode = directives.get("pm")
+    if pm_mode == "ondemand":
+        invalid_keys = [key for key in ("start_servers", "min_spare_servers", "max_spare_servers") if key in numeric_values]
+        if invalid_keys:
+            raise HTTPException(
+                status_code=400,
+                detail=f"runtime.fpm_pool.{invalid_keys[0]} is not valid when pm=ondemand",
+            )
+    if pm_mode == "static":
+        invalid_keys = [key for key in ("start_servers", "min_spare_servers", "max_spare_servers") if key in numeric_values]
+        if invalid_keys:
+            raise HTTPException(
+                status_code=400,
+                detail=f"runtime.fpm_pool.{invalid_keys[0]} is not valid when pm=static",
+            )
+    if "min_spare_servers" in numeric_values and "max_spare_servers" in numeric_values:
+        if numeric_values["min_spare_servers"] > numeric_values["max_spare_servers"]:
+            raise HTTPException(status_code=400, detail="runtime.fpm_pool.min_spare_servers must be <= max_spare_servers")
+    if "max_children" in numeric_values and "start_servers" in numeric_values:
+        if numeric_values["start_servers"] > numeric_values["max_children"]:
+            raise HTTPException(status_code=400, detail="runtime.fpm_pool.start_servers must be <= max_children")
+
+    return {"name": pool_name, "directives": directives}
+
+
+def _apply_php_fpm_pool_tuning(container_name: str, site_id: str, runtime: Dict[str, Any]) -> Dict[str, Any]:
+    pool_dir = _resolve_php_fpm_pool_dir(container_name, runtime.get("php_version"))
+    raw_pool_config = runtime.get("fpm_pool")
+    normalized = _normalize_fpm_pool_tuning(raw_pool_config)
+    pool_name = normalized.get("name", "www")
+    directives = normalized.get("directives", {})
+    if not pool_dir:
+        if directives:
+            raise HTTPException(status_code=400, detail="Unable to locate PHP-FPM pool directory inside container")
+        return {"path": None, "pool": pool_name, "applied": False, "removed": False}
+
+    pool_path = os.path.join(pool_dir, f"zz-fortress-{site_id}.conf")
+    if not directives:
+        exec_in_container(container_name, ["sh", "-c", f"rm -f {shlex.quote(pool_path)}"])
+        return {"path": pool_path, "pool": pool_name, "applied": False, "removed": True}
+
+    lines = [
+        f"; Fortress PHP-FPM overrides for site {site_id}",
+        f"; Generated {datetime.utcnow().isoformat()}Z",
+        f"[{pool_name}]",
+    ]
+    for key in sorted(directives.keys()):
+        value = str(directives[key]).strip()
+        if "\n" in key or "\n" in value:
+            raise HTTPException(status_code=400, detail="runtime.fpm_pool contains unsupported newline characters")
+        lines.append(f"{key} = {value}")
+    content = "\n".join(lines) + "\n"
+    delimiter = "__FORTRESS_FPM_POOL__"
+    if delimiter in content:
+        raise HTTPException(status_code=400, detail="runtime.fpm_pool contains an unsupported delimiter value")
+    cmd = f"mkdir -p {shlex.quote(pool_dir)} && cat <<'{delimiter}' > {shlex.quote(pool_path)}\n{content}{delimiter}\n"
+    exec_in_container(container_name, ["sh", "-c", cmd])
+    return {
+        "path": pool_path,
+        "pool": pool_name,
+        "applied": True,
+        "removed": False,
+        "directives": sorted(directives.keys()),
+    }
 
 def _read_nginx_config(domain: str) -> Optional[str]:
     config_path = os.path.join(NGINX_CONFIG_DIR, domain)
@@ -2654,10 +3087,22 @@ def create_site(payload: SiteCreateRequest, x_api_key: Optional[str] = Header(de
     runtime.setdefault("group", group)
     record["runtime"] = runtime
     _ensure_docroot(payload.container_name, record["docroot"], user, group)
+    runtime_changes: Dict[str, Any] = {}
+    restart_targets: set[str] = set()
     if payload.runtime is not None:
-        ini_result = _apply_php_ini_overrides(payload.container_name, record["name"], runtime)
-        if ini_result.get("applied") or ini_result.get("removed"):
-            _restart_site_services(payload.container_name, runtime, ["php-fpm"])
+        runtime_payload = payload.runtime.dict(exclude_unset=True)
+        if "php_ini_overrides" in runtime_payload:
+            ini_result = _apply_php_ini_overrides(payload.container_name, record["name"], runtime)
+            runtime_changes["php_ini"] = ini_result
+            if ini_result.get("applied") or ini_result.get("removed"):
+                restart_targets.add("php-fpm")
+        if "fpm_pool" in runtime_payload:
+            fpm_result = _apply_php_fpm_pool_tuning(payload.container_name, record["name"], runtime)
+            runtime_changes["fpm_pool"] = fpm_result
+            if fpm_result.get("applied") or fpm_result.get("removed"):
+                restart_targets.add("php-fpm")
+    if restart_targets:
+        runtime_changes["restart"] = _restart_site_services(payload.container_name, runtime, sorted(restart_targets))
     if record.get("database") and (payload.create_database or payload.create_user):
         database = record["database"]
         if not database.get("name") or not database.get("username"):
@@ -2693,6 +3138,8 @@ def create_site(payload: SiteCreateRequest, x_api_key: Optional[str] = Header(de
     save_sites(SITES_DB, sites)
     audit_api("sites_create", target=record["name"], details={"domain": record["primary_domain"]})
     response = {"message": "Site created", "site": sanitize_site_record(record)}
+    if runtime_changes:
+        response["runtime"] = runtime_changes
     return response
 
 @app.get("/sites/{site_id}")
@@ -2703,7 +3150,21 @@ def get_site(site_id: str, x_api_key: Optional[str] = Header(default=None), x_us
     if auth_context.get("allowed_containers"):
         enforce_container_scope(auth_context, record["container_name"])
     audit_api("sites_get", target=site_id)
-    return {"site": sanitize_site_record(record)}
+    response = sanitize_site_record(record)
+    response["tls_status"] = _resolve_site_tls_status(record)
+    return {"site": response}
+
+
+@app.get("/sites/{site_id}/tls/status")
+def site_tls_status(site_id: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("sites_tls_status", "sites_read", x_api_key, x_user_token)
+    sites = _load_site_store()
+    record = _resolve_site_record(sites, site_id)
+    if auth_context.get("allowed_containers"):
+        enforce_container_scope(auth_context, record["container_name"])
+    status = _resolve_site_tls_status(record)
+    audit_api("sites_tls_status", target=site_id, details={"status": status.get("status"), "mode": status.get("mode")})
+    return {"site_id": site_id, "tls_status": status}
 
 @app.get("/sites/{site_id}/backups")
 def list_site_backups(site_id: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
@@ -2748,20 +3209,35 @@ def update_site(site_id: str, payload: SiteUpdateRequest, x_api_key: Optional[st
     enforce_container_scope(auth_context, record["container_name"])
     previous_domain = record.get("primary_domain")
     record = update_site_record(site_id, payload, sites)
+    runtime_changes: Dict[str, Any] = {}
+    restart_targets: set[str] = set()
     if payload.docroot:
         runtime = record.get("runtime") or {}
         user, group = _resolve_runtime_identity(record["container_name"], runtime)
         _ensure_docroot(record["container_name"], record["docroot"], user, group)
     if payload.runtime is not None:
         runtime = record.get("runtime") or {}
-        ini_result = _apply_php_ini_overrides(record["container_name"], record["name"], runtime)
-        if ini_result.get("applied") or ini_result.get("removed"):
-            _restart_site_services(record["container_name"], runtime, ["php-fpm"])
+        runtime_payload = payload.runtime.dict(exclude_unset=True)
+        if "php_ini_overrides" in runtime_payload:
+            ini_result = _apply_php_ini_overrides(record["container_name"], record["name"], runtime)
+            runtime_changes["php_ini"] = ini_result
+            if ini_result.get("applied") or ini_result.get("removed"):
+                restart_targets.add("php-fpm")
+        if "fpm_pool" in runtime_payload:
+            fpm_result = _apply_php_fpm_pool_tuning(record["container_name"], record["name"], runtime)
+            runtime_changes["fpm_pool"] = fpm_result
+            if fpm_result.get("applied") or fpm_result.get("removed"):
+                restart_targets.add("php-fpm")
+    if restart_targets:
+        runtime_changes["restart"] = _restart_site_services(record["container_name"], record.get("runtime") or {}, sorted(restart_targets))
     if payload.primary_domain or payload.domains or payload.routing or payload.tls:
         _apply_site_routing(record, previous_domain=previous_domain)
     save_sites(SITES_DB, sites)
     audit_api("sites_update", target=record["name"], details={"fields": sorted(payload.dict(exclude_unset=True).keys())})
-    return {"message": "Site updated", "site": sanitize_site_record(record)}
+    response = {"message": "Site updated", "site": sanitize_site_record(record)}
+    if runtime_changes:
+        response["runtime"] = runtime_changes
+    return response
 
 @app.delete("/sites/{site_id}")
 def delete_site(site_id: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):

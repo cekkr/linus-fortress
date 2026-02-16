@@ -1,0 +1,13 @@
+{
+  "store": "recipe_health_history",
+  "schema_version": "1",
+  "record_type": "object",
+  "fields": [
+    "entries"
+  ],
+  "defaults": {
+    "entries": []
+  },
+  "aliases": {},
+  "prune_unknown": false
+}

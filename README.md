@@ -326,7 +326,22 @@ Body:
   "domains": ["www.app.example.com"],
   "container_name": "web01",
   "docroot": "/var/www/app",
-  "runtime": {"php_version": "8.2", "php_ini_overrides": {"memory_limit": "256M"}},
+  "runtime": {
+    "php_version": "8.2",
+    "php_ini_overrides": {"memory_limit": "256M"},
+    "fpm_pool": {
+      "name": "www",
+      "pm": "dynamic",
+      "max_children": 40,
+      "start_servers": 8,
+      "min_spare_servers": 4,
+      "max_spare_servers": 12,
+      "max_requests": 1000,
+      "process_idle_timeout": "10s",
+      "request_terminate_timeout": "60s",
+      "additional_overrides": {"pm.status_path": "/fpm-status"}
+    }
+  },
   "database": {"engine": "mariadb", "name": "app_db", "username": "app_user", "password": "strong-secret", "root_password": "db-root"},
   "tls": {"mode": "manual", "cert_path": "/etc/ssl/certs/app.pem", "key_path": "/etc/ssl/private/app.key"}
 }
@@ -334,11 +349,19 @@ Body:
 - Creates the site record, configures routing/TLS, and provisions DB credentials when enabled (requires `database.password`).
 - `database.root_password` is optional and used to provision DB users/databases when root authentication requires a password.
 - When `runtime.php_ini_overrides` is provided, Fortress writes a per-site ini file inside the container and restarts PHP-FPM.
+- When `runtime.fpm_pool` is provided, Fortress writes a per-site PHP-FPM pool override file (`zz-fortress-<site>.conf`) and restarts PHP-FPM.
 - `tls.mode=letsencrypt` provisions certificates via certbot (HTTP-01) and populates `cert_path`/`key_path` automatically (requires port 80 reachability and certbot installed).
 
-#### `GET /sites/{site_id}` / `PUT /sites/{site_id}` / `DELETE /sites/{site_id}` (permission `sites_manage`)
+#### `GET /sites/{site_id}` (permission `sites_read`)
+- Retrieves full site details plus `tls_status` (certificate presence, expiry, renewal indicators).
+
+#### `PUT /sites/{site_id}` / `DELETE /sites/{site_id}` (permission `sites_manage`)
 - Retrieve, update, or remove a website definition.
 - Updating `runtime.php_ini_overrides` rewrites the site ini override file and restarts PHP-FPM.
+- Updating `runtime.fpm_pool` applies validated pool tuning (`pm`, `pm.max_children`, spare server controls, timeout directives, extra overrides) and restarts PHP-FPM.
+
+#### `GET /sites/{site_id}/tls/status` (permission `sites_read`)
+- Returns live TLS renewal/certificate state (`valid`, `expiring_soon`, `expired`, `missing`, `error`, `disabled`) with `expires_at`, `days_remaining`, and `renewal_due`.
 
 #### `POST /sites/{site_id}/deploy` (permission `sites_manage`)
 Body:
@@ -809,6 +832,7 @@ Body:
 - Use `{{app_user}}` inside commands/packages to parameterize installs.
 - Response includes a deterministic `plan` list plus optional `probe` results when service checks are enabled.
 - LAMP recipes additionally include `probe.health_checks` with structured `service_status`, `port_probe`, and `config_validation` results plus pass/fail/skipped summary counters.
+- Successful container-side LAMP applies persist a `health_history` record id/timestamp in `/var/lib/fortress/recipe_health_history.json` for trend analysis.
 
 Example dependency recipe:
 ```json
@@ -823,6 +847,13 @@ Example dependency recipe:
 
 #### `POST /recipes/plan` (permission `recipes_apply`)
 - Same body as `/recipes/apply`; returns the ordered plan without executing commands.
+
+#### `GET /recipes/health-history` (permission `recipes_apply`)
+- Query params: `container_name` (optional), `recipe_name` (optional), `limit` (1-200, default `30`).
+- Returns persisted health history entries plus trend aggregates:
+  - run counters (`runs`, `failed_runs`, `pass_rate`),
+  - total pass/fail/skipped checks,
+  - time-series points for dashboards/WebUI trend views.
 
 ### Backup & Restore
 
