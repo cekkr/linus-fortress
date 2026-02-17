@@ -1185,6 +1185,98 @@ def hosts_command(args: argparse.Namespace) -> None:
     raise FortressCLIError("Unsupported hosts subcommand")
 
 
+def terminal_command(args: argparse.Namespace) -> None:
+    config = load_config()
+    client = FortressClient(config, passphrase=args.passphrase)
+    auth_override = getattr(args, "auth_mode", None)
+    if args.subcommand == "open":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if args.target == "container" and not args.container:
+                raise FortressCLIError("--container is required when --target container")
+            if args.target != "container" and args.container:
+                raise FortressCLIError("--container is only valid when --target container")
+            payload = {"target": args.target}
+            if args.container:
+                payload["container_name"] = args.container
+            if args.requested_os_user:
+                payload["requested_os_user"] = args.requested_os_user
+            if args.shell:
+                payload["shell"] = args.shell
+            if args.cols is not None:
+                payload["cols"] = args.cols
+            if args.rows is not None:
+                payload["rows"] = args.rows
+            if args.cwd:
+                payload["cwd"] = args.cwd
+        result = client.request("POST", "/terminal/sessions", json_body=payload, auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "read":
+        result = client.request("GET", f"/terminal/sessions/{args.session_id}/output", auth_override=auth_override)
+        if args.decode:
+            output_b64 = result.get("output_b64") or ""
+            if output_b64:
+                try:
+                    decoded = base64.b64decode(str(output_b64).encode("ascii"))
+                    result["output_text"] = decoded.decode("utf-8", errors="replace")
+                except Exception:
+                    result["output_text"] = ""
+            else:
+                result["output_text"] = ""
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "write":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if args.stdin and args.data is not None:
+                raise FortressCLIError("Provide either positional data or --stdin, not both")
+            if args.stdin:
+                data_value = sys.stdin.read()
+            else:
+                data_value = args.data
+            if data_value is None:
+                raise FortressCLIError("Provide input data, --stdin, or use --json/--json-file")
+            if args.base64:
+                data_b64 = data_value.strip()
+                if not data_b64:
+                    raise FortressCLIError("Input marked as --base64 cannot be empty")
+                try:
+                    base64.b64decode(data_b64.encode("ascii"), validate=True)
+                except Exception as exc:
+                    raise FortressCLIError("Input marked as --base64 is not valid base64") from exc
+            else:
+                data_b64 = base64.b64encode(data_value.encode("utf-8")).decode("ascii")
+            payload = {"data_b64": data_b64}
+        result = client.request(
+            "POST",
+            f"/terminal/sessions/{args.session_id}/input",
+            json_body=payload,
+            auth_override=auth_override,
+        )
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "resize":
+        payload = load_json_payload(args.json, args.json_file)
+        if payload is None:
+            if args.cols is None or args.rows is None:
+                raise FortressCLIError("resize requires both --cols and --rows when not using --json/--json-file")
+            payload = {"cols": args.cols, "rows": args.rows}
+        result = client.request(
+            "POST",
+            f"/terminal/sessions/{args.session_id}/resize",
+            json_body=payload,
+            auth_override=auth_override,
+        )
+        print(json.dumps(result, indent=2))
+        return
+    if args.subcommand == "close":
+        result = client.request("DELETE", f"/terminal/sessions/{args.session_id}", auth_override=auth_override)
+        print(json.dumps(result, indent=2))
+        return
+    raise FortressCLIError("Unsupported terminal subcommand")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Client utility for Linus' Fortress",
@@ -1522,6 +1614,49 @@ def build_parser() -> argparse.ArgumentParser:
     tls_renew.add_argument("--cert-name", help="Explicit certbot cert name")
     tls_renew.add_argument("--dry-run", action="store_true", help="Run certbot renew in dry-run mode")
     tls_renew.set_defaults(func=tls_command)
+
+    terminal_parser = subparsers.add_parser("terminal", help="Manage interactive terminal sessions")
+    terminal_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")
+    terminal_sub = terminal_parser.add_subparsers(dest="subcommand")
+    if hasattr(terminal_sub, "required"):
+        terminal_sub.required = True
+    terminal_open = terminal_sub.add_parser("open", help="Open a host or container terminal session")
+    terminal_open.add_argument("--target", choices=["host", "container"], default="host")
+    terminal_open.add_argument("--container", help="Target container name (required for --target container)")
+    terminal_open.add_argument("--requested-os-user", help="Request an alternate OS user (requires policy/permission)")
+    terminal_open.add_argument("--shell", help="Absolute shell path (must be allowed by terminal policy)")
+    terminal_open.add_argument("--cols", type=int, help="Initial terminal columns")
+    terminal_open.add_argument("--rows", type=int, help="Initial terminal rows")
+    terminal_open.add_argument("--cwd", help="Initial working directory for host sessions")
+    terminal_open.add_argument("--json", help="Inline JSON payload")
+    terminal_open.add_argument("--json-file", help="Path to JSON file used as payload")
+    terminal_open.set_defaults(func=terminal_command)
+    terminal_read = terminal_sub.add_parser("read", help="Read incremental terminal output for a session")
+    terminal_read.add_argument("session_id")
+    terminal_read.add_argument(
+        "--decode",
+        action="store_true",
+        help="Include UTF-8 decoded output_text in addition to output_b64",
+    )
+    terminal_read.set_defaults(func=terminal_command)
+    terminal_write = terminal_sub.add_parser("write", help="Send input bytes to a terminal session")
+    terminal_write.add_argument("session_id")
+    terminal_write.add_argument("data", nargs="?", help="Input text when not using --stdin or --json/--json-file")
+    terminal_write.add_argument("--stdin", action="store_true", help="Read input data from stdin")
+    terminal_write.add_argument("--base64", action="store_true", help="Treat provided input as base64 payload")
+    terminal_write.add_argument("--json", help="Inline JSON payload")
+    terminal_write.add_argument("--json-file", help="Path to JSON file used as payload")
+    terminal_write.set_defaults(func=terminal_command)
+    terminal_resize = terminal_sub.add_parser("resize", help="Resize terminal dimensions for a session")
+    terminal_resize.add_argument("session_id")
+    terminal_resize.add_argument("--cols", type=int, help="Terminal columns")
+    terminal_resize.add_argument("--rows", type=int, help="Terminal rows")
+    terminal_resize.add_argument("--json", help="Inline JSON payload")
+    terminal_resize.add_argument("--json-file", help="Path to JSON file used as payload")
+    terminal_resize.set_defaults(func=terminal_command)
+    terminal_close = terminal_sub.add_parser("close", help="Close a terminal session")
+    terminal_close.add_argument("session_id")
+    terminal_close.set_defaults(func=terminal_command)
 
     vms_parser = subparsers.add_parser("vms", help="Manage VM testing environments")
     vms_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")

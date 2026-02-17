@@ -1008,7 +1008,7 @@ Body:
 
 `fortress-cli.py` is a companion script that securely stores API credentials, automates the HTTPS calls to the server, and handles encrypted backup archives.
 
-Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`, `system update-reload`, and `tls renew` for one-command maintenance flows.
+Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`, `system update-reload`, `tls renew`, and `terminal open|read|write|resize|close` for one-command maintenance flows.
 
 1. Run `python fortress-cli.py setup --server https://fortress.example.com:8443` to generate a 4096‑bit RSA keypair (protected by a passphrase) and enter the API master key, delegated user token, and/or backup password. Everything is saved under `~/.fortress-cli` (override via `FORTRESS_HOME`).
 2. Subsequent commands unlock the private key (either interactively or via `--passphrase`/`FORTRESS_PASSPHRASE`) and reuse the stored credentials:
@@ -1021,6 +1021,7 @@ Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`,
    - `python fortress-cli.py firewall status|rules|apply|rollback|ddos ...`
    - `python fortress-cli.py sites list|create|deploy|backup|rollback|logs|health|restart ...`
    - `python fortress-cli.py migrations status|plan|apply|rollback|ledger ...`
+   - `python fortress-cli.py terminal open|read|write|resize|close ...`
    - `python fortress-cli.py system update-reload --mode auto` (add `--no-auto-stash` only when you want dirty-tree pulls to fail instead of stashing)
 3. Encrypted backups can be downloaded and decrypted locally via `python fortress-cli.py backup download foo.enc --dest ./foo.enc` followed by `python fortress-cli.py backup decrypt ./foo.enc --output ./foo.tar.gz`.
 
