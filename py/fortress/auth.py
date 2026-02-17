@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -71,6 +72,13 @@ def normalize_auth_headers(
     return x_api_key, x_user_token
 
 
+def token_fingerprint(token: Optional[str]) -> str:
+    if not token:
+        return "none"
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
 def verify_token(
     x_api_key: Optional[str],
     x_user_token: Optional[str] = None,
@@ -82,7 +90,14 @@ def verify_token(
     """Validate access either via master API key or delegated user token (typed tokens supported)."""
     x_api_key, x_user_token = normalize_auth_headers(x_api_key, x_user_token)
     if master_key and x_api_key and x_api_key == master_key:
-        return {"actor": "admin", "permissions": ["*"], "allowed_containers": None}
+        return {
+            "actor": "admin",
+            "permissions": ["*"],
+            "allowed_containers": None,
+            "is_master": True,
+            "subject_id": "master",
+            "user_record": None,
+        }
 
     if x_user_token:
         users = load_users()
@@ -100,6 +115,9 @@ def verify_token(
             "actor": record.get("username", "api-user"),
             "permissions": permissions,
             "allowed_containers": record.get("allowed_containers"),
+            "is_master": False,
+            "subject_id": f"user:{token_fingerprint(x_user_token)}",
+            "user_record": record,
         }
 
     logging.warning("Unauthorized access attempt.")

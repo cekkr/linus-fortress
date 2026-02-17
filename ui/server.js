@@ -184,6 +184,8 @@ const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/vendor/xterm/lib", express.static(path.join(__dirname, "node_modules", "xterm", "lib")));
+app.use("/vendor/xterm/css", express.static(path.join(__dirname, "node_modules", "xterm", "css")));
 app.use("/api", async (req, res, next) => {
   if (!ADMIN_ENABLED) {
     next();
@@ -1617,6 +1619,64 @@ app.post(
       workdir: req.body && req.body.workdir,
       environment: req.body && req.body.environment,
     });
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/terminal/sessions",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "POST", "/terminal/sessions", req.body || {});
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/terminal/sessions/:sessionId/output",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(
+      req,
+      "GET",
+      `/terminal/sessions/${encodeURIComponent(req.params.sessionId)}/output`
+    );
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/terminal/sessions/:sessionId/input",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(
+      req,
+      "POST",
+      `/terminal/sessions/${encodeURIComponent(req.params.sessionId)}/input`,
+      req.body || {}
+    );
+    res.json(payload);
+  })
+);
+
+app.post(
+  "/api/terminal/sessions/:sessionId/resize",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(
+      req,
+      "POST",
+      `/terminal/sessions/${encodeURIComponent(req.params.sessionId)}/resize`,
+      req.body || {}
+    );
+    res.json(payload);
+  })
+);
+
+app.delete(
+  "/api/terminal/sessions/:sessionId",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(
+      req,
+      "DELETE",
+      `/terminal/sessions/${encodeURIComponent(req.params.sessionId)}`
+    );
     res.json(payload);
   })
 );

@@ -1586,6 +1586,87 @@ body {
   overflow-wrap: anywhere;
 }
 
+.terminal-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.terminal-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(29, 40, 30, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.46);
+}
+
+.terminal-scope {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #2b3528;
+}
+
+.terminal-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.terminal-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #2b3528;
+}
+
+.terminal-controls input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid rgba(29, 40, 30, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #182316;
+  font-size: 12px;
+}
+
+.terminal-actions {
+  display: flex;
+  align-items: end;
+  gap: 6px;
+  grid-column: 1 / -1;
+}
+
+.terminal-status {
+  font-size: 11px;
+  color: #2f3a2b;
+  opacity: 0.9;
+}
+
+.terminal-console-wrap {
+  border-radius: 12px;
+  border: 1px solid rgba(19, 27, 20, 0.45);
+  overflow: hidden;
+  background: #0f1710;
+}
+
+.terminal-console {
+  min-height: 300px;
+  max-height: 420px;
+  width: 100%;
+}
+
+.terminal-console .xterm {
+  padding: 8px;
+}
+
+.terminal-console .xterm-screen {
+  width: 100% !important;
+}
+
 .wizard-body {
   min-height: 460px;
   display: flex;
@@ -2181,5 +2262,17 @@ body {
 
   .settings-fast-actions {
     grid-template-columns: 1fr;
+  }
+
+  .terminal-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .terminal-actions {
+    flex-wrap: wrap;
+  }
+
+  .terminal-actions .action {
+    width: 100%;
   }
 }

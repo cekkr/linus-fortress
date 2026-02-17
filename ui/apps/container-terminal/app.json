@@ -1,0 +1,20 @@
+{
+  "id": "container-terminal",
+  "title": "Terminal",
+  "description": "Interactive shell session inside this container.",
+  "icon": "terminal",
+  "scope": "container",
+  "order": 2,
+  "actions": [
+    {
+      "id": "terminal-connect",
+      "label": "Connect",
+      "variant": "primary"
+    },
+    {
+      "id": "terminal-disconnect",
+      "label": "Disconnect",
+      "variant": "ghost"
+    }
+  ]
+}

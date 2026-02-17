@@ -1301,6 +1301,133 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+  /terminal/sessions:
+    post:
+      summary: Create a host or container terminal session
+      tags: [Terminal]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TerminalSessionCreateRequest"
+      responses:
+        "200":
+          description: Terminal session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: "#/components/schemas/TerminalSession"
+  /terminal/sessions/{session_id}/output:
+    get:
+      summary: Read terminal output chunk
+      tags: [Terminal]
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Terminal output
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  output_b64:
+                    type: string
+                  running:
+                    type: boolean
+                  exit_code:
+                    type: integer
+                    nullable: true
+  /terminal/sessions/{session_id}/input:
+    post:
+      summary: Send terminal input bytes
+      tags: [Terminal]
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TerminalSessionInputRequest"
+      responses:
+        "200":
+          description: Bytes written to terminal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  written:
+                    type: integer
+  /terminal/sessions/{session_id}/resize:
+    post:
+      summary: Resize terminal PTY dimensions
+      tags: [Terminal]
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TerminalSessionResizeRequest"
+      responses:
+        "200":
+          description: Resize acknowledgement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  cols:
+                    type: integer
+                  rows:
+                    type: integer
+  /terminal/sessions/{session_id}:
+    delete:
+      summary: Close terminal session
+      tags: [Terminal]
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Terminal close result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  session:
+                    type: object
   /firewall/open:
     post:
       summary: Open host firewall port
@@ -2515,6 +2642,10 @@ components:
           type: array
           items:
             type: string
+        terminal_host:
+          $ref: "#/components/schemas/TerminalAccessPolicy"
+        terminal_container:
+          $ref: "#/components/schemas/TerminalAccessPolicy"
     APIUserUpdate:
       type: object
       properties:
@@ -2526,6 +2657,14 @@ components:
           type: array
           items:
             type: string
+        terminal_host:
+          allOf:
+            - $ref: "#/components/schemas/TerminalAccessPolicy"
+          nullable: true
+        terminal_container:
+          allOf:
+            - $ref: "#/components/schemas/TerminalAccessPolicy"
+          nullable: true
     APIUserRecord:
       type: object
       properties:
@@ -2539,6 +2678,10 @@ components:
           type: array
           items:
             type: string
+        terminal_host:
+          $ref: "#/components/schemas/TerminalAccessPolicy"
+        terminal_container:
+          $ref: "#/components/schemas/TerminalAccessPolicy"
     APIUserRecordWithToken:
       allOf:
         - $ref: "#/components/schemas/APIUserRecord"
@@ -2546,6 +2689,94 @@ components:
           properties:
             token:
               type: string
+    TerminalAccessPolicy:
+      type: object
+      properties:
+        os_user:
+          type: string
+        allow_user_override:
+          type: boolean
+          default: false
+        allow_root:
+          type: boolean
+          default: false
+        allowed_shells:
+          type: array
+          items:
+            type: string
+        default_shell:
+          type: string
+    TerminalSessionCreateRequest:
+      type: object
+      properties:
+        target:
+          type: string
+          enum: [host, container]
+          default: host
+        container_name:
+          type: string
+          nullable: true
+        requested_os_user:
+          type: string
+          nullable: true
+        shell:
+          type: string
+          nullable: true
+        cols:
+          type: integer
+          default: 120
+        rows:
+          type: integer
+          default: 32
+        cwd:
+          type: string
+          nullable: true
+    TerminalSessionInputRequest:
+      type: object
+      required: [data_b64]
+      properties:
+        data_b64:
+          type: string
+    TerminalSessionResizeRequest:
+      type: object
+      required: [cols, rows]
+      properties:
+        cols:
+          type: integer
+        rows:
+          type: integer
+    TerminalSession:
+      type: object
+      properties:
+        session_id:
+          type: string
+        target:
+          type: string
+          enum: [host, container]
+        container_name:
+          type: string
+          nullable: true
+        actor:
+          type: string
+        os_user:
+          type: string
+        shell:
+          type: string
+        running:
+          type: boolean
+        exit_code:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        last_activity_at:
+          type: string
+          format: date-time
+        input_bytes:
+          type: integer
+        output_bytes:
+          type: integer
     ExternalAccessRule:
       type: object
       required:

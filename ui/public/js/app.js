@@ -30,6 +30,21 @@ const state = {
   recipeHealthHistoryLoading: new Set(),
   hosts: [],
   hostsLoading: false,
+  terminal: {
+    nodeId: null,
+    sessionId: null,
+    target: null,
+    container: null,
+    shell: "/bin/bash",
+    requestedOsUser: "",
+    connecting: false,
+    connected: false,
+    running: false,
+    exitCode: null,
+    lastCols: null,
+    lastRows: null,
+    error: null,
+  },
   systemUpgrade: {
     lastPreflight: null,
     lastExecution: null,
@@ -277,6 +292,19 @@ let layoutGuardRafId = null;
 let layoutGuardLastCardHeight = 0;
 let layoutGuardResizeObserver = null;
 let layoutGuardMutationObserver = null;
+const TERMINAL_POLL_INTERVAL_MS = 120;
+const TERMINAL_INPUT_FLUSH_MS = 20;
+const TERMINAL_RESIZE_DEBOUNCE_MS = 140;
+let terminalPollTimer = null;
+let terminalPollInFlight = false;
+let terminalInputBuffer = "";
+let terminalInputFlushTimer = null;
+let terminalInputInFlight = false;
+let terminalResizeTimer = null;
+let terminalResizeObserver = null;
+const terminalRuntime = {
+  term: null,
+};
 const FAST_ACTION_OPTIONS = [
   {
     id: "refresh",
@@ -424,6 +452,13 @@ const iconMap = {
       <rect x="4" y="4" width="16" height="16" rx="2"></rect>
       <path d="M4 9h16"></path>
       <path d="M9 4v16"></path>
+    </svg>
+  `,
+  terminal: `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="15" rx="2"></rect>
+      <path d="M7 9l3 3-3 3"></path>
+      <path d="M12 15h5"></path>
     </svg>
   `,
   pulse: `
@@ -3030,6 +3065,11 @@ function renderPreview() {
     return;
   }
 
+  if (isTerminalNode(node)) {
+    renderTerminalPreview(node);
+    return;
+  }
+
   if (node.id === "routing") {
     renderRoutingPreview(node);
     return;
@@ -4752,6 +4792,18 @@ function refreshSelectedLeafHome() {
 }
 
 function selectNode(id) {
+  const previousId = state.selectedId || state.rootId;
+  if (state.terminal.sessionId && state.terminal.nodeId && state.terminal.nodeId !== id) {
+    disconnectTerminalSession({ log: false, disposeTerm: true, detachNode: true }).catch(() => {});
+  } else {
+    const previousNode = getNode(previousId);
+    if (previousNode && isTerminalNode(previousNode) && previousNode.id !== id) {
+      stopTerminalRuntime({ disposeTerm: true });
+      state.terminal.nodeId = null;
+      state.terminal.target = null;
+      state.terminal.container = null;
+    }
+  }
   clearCardTransitionTimer();
   cardTransitionBusy = false;
   queuedExpandNodeId = null;
@@ -4965,6 +5017,554 @@ function parseIntegerField(raw, label, minValue = 0) {
     throw new Error(`${label} must be >= ${minValue}`);
   }
   return parsed;
+}
+
+function isTerminalNode(node) {
+  if (!node || !node.id) {
+    return false;
+  }
+  return node.id === "terminal" || node.id.endsWith(":container-terminal");
+}
+
+function terminalTargetForNode(node) {
+  if (!isTerminalNode(node)) {
+    return null;
+  }
+  if (node.id === "terminal") {
+    return { target: "host", containerName: null };
+  }
+  const containerName = node.context && node.context.container ? String(node.context.container).trim() : "";
+  return { target: "container", containerName: containerName || null };
+}
+
+function base64FromBytes(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const slice = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...slice);
+  }
+  return btoa(binary);
+}
+
+function utf8ToBase64(text) {
+  const encoder = new TextEncoder();
+  return base64FromBytes(encoder.encode(text));
+}
+
+function base64ToUtf8(value) {
+  if (!value) {
+    return "";
+  }
+  try {
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch (err) {
+    return "";
+  }
+}
+
+function estimateTerminalSize(mount) {
+  const width = Math.max(320, Number(mount && mount.clientWidth) || 0);
+  const height = Math.max(180, Number(mount && mount.clientHeight) || 0);
+  const cols = Math.max(40, Math.min(240, Math.floor(width / 9)));
+  const rows = Math.max(12, Math.min(120, Math.floor(height / 18)));
+  return { cols, rows };
+}
+
+function stopTerminalPolling() {
+  if (terminalPollTimer) {
+    window.clearInterval(terminalPollTimer);
+    terminalPollTimer = null;
+  }
+  terminalPollInFlight = false;
+}
+
+function stopTerminalInputFlush() {
+  if (terminalInputFlushTimer) {
+    window.clearTimeout(terminalInputFlushTimer);
+    terminalInputFlushTimer = null;
+  }
+  terminalInputInFlight = false;
+}
+
+function disposeTerminalResizeObserver() {
+  if (terminalResizeObserver) {
+    terminalResizeObserver.disconnect();
+    terminalResizeObserver = null;
+  }
+  if (terminalResizeTimer) {
+    window.clearTimeout(terminalResizeTimer);
+    terminalResizeTimer = null;
+  }
+}
+
+function resetTerminalInstance() {
+  if (terminalRuntime.term) {
+    terminalRuntime.term.dispose();
+    terminalRuntime.term = null;
+  }
+}
+
+function ensureTerminalInstance(mount) {
+  if (!window.Terminal) {
+    throw new Error("xterm.js is not loaded. Run npm install and restart the UI service.");
+  }
+  if (!mount) {
+    throw new Error("Terminal mount element not found");
+  }
+  resetTerminalInstance();
+  terminalRuntime.term = new window.Terminal({
+    cursorBlink: true,
+    convertEol: true,
+    scrollback: 4000,
+    fontFamily:
+      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    fontSize: 13,
+    lineHeight: 1.15,
+    theme: {
+      background: "#0f1710",
+      foreground: "#d6e6c9",
+      cursor: "#8ccf55",
+      selectionBackground: "rgba(140, 207, 85, 0.28)",
+    },
+  });
+  terminalRuntime.term.open(mount);
+  terminalRuntime.term.onData((data) => {
+    queueTerminalInput(data);
+  });
+}
+
+function terminalSessionStatusLine(node) {
+  const scope =
+    state.terminal.target === "container"
+      ? `container:${state.terminal.container || "unknown"}`
+      : "host";
+  if (state.terminal.connecting) {
+    return `Connecting to ${scope}...`;
+  }
+  if (state.terminal.connected && state.terminal.running) {
+    return `Connected to ${scope} • live`;
+  }
+  if (state.terminal.connected && !state.terminal.running) {
+    const code = state.terminal.exitCode === null || state.terminal.exitCode === undefined ? "unknown" : state.terminal.exitCode;
+    return `Session ended • exit ${code}`;
+  }
+  const target = terminalTargetForNode(node);
+  if (target && target.target === "container") {
+    return `Disconnected • target container ${target.containerName || "unknown"}`;
+  }
+  return "Disconnected • target host";
+}
+
+function updateTerminalPreviewStatus(node) {
+  if (!elements.preview) {
+    return;
+  }
+  const statusEl = elements.preview.querySelector("[data-terminal-status]");
+  if (statusEl) {
+    const message = state.terminal.error
+      ? `${terminalSessionStatusLine(node)} • ${state.terminal.error}`
+      : terminalSessionStatusLine(node);
+    statusEl.textContent = message;
+  }
+  const connectBtn = elements.preview.querySelector("[data-action-id='terminal-connect']");
+  const disconnectBtn = elements.preview.querySelector("[data-action-id='terminal-disconnect']");
+  const clearBtn = elements.preview.querySelector("[data-action-id='terminal-clear']");
+  if (connectBtn) {
+    connectBtn.disabled = state.terminal.connecting || (state.terminal.connected && state.terminal.running);
+  }
+  if (disconnectBtn) {
+    disconnectBtn.disabled = !state.terminal.connecting && !state.terminal.connected;
+  }
+  if (clearBtn) {
+    clearBtn.disabled = !terminalRuntime.term;
+  }
+}
+
+function scheduleTerminalResize() {
+  if (terminalResizeTimer) {
+    window.clearTimeout(terminalResizeTimer);
+  }
+  terminalResizeTimer = window.setTimeout(() => {
+    terminalResizeTimer = null;
+    terminalResizeSession().catch(() => {});
+  }, TERMINAL_RESIZE_DEBOUNCE_MS);
+}
+
+async function terminalResizeSession() {
+  const mount = document.getElementById("terminal-mount");
+  const term = terminalRuntime.term;
+  if (!mount || !term) {
+    return;
+  }
+  const size = estimateTerminalSize(mount);
+  if (term.cols !== size.cols || term.rows !== size.rows) {
+    try {
+      term.resize(size.cols, size.rows);
+    } catch (err) {
+      // Ignore local resize glitches.
+    }
+  }
+  if (!state.terminal.sessionId || !state.terminal.connected) {
+    return;
+  }
+  if (state.terminal.lastCols === size.cols && state.terminal.lastRows === size.rows) {
+    return;
+  }
+  await apiRequest(`/api/terminal/sessions/${encodeURIComponent(state.terminal.sessionId)}/resize`, {
+    method: "POST",
+    body: JSON.stringify({ cols: size.cols, rows: size.rows }),
+    suppressAuthOverlay: true,
+  });
+  state.terminal.lastCols = size.cols;
+  state.terminal.lastRows = size.rows;
+}
+
+function scheduleTerminalInputFlush() {
+  if (terminalInputFlushTimer) {
+    return;
+  }
+  terminalInputFlushTimer = window.setTimeout(() => {
+    terminalInputFlushTimer = null;
+    flushTerminalInput().catch(() => {});
+  }, TERMINAL_INPUT_FLUSH_MS);
+}
+
+function queueTerminalInput(data) {
+  if (!data || !state.terminal.sessionId || !state.terminal.connected || !state.terminal.running) {
+    return;
+  }
+  terminalInputBuffer += data;
+  if (terminalInputBuffer.length > 128 * 1024) {
+    terminalInputBuffer = terminalInputBuffer.slice(-64 * 1024);
+  }
+  scheduleTerminalInputFlush();
+}
+
+async function flushTerminalInput() {
+  if (terminalInputInFlight) {
+    return;
+  }
+  const sessionId = state.terminal.sessionId;
+  if (!sessionId || !state.terminal.connected || !state.terminal.running || !terminalInputBuffer.length) {
+    return;
+  }
+  const chunk = terminalInputBuffer;
+  terminalInputBuffer = "";
+  terminalInputInFlight = true;
+  try {
+    await apiRequest(`/api/terminal/sessions/${encodeURIComponent(sessionId)}/input`, {
+      method: "POST",
+      body: JSON.stringify({ data_b64: utf8ToBase64(chunk) }),
+      suppressAuthOverlay: true,
+    });
+  } catch (err) {
+    terminalInputBuffer = chunk + terminalInputBuffer;
+    state.terminal.error = err.message || "Terminal input failed";
+    const selected = getNode(state.selectedId || state.rootId);
+    if (selected && isTerminalNode(selected)) {
+      updateTerminalPreviewStatus(selected);
+    }
+  } finally {
+    terminalInputInFlight = false;
+    if (terminalInputBuffer.length) {
+      scheduleTerminalInputFlush();
+    }
+  }
+}
+
+function stopTerminalRuntime(options = {}) {
+  stopTerminalPolling();
+  stopTerminalInputFlush();
+  disposeTerminalResizeObserver();
+  terminalInputBuffer = "";
+  if (options.disposeTerm !== false) {
+    resetTerminalInstance();
+  }
+}
+
+async function disconnectTerminalSession(options = {}) {
+  const log = options.log !== false;
+  const disposeTerm = options.disposeTerm !== false;
+  const clearError = options.clearError !== false;
+  const detachNode = Boolean(options.detachNode);
+  const sessionId = state.terminal.sessionId;
+  stopTerminalRuntime({ disposeTerm });
+  let closeError = null;
+  if (sessionId) {
+    try {
+      await apiRequest(`/api/terminal/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        suppressAuthOverlay: true,
+      });
+    } catch (err) {
+      closeError = err;
+    }
+  }
+  state.terminal.sessionId = null;
+  state.terminal.connected = false;
+  state.terminal.connecting = false;
+  state.terminal.running = false;
+  state.terminal.exitCode = null;
+  state.terminal.lastCols = null;
+  state.terminal.lastRows = null;
+  if (detachNode) {
+    state.terminal.nodeId = null;
+    state.terminal.target = null;
+    state.terminal.container = null;
+  }
+  if (clearError) {
+    state.terminal.error = null;
+  }
+  const selected = getNode(state.selectedId || state.rootId);
+  if (selected && isTerminalNode(selected)) {
+    updateTerminalPreviewStatus(selected);
+  }
+  if (closeError) {
+    if (log) {
+      logEvent("error", closeError.message || "Failed to close terminal session");
+    }
+    return;
+  }
+  if (log && sessionId) {
+    logEvent("success", "Terminal session closed");
+  }
+}
+
+async function pollTerminalOutput() {
+  if (terminalPollInFlight) {
+    return;
+  }
+  const sessionId = state.terminal.sessionId;
+  if (!sessionId || !state.terminal.connected) {
+    return;
+  }
+  terminalPollInFlight = true;
+  try {
+    const payload = await apiRequest(`/api/terminal/sessions/${encodeURIComponent(sessionId)}/output`, {
+      method: "GET",
+      suppressAuthOverlay: true,
+    });
+    if (state.terminal.sessionId !== sessionId) {
+      return;
+    }
+    const output = base64ToUtf8(payload && payload.output_b64 ? payload.output_b64 : "");
+    if (output && terminalRuntime.term) {
+      terminalRuntime.term.write(output);
+    }
+    state.terminal.running = Boolean(payload && payload.running);
+    state.terminal.exitCode = payload ? payload.exit_code : null;
+    if (!state.terminal.running) {
+      stopTerminalPolling();
+      state.terminal.connected = false;
+      if (terminalRuntime.term) {
+        const code =
+          state.terminal.exitCode === null || state.terminal.exitCode === undefined ? "unknown" : state.terminal.exitCode;
+        terminalRuntime.term.write(`\r\n[session exited: ${code}]\r\n`);
+      }
+    }
+    const selected = getNode(state.selectedId || state.rootId);
+    if (selected && isTerminalNode(selected)) {
+      updateTerminalPreviewStatus(selected);
+    }
+  } catch (err) {
+    stopTerminalPolling();
+    state.terminal.connected = false;
+    state.terminal.running = false;
+    state.terminal.error = err.message || "Terminal stream failed";
+    const selected = getNode(state.selectedId || state.rootId);
+    if (selected && isTerminalNode(selected)) {
+      updateTerminalPreviewStatus(selected);
+    }
+    logEvent("error", state.terminal.error);
+  } finally {
+    terminalPollInFlight = false;
+  }
+}
+
+function startTerminalPolling() {
+  stopTerminalPolling();
+  terminalPollTimer = window.setInterval(() => {
+    pollTerminalOutput().catch(() => {});
+  }, TERMINAL_POLL_INTERVAL_MS);
+  pollTerminalOutput().catch(() => {});
+}
+
+async function connectTerminalSession(node) {
+  const targetInfo = terminalTargetForNode(node);
+  if (!targetInfo) {
+    throw new Error("Terminal app is not selected");
+  }
+  if (targetInfo.target === "container" && !targetInfo.containerName) {
+    throw new Error("Container terminal requires a container context");
+  }
+  if (state.terminal.sessionId && state.terminal.nodeId && state.terminal.nodeId !== node.id) {
+    await disconnectTerminalSession({ log: false, disposeTerm: true, detachNode: true });
+  }
+  state.terminal.nodeId = node.id;
+  state.terminal.target = targetInfo.target;
+  state.terminal.container = targetInfo.containerName;
+  state.terminal.error = null;
+  state.terminal.connecting = true;
+  updateTerminalPreviewStatus(node);
+
+  const shellInput = elements.preview.querySelector("[data-terminal-field='shell']");
+  const osUserInput = elements.preview.querySelector("[data-terminal-field='requestedOsUser']");
+  const mount = document.getElementById("terminal-mount");
+  if (!mount) {
+    state.terminal.connecting = false;
+    throw new Error("Open the Terminal app before connecting");
+  }
+
+  const shellValue = shellInput ? String(shellInput.value || "").trim() : state.terminal.shell || "/bin/bash";
+  const requestedOsUser = osUserInput ? String(osUserInput.value || "").trim() : state.terminal.requestedOsUser || "";
+  state.terminal.shell = shellValue || "/bin/bash";
+  state.terminal.requestedOsUser = requestedOsUser;
+
+  ensureTerminalInstance(mount);
+  terminalRuntime.term.write(`[opening ${targetInfo.target}${targetInfo.containerName ? `:${targetInfo.containerName}` : ""}]\r\n`);
+  const size = estimateTerminalSize(mount);
+  try {
+    const payload = await apiRequest("/api/terminal/sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        target: targetInfo.target,
+        container_name: targetInfo.containerName || undefined,
+        requested_os_user: requestedOsUser || undefined,
+        shell: state.terminal.shell || "/bin/bash",
+        cols: size.cols,
+        rows: size.rows,
+      }),
+    });
+    const session = payload && payload.session ? payload.session : null;
+    if (!session || !session.session_id) {
+      throw new Error("Terminal session did not return an id");
+    }
+    state.terminal.sessionId = session.session_id;
+    state.terminal.connected = true;
+    state.terminal.running = true;
+    state.terminal.exitCode = null;
+    state.terminal.lastCols = size.cols;
+    state.terminal.lastRows = size.rows;
+    state.terminal.error = null;
+    logEvent(
+      "success",
+      `Terminal connected (${targetInfo.target}${targetInfo.containerName ? `:${targetInfo.containerName}` : ""})`
+    );
+    startTerminalPolling();
+    if (terminalRuntime.term) {
+      terminalRuntime.term.focus();
+    }
+  } catch (err) {
+    state.terminal.error = err.message || "Failed to connect terminal";
+    state.terminal.connected = false;
+    state.terminal.running = false;
+    state.terminal.sessionId = null;
+    if (terminalRuntime.term) {
+      terminalRuntime.term.write(`[connect failed: ${state.terminal.error}]\r\n`);
+    }
+    throw err;
+  } finally {
+    state.terminal.connecting = false;
+    updateTerminalPreviewStatus(node);
+  }
+}
+
+function renderTerminalPreview(node) {
+  const targetInfo = terminalTargetForNode(node);
+  if (!targetInfo) {
+    elements.preview.innerHTML = `<div class="preview-title">${escapeHtml(node.title || "Terminal")}</div><div>Terminal target unavailable.</div>`;
+    return;
+  }
+  const currentNodeId = state.selectedId || state.rootId;
+  const currentNode = getNode(currentNodeId);
+  const reuse =
+    currentNode &&
+    currentNode.id === node.id &&
+    state.terminal.nodeId === node.id &&
+    elements.preview.querySelector(".terminal-preview");
+  if (reuse) {
+    updateTerminalPreviewStatus(node);
+    return;
+  }
+
+  stopTerminalRuntime({ disposeTerm: true });
+  state.terminal.nodeId = node.id;
+  state.terminal.target = targetInfo.target;
+  state.terminal.container = targetInfo.containerName;
+  state.terminal.connected = false;
+  state.terminal.running = false;
+  state.terminal.sessionId = null;
+  state.terminal.exitCode = null;
+  state.terminal.lastCols = null;
+  state.terminal.lastRows = null;
+  state.terminal.error = null;
+
+  const targetLabel = targetInfo.target === "container" ? `Container: ${targetInfo.containerName || "unknown"}` : "Host";
+  elements.preview.innerHTML = `
+    <div class="preview-title">${escapeHtml(node.title)}</div>
+    <div>${escapeHtml(node.description || "")}</div>
+    <div class="terminal-preview">
+      <div class="terminal-toolbar">
+        <div class="terminal-scope">${escapeHtml(targetLabel)}</div>
+        <div class="terminal-controls">
+          <label>
+            <span>Shell</span>
+            <input
+              type="text"
+              value="${escapeHtml(state.terminal.shell || "/bin/bash")}"
+              data-terminal-field="shell"
+              placeholder="/bin/bash"
+              spellcheck="false"
+            />
+          </label>
+          <label>
+            <span>OS User (optional)</span>
+            <input
+              type="text"
+              value="${escapeHtml(state.terminal.requestedOsUser || "")}"
+              data-terminal-field="requestedOsUser"
+              placeholder="mapped user"
+              spellcheck="false"
+            />
+          </label>
+          <div class="terminal-actions">
+            <button class="action primary" data-action-id="terminal-connect" data-node-id="${escapeHtml(node.id)}">Connect</button>
+            <button class="action ghost" data-action-id="terminal-disconnect" data-node-id="${escapeHtml(node.id)}">Disconnect</button>
+            <button class="action ghost" data-action-id="terminal-clear" data-node-id="${escapeHtml(node.id)}">Clear</button>
+          </div>
+        </div>
+        <div class="terminal-status" data-terminal-status></div>
+      </div>
+      <div class="terminal-console-wrap">
+        <div class="terminal-console" id="terminal-mount"></div>
+      </div>
+    </div>
+  `;
+
+  const mount = document.getElementById("terminal-mount");
+  if (!mount) {
+    state.terminal.error = "Terminal mount failed";
+    updateTerminalPreviewStatus(node);
+    return;
+  }
+  try {
+    ensureTerminalInstance(mount);
+    terminalRuntime.term.write("[ready] choose shell/user and click Connect\r\n");
+    terminalResizeSession().catch(() => {});
+    disposeTerminalResizeObserver();
+    if (window.ResizeObserver) {
+      terminalResizeObserver = new ResizeObserver(() => {
+        scheduleTerminalResize();
+      });
+      terminalResizeObserver.observe(mount);
+    }
+  } catch (err) {
+    state.terminal.error = err.message || "Failed to initialize terminal";
+  }
+  updateTerminalPreviewStatus(node);
 }
 
 function escapeHtml(value) {
@@ -5447,6 +6047,7 @@ function updateAuthUI() {
 }
 
 function showAuthOverlay(message) {
+  disconnectTerminalSession({ log: false, disposeTerm: true, detachNode: true }).catch(() => {});
   state.auth.active = false;
   state.auth.mode = "none";
   state.auth.session = false;
@@ -5626,6 +6227,7 @@ async function handleLogin(event) {
 
 async function handleLogout() {
   stopImageCatalogRefreshLoop();
+  await disconnectTerminalSession({ log: false, disposeTerm: true, detachNode: true });
   try {
     await apiRequest("/api/session", { method: "DELETE" });
     await apiRequest("/api/admin/logout", { method: "POST" });
@@ -6200,6 +6802,39 @@ async function handleAction(actionId, node, params = {}) {
     return;
   }
 
+  if (actionId === "terminal-connect") {
+    let resolvedNode = node;
+    if (!resolvedNode || !isTerminalNode(resolvedNode)) {
+      resolvedNode = getNode(state.selectedId || state.rootId);
+    }
+    if (!resolvedNode || !isTerminalNode(resolvedNode)) {
+      logEvent("error", "Open a Terminal app before connecting");
+      return;
+    }
+    if (resolvedNode.id !== state.selectedId) {
+      selectNode(resolvedNode.id);
+    }
+    await connectTerminalSession(resolvedNode);
+    return;
+  }
+
+  if (actionId === "terminal-disconnect") {
+    await disconnectTerminalSession({ log: true, disposeTerm: false, detachNode: false });
+    const selected = getNode(state.selectedId || state.rootId);
+    if (selected && isTerminalNode(selected)) {
+      updateTerminalPreviewStatus(selected);
+    }
+    return;
+  }
+
+  if (actionId === "terminal-clear") {
+    if (terminalRuntime.term) {
+      terminalRuntime.term.clear();
+      terminalRuntime.term.focus();
+    }
+    return;
+  }
+
   if (actionId === "container-start" || actionId === "container-stop" || actionId === "container-restart") {
     const containerName = node && node.context ? node.context.container : null;
     if (!containerName) {
@@ -6285,6 +6920,21 @@ async function handleAction(actionId, node, params = {}) {
       return;
     }
     openWizard("exec", containerName);
+    return;
+  }
+
+  if (actionId === "container-terminal-open") {
+    const containerName = node && node.context ? node.context.container : null;
+    if (!containerName) {
+      logEvent("error", "No container selected");
+      return;
+    }
+    const terminalNodeId = `container:${containerName}:container-terminal`;
+    if (!state.nodesById.has(terminalNodeId)) {
+      logEvent("error", "Container Terminal app is not available");
+      return;
+    }
+    selectNode(terminalNodeId);
     return;
   }
   if (actionId === "monitoring-refresh") {
@@ -7352,6 +8002,9 @@ async function loadGraph(options = {}) {
   state.fortress = response.fortress || { status: "unknown" };
   syncFortressStatusDebug();
   buildNodeIndex(state.nodes);
+  if (state.terminal.sessionId && state.terminal.nodeId && !state.nodesById.has(state.terminal.nodeId)) {
+    disconnectTerminalSession({ log: false, disposeTerm: true, detachNode: true }).catch(() => {});
+  }
   if (!state.selectedId || !state.nodesById.has(state.selectedId)) {
     state.selectedId = state.rootId;
   }
@@ -7513,6 +8166,15 @@ function bindEvents() {
       if (!target) {
         return;
       }
+      const terminalField = target.getAttribute && target.getAttribute("data-terminal-field");
+      if (terminalField === "shell") {
+        state.terminal.shell = String(target.value || "").trim() || "/bin/bash";
+        return;
+      }
+      if (terminalField === "requestedOsUser") {
+        state.terminal.requestedOsUser = String(target.value || "").trim();
+        return;
+      }
       const fastActionId = target.getAttribute && target.getAttribute("data-setting-fast-action");
       if (!fastActionId) {
         return;
@@ -7545,7 +8207,10 @@ window.addEventListener("DOMContentLoaded", () => {
   renderDebugPanel();
   bindEvents();
   startLayoutGuard();
-  window.addEventListener("resize", scheduleGridRelayout);
+  window.addEventListener("resize", () => {
+    scheduleGridRelayout();
+    scheduleTerminalResize();
+  });
   if (elements.authForm) {
     elements.authForm.addEventListener("submit", handleLogin);
   }

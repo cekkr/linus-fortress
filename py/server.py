@@ -8,6 +8,7 @@ import logging
 import subprocess
 import hashlib
 import base64
+import binascii
 import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -160,6 +161,7 @@ from fortress.hosts import (
     provision_host,
     probe_host,
 )
+from fortress.terminal import TerminalSessionManager, normalize_unix_username
 
 
 def _parse_signing_key_list(value: Optional[str]) -> List[str]:
@@ -234,6 +236,7 @@ elif RECIPE_BUNDLE_SIGNING_KEYS:
 app = FastAPI(title="VPS Fortress Manager")
 REQUEST_CONTEXT = ContextVar("REQUEST_CONTEXT", default={"actor": "system", "endpoint": "internal"})
 command_logger = CommandLogger(COMMAND_LOG_DB)
+terminal_manager = TerminalSessionManager()
 MIGRATION_ENGINE = MigrationEngine(
     SCHEMA_DIR,
     MIGRATIONS_DIR,
@@ -319,6 +322,142 @@ def has_permission(auth_context: Dict[str, Any], permission: str) -> bool:
     permissions = auth_context.get("permissions") or []
     return "*" in permissions or permission in permissions
 
+TERMINAL_HOST_PERMISSION = "terminal_host"
+TERMINAL_CONTAINER_PERMISSION = "terminal_container"
+TERMINAL_ROOT_PERMISSION = "terminal_root"
+TERMINAL_IMPERSONATE_PERMISSION = "terminal_impersonate"
+
+
+def _normalize_shell_allowlist(values: Any) -> Optional[List[str]]:
+    if not isinstance(values, list):
+        return None
+    shells: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        shell = value.strip()
+        if not shell or shell in seen:
+            continue
+        shells.append(shell)
+        seen.add(shell)
+    return shells or None
+
+
+def _resolve_terminal_policy(auth_context: Dict[str, Any], target: str) -> Dict[str, Any]:
+    if auth_context.get("is_master"):
+        return {
+            "os_user": "",
+            "allow_user_override": True,
+            "allow_root": True,
+            "allowed_shells": None,
+            "default_shell": "/bin/bash",
+        }
+    record = auth_context.get("user_record") if isinstance(auth_context.get("user_record"), dict) else {}
+    key = "terminal_container" if target == "container" else "terminal_host"
+    raw = record.get(key) if isinstance(record.get(key), dict) else {}
+    legacy_os_user = record.get("container_os_user") if target == "container" else record.get("os_user")
+    os_user = normalize_unix_username(raw.get("os_user")) or normalize_unix_username(legacy_os_user)
+    default_shell = raw.get("default_shell") if isinstance(raw.get("default_shell"), str) else ""
+    default_shell = default_shell.strip() or "/bin/bash"
+    return {
+        "os_user": os_user,
+        "allow_user_override": bool(raw.get("allow_user_override", False)),
+        "allow_root": bool(raw.get("allow_root", False)),
+        "allowed_shells": _normalize_shell_allowlist(raw.get("allowed_shells")),
+        "default_shell": default_shell,
+    }
+
+
+def _resolve_terminal_os_user(
+    auth_context: Dict[str, Any],
+    *,
+    target: str,
+    requested_os_user: Optional[str],
+    policy: Dict[str, Any],
+) -> str:
+    requested = normalize_unix_username(requested_os_user)
+    if requested_os_user and not requested:
+        raise HTTPException(status_code=400, detail="requested_os_user must be a valid unix username")
+
+    if auth_context.get("is_master"):
+        return requested or "root"
+
+    mapped = policy.get("os_user") or normalize_unix_username(auth_context.get("actor"))
+    if not mapped:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "No terminal OS user mapping is configured for this token. "
+                "Set terminal_host.os_user/terminal_container.os_user in /api-users."
+            ),
+        )
+    if requested and requested != mapped:
+        allow_override = policy.get("allow_user_override") or has_permission(auth_context, TERMINAL_IMPERSONATE_PERMISSION)
+        if not allow_override:
+            raise HTTPException(status_code=403, detail="requested_os_user override is not allowed for this token")
+        mapped = requested
+
+    if mapped == "root":
+        allow_root = policy.get("allow_root") or has_permission(auth_context, TERMINAL_ROOT_PERMISSION)
+        if not allow_root:
+            raise HTTPException(status_code=403, detail="root terminal sessions require terminal_root permission or policy")
+    return mapped
+
+
+def _require_terminal_permission(auth_context: Dict[str, Any], target: str, container_name: Optional[str] = None) -> None:
+    if target == "host":
+        if not has_permission(auth_context, TERMINAL_HOST_PERMISSION):
+            raise HTTPException(status_code=403, detail=f"{TERMINAL_HOST_PERMISSION} permission required")
+        return
+
+    if target != "container":
+        raise HTTPException(status_code=400, detail=f"Unsupported terminal target: {target}")
+    if not (has_permission(auth_context, TERMINAL_CONTAINER_PERMISSION) or has_permission(auth_context, "manage_containers")):
+        raise HTTPException(status_code=403, detail=f"{TERMINAL_CONTAINER_PERMISSION} permission required")
+    if container_name:
+        enforce_container_scope(auth_context, container_name)
+
+
+def _terminal_owner_id(auth_context: Dict[str, Any]) -> str:
+    candidate = auth_context.get("subject_id") or auth_context.get("actor")
+    return str(candidate or "anonymous")
+
+
+def _terminal_admin_access(auth_context: Dict[str, Any]) -> bool:
+    return bool(auth_context.get("is_master")) or has_permission(auth_context, "*")
+
+
+def _serialize_terminal_policy(policy: Optional["TerminalAccessPolicy"], field_name: str) -> Optional[Dict[str, Any]]:
+    if policy is None:
+        return None
+    payload = policy.dict(exclude_none=True)
+    if "os_user" in payload:
+        normalized = normalize_unix_username(payload.get("os_user"))
+        if not normalized:
+            raise HTTPException(status_code=400, detail=f"{field_name}.os_user must be a valid unix username")
+        payload["os_user"] = normalized
+    if "allowed_shells" in payload:
+        payload["allowed_shells"] = _normalize_shell_allowlist(payload.get("allowed_shells")) or []
+    if "default_shell" in payload and isinstance(payload.get("default_shell"), str):
+        payload["default_shell"] = payload["default_shell"].strip()
+    return payload
+
+
+def _authorize_terminal_session_access(
+    endpoint: str,
+    session_id: str,
+    x_api_key: Optional[str],
+    x_user_token: Optional[str],
+) -> tuple[Dict[str, Any], str, bool, Dict[str, Any]]:
+    auth_context = authorize(endpoint, None, x_api_key, x_user_token)
+    owner_id = _terminal_owner_id(auth_context)
+    allow_any = _terminal_admin_access(auth_context)
+    metadata = terminal_manager.describe(session_id, owner_id, allow_any=allow_any)
+    _require_terminal_permission(auth_context, metadata.get("target"), metadata.get("container_name"))
+    return auth_context, owner_id, allow_any, metadata
+
+
 def load_api_users() -> Dict[str, Dict]:
     return load_json_dict(
         API_USERS_DB,
@@ -366,14 +505,41 @@ class DomainRoute(BaseModel):
     listen_port: int = 80
     tls: Optional[DomainRouteTLS] = None
 
+class TerminalAccessPolicy(BaseModel):
+    os_user: Optional[str] = None
+    allow_user_override: bool = False
+    allow_root: bool = False
+    allowed_shells: Optional[List[str]] = None
+    default_shell: Optional[str] = None
+
 class APIUserCreate(BaseModel):
     username: str
     permissions: List[str] = []
     allowed_containers: Optional[List[str]] = None
+    terminal_host: Optional[TerminalAccessPolicy] = None
+    terminal_container: Optional[TerminalAccessPolicy] = None
 
 class APIUserUpdate(BaseModel):
     permissions: Optional[List[str]] = None
     allowed_containers: Optional[List[str]] = None
+    terminal_host: Optional[TerminalAccessPolicy] = None
+    terminal_container: Optional[TerminalAccessPolicy] = None
+
+class TerminalSessionCreateRequest(BaseModel):
+    target: Literal["host", "container"] = "host"
+    container_name: Optional[str] = None
+    requested_os_user: Optional[str] = None
+    shell: Optional[str] = None
+    cols: int = 120
+    rows: int = 32
+    cwd: Optional[str] = None
+
+class TerminalSessionInputRequest(BaseModel):
+    data_b64: str
+
+class TerminalSessionResizeRequest(BaseModel):
+    cols: int
+    rows: int
 
 class FirewallRule(BaseModel):
     port: int
@@ -1076,13 +1242,29 @@ def create_api_user(user: APIUserCreate, x_api_key: Optional[str] = Header(defau
     token = secrets.token_hex(32)
     try:
         users = load_api_users()
-        users[token] = {
+        terminal_host_policy = _serialize_terminal_policy(user.terminal_host, "terminal_host")
+        terminal_container_policy = _serialize_terminal_policy(user.terminal_container, "terminal_container")
+        record: Dict[str, Any] = {
             "username": user.username,
             "permissions": user.permissions,
             "allowed_containers": user.allowed_containers,
         }
+        if terminal_host_policy is not None:
+            record["terminal_host"] = terminal_host_policy
+        if terminal_container_policy is not None:
+            record["terminal_container"] = terminal_container_policy
+        users[token] = record
         save_api_users(users)
-        audit_api("api_user_create", target=user.username, details={"token": mask_token(token), "permissions": user.permissions})
+        audit_api(
+            "api_user_create",
+            target=user.username,
+            details={
+                "token": mask_token(token),
+                "permissions": user.permissions,
+                "terminal_host_policy": bool(terminal_host_policy),
+                "terminal_container_policy": bool(terminal_container_policy),
+            },
+        )
         return {"token": token, "user": users[token]}
     except Exception as exc:
         audit_api("api_user_create", target=user.username, details={"error": str(exc)}, status="error")
@@ -1103,12 +1285,31 @@ def update_api_user(token: str, update: APIUserUpdate, x_api_key: Optional[str] 
     if token not in users:
         audit_api("api_user_update", target=mask_token(token), details={"error": "not found"}, status="error")
         raise HTTPException(status_code=404, detail="API user token not found")
+    audit_details: Dict[str, Any] = {}
     if update.permissions is not None:
         users[token]["permissions"] = update.permissions
+        audit_details["permissions"] = update.permissions
     if update.allowed_containers is not None:
         users[token]["allowed_containers"] = update.allowed_containers
+        audit_details["allowed_containers"] = update.allowed_containers
+    if "terminal_host" in update.__fields_set__:
+        policy = _serialize_terminal_policy(update.terminal_host, "terminal_host")
+        if policy is None:
+            users[token].pop("terminal_host", None)
+            audit_details["terminal_host"] = "removed"
+        else:
+            users[token]["terminal_host"] = policy
+            audit_details["terminal_host"] = "updated"
+    if "terminal_container" in update.__fields_set__:
+        policy = _serialize_terminal_policy(update.terminal_container, "terminal_container")
+        if policy is None:
+            users[token].pop("terminal_container", None)
+            audit_details["terminal_container"] = "removed"
+        else:
+            users[token]["terminal_container"] = policy
+            audit_details["terminal_container"] = "updated"
     save_api_users(users)
-    audit_api("api_user_update", target=mask_token(token), details={"permissions": update.permissions, "allowed_containers": update.allowed_containers})
+    audit_api("api_user_update", target=mask_token(token), details=audit_details)
     return {"message": "API user updated", "user": users[token]}
 
 @app.delete("/api-users/{token}")
@@ -1122,6 +1323,166 @@ def delete_api_user(token: str, x_api_key: Optional[str] = Header(default=None),
     save_api_users(users)
     audit_api("api_user_delete", target=removed.get("username"), details={"token": mask_token(token)})
     return {"message": f"API user {removed.get('username')} removed"}
+
+# --- TERMINAL SESSION MANAGEMENT ---
+
+@app.post("/terminal/sessions")
+def create_terminal_session(
+    payload: TerminalSessionCreateRequest,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    auth_context = authorize("terminal_session_create", None, x_api_key, x_user_token)
+    target = payload.target
+    container_name = payload.container_name.strip() if payload.container_name else None
+    _require_terminal_permission(auth_context, target, container_name)
+    policy = _resolve_terminal_policy(auth_context, target)
+    os_user = _resolve_terminal_os_user(
+        auth_context,
+        target=target,
+        requested_os_user=payload.requested_os_user,
+        policy=policy,
+    )
+    requested_shell = payload.shell.strip() if payload.shell else policy.get("default_shell", "/bin/bash")
+    shell = terminal_manager.validate_shell(requested_shell, policy.get("allowed_shells"))
+    owner_id = _terminal_owner_id(auth_context)
+
+    if target == "host":
+        session = terminal_manager.create_host_session(
+            owner_id=owner_id,
+            actor=auth_context.get("actor", "unknown"),
+            os_user=os_user,
+            shell=shell,
+            cols=payload.cols,
+            rows=payload.rows,
+            cwd=payload.cwd,
+            policy_shells=policy.get("allowed_shells"),
+        )
+    else:
+        if not container_name:
+            raise HTTPException(status_code=400, detail="container_name is required when target=container")
+        session = terminal_manager.create_container_session(
+            owner_id=owner_id,
+            actor=auth_context.get("actor", "unknown"),
+            container_name=container_name,
+            os_user=os_user,
+            shell=shell,
+            cols=payload.cols,
+            rows=payload.rows,
+            policy_shells=policy.get("allowed_shells"),
+        )
+
+    audit_api(
+        "terminal_session_create",
+        target=container_name or "host",
+        details={
+            "target": target,
+            "os_user": os_user,
+            "shell": shell,
+            "cols": payload.cols,
+            "rows": payload.rows,
+        },
+    )
+    return {"session": session}
+
+
+@app.get("/terminal/sessions/{session_id}/output")
+def read_terminal_session_output(
+    session_id: str,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    _, owner_id, allow_any, _ = _authorize_terminal_session_access(
+        "terminal_session_output",
+        session_id,
+        x_api_key,
+        x_user_token,
+    )
+    result = terminal_manager.read(session_id, owner_id, allow_any=allow_any)
+    output_bytes = result.get("output") or b""
+    output_b64 = base64.b64encode(output_bytes).decode("ascii") if output_bytes else ""
+    return {
+        "session_id": session_id,
+        "output_b64": output_b64,
+        "running": bool(result.get("running")),
+        "exit_code": result.get("exit_code"),
+    }
+
+
+@app.post("/terminal/sessions/{session_id}/input")
+def write_terminal_session_input(
+    session_id: str,
+    payload: TerminalSessionInputRequest,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    _, owner_id, allow_any, _ = _authorize_terminal_session_access(
+        "terminal_session_input",
+        session_id,
+        x_api_key,
+        x_user_token,
+    )
+    try:
+        raw = base64.b64decode(payload.data_b64.encode("ascii"), validate=True)
+    except (ValueError, binascii.Error):
+        raise HTTPException(status_code=400, detail="data_b64 must be valid base64")
+    result = terminal_manager.write(session_id, owner_id, raw, allow_any=allow_any)
+    return {
+        "session_id": session_id,
+        "written": int(result.get("written", 0)),
+    }
+
+
+@app.post("/terminal/sessions/{session_id}/resize")
+def resize_terminal_session(
+    session_id: str,
+    payload: TerminalSessionResizeRequest,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    _, owner_id, allow_any, _ = _authorize_terminal_session_access(
+        "terminal_session_resize",
+        session_id,
+        x_api_key,
+        x_user_token,
+    )
+    result = terminal_manager.resize(
+        session_id,
+        owner_id,
+        payload.cols,
+        payload.rows,
+        allow_any=allow_any,
+    )
+    return result
+
+
+@app.delete("/terminal/sessions/{session_id}")
+def close_terminal_session(
+    session_id: str,
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+):
+    _, owner_id, allow_any, metadata = _authorize_terminal_session_access(
+        "terminal_session_close",
+        session_id,
+        x_api_key,
+        x_user_token,
+    )
+    result = terminal_manager.close(session_id, owner_id, allow_any=allow_any)
+    audit_api(
+        "terminal_session_close",
+        target=metadata.get("container_name") or "host",
+        details={
+            "target": metadata.get("target"),
+            "os_user": metadata.get("os_user"),
+            "shell": metadata.get("shell"),
+            "exit_code": result.get("exit_code"),
+            "input_bytes": result.get("input_bytes"),
+            "output_bytes": result.get("output_bytes"),
+            "closed_reason": result.get("closed_reason"),
+        },
+    )
+    return {"message": "Terminal session closed", "session": result}
 
 # --- FIREWALL MANAGEMENT ---
 

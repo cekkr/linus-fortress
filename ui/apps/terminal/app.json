@@ -1,0 +1,20 @@
+{
+  "id": "terminal",
+  "title": "Terminal",
+  "description": "Open an interactive shell on the fortress host with delegated OS-user mapping.",
+  "icon": "terminal",
+  "parent": "home",
+  "order": 10,
+  "actions": [
+    {
+      "id": "terminal-connect",
+      "label": "Connect",
+      "variant": "primary"
+    },
+    {
+      "id": "terminal-disconnect",
+      "label": "Disconnect",
+      "variant": "ghost"
+    }
+  ]
+}

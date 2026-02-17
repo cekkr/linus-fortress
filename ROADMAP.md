@@ -85,6 +85,9 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Next: Add breakpoint-specific Puppeteer bridge seam checks (desktop/tablet/mobile widths) to prevent future unibody alignment regressions.
 - Next: Continue expanding app-home dashboards with richer per-item actions (route/site/VM quick controls), container sub-app homes, and visual regression coverage for stage rendering.
 - Next: Add a CI lane with a real LXD daemon fixture (including Fedora remotes output variants) to validate image availability discovery end-to-end beyond mocked unit tests.
+- Done: Add xterm.js Terminal app (host + recursive container sub-app) backed by server-side `/terminal/sessions*` APIs with delegated-token scope checks and OS-user mapping policies.
+- Next: Add terminal session recording/replay controls (opt-in, redacted) and alert hooks for suspicious shell activity patterns.
+- Next: Add optional WebSocket transport for terminal streams to reduce polling overhead on high-latency links.
 
 ## Path 9: Bootstrap and run tooling (short term)
 - Done: Document `run-server.sh` usage and supported distro assumptions (apt/dnf, LXD availability).

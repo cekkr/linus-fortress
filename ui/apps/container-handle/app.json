@@ -53,6 +53,11 @@
       "variant": "ghost"
     },
     {
+      "id": "container-terminal-open",
+      "label": "Terminal",
+      "variant": "ghost"
+    },
+    {
       "id": "delete-container",
       "label": "Delete",
       "variant": "danger"

@@ -5,6 +5,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/auth.py` centralizes master key resolution, delegated token verification, and container scope enforcement
 - `py/fortress/storage.py` centralizes JSON store helpers for API users, recipes, hosts, VMs, sites, and monitoring history
 - py/fortress/monitoring.py centralizes host/container resource snapshots with alert thresholds
+- `py/fortress/terminal.py` centralizes PTY-backed host/container terminal session lifecycle, shell allowlists, and owner-bound I/O controls
 - Container lifecycle/access/connectivity APIs are implemented in `py/fortress/api/containers.py` with LXC helpers in `py/fortress/containers.py`
 - Container image endpoints now merge saved presets from `/var/lib/fortress/container_images.json` with direct `lxc image list ... --format json` discovery and public simplestream (`https://images.linuxcontainers.org/streams/v1/index.json`) fallback so stale aliases are canonicalized to real current image names
 - `py/fortress/routing.py` centralizes nginx routing config rendering, domain validation, TLS path checks, ACME challenge support, conflict detection, and reload/testing helpers for HTTP(S) host routing
@@ -12,7 +13,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Routing entries support multi-domain server names (including wildcard domains), conflict detection, and can be refreshed via `POST /routing/refresh` to update upstream IPs
 - Routing entries persist in `/var/lib/fortress/routes.json` and generate nginx vhosts under `/etc/nginx/sites-available` (symlinked into `sites-enabled`)
 - `py/fortress/system.py` owns the shared `run_command` helper used by server and container management
-- py/server.py also manages host/container package operations (apt/dnf/yum), firewall rules (ufw + firewalld), site lifecycle APIs (including php.ini overrides), TLS automation, system upgrades, update-reload orchestration, and migrations
+- py/server.py also manages host/container package operations (apt/dnf/yum), firewall rules (ufw + firewalld), site lifecycle APIs (including php.ini overrides), TLS automation, terminal session APIs (`/terminal/sessions*`), system upgrades, update-reload orchestration, and migrations
 - `py/fortress/firewall.py` now applies anti-DDoS `conn_limit` caps with iptables-first fallback to nftables and enforces allowlist bypass ordering before conn-limit drops
 - `/monitoring/resources` exposes structured host+container metrics plus alert flags for automation against anomalous usage/malware-like spikes
 - Security posture assumes strong adversaries; prefer least privilege, audit trails, and rollback on failure
@@ -28,7 +29,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/sites.py` centralizes website models and JSON store helpers for site lifecycle APIs
 - `py/fortress/hosts.py` tracks SSH-managed host records for provisioning/probing on non-VM machines; shared SSH/script helpers are in `py/fortress/remote.py`
 - fortress-cli.py now includes `recipes list|create|apply|plan|seed|export|import`, `firewall *`, `sites *`, `migrations *`, `system upgrade|update-reload`, and `tls renew` helpers in addition to status/api-users/package/backup calls
-- Unit/integration tests in `tests/test_recipes.py`, `tests/test_permissions_matrix.py`, `tests/test_routing.py`, `tests/test_firewall.py`, `tests/test_migrations.py`, and `tests/test_sites.py` cover recipes (including bundle signatures + key-rotation verification), permission matrix endpoint sequences (recipes/system-upgrade/system-update-reload/routing/sites/firewall), routing, firewall parsing, migrations, and site model validation
+- Unit/integration tests in `tests/test_recipes.py`, `tests/test_permissions_matrix.py`, `tests/test_terminal.py`, `tests/test_routing.py`, `tests/test_firewall.py`, `tests/test_migrations.py`, and `tests/test_sites.py` cover recipes (including bundle signatures + key-rotation verification), permission matrix endpoint sequences (recipes/system-upgrade/system-update-reload/routing/sites/firewall/terminal), terminal policy helpers, routing, firewall parsing, migrations, and site model validation
 - `py/fortress/vms.py` centralizes VM registry + QEMU/VirtualBox lifecycle, snapshots, and SSH probe/provision helpers; provisioning scripts live in `scripts/provision`
 - api-v1.yaml documents the HTTP contract (OpenAPI 3.0.3) and README.md lists request bodies/permissions for each endpoint
 - Domain routing and LXD proxy helpers now support choosing container interfaces and host listen ports/addresses for finer TCP/IP exposure control between containers and the host
@@ -36,6 +37,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - Lizard UI now wires routing/recipes/packages/hosts plus container lifecycle (start/stop/restart/snapshot/exec/logs), monitoring sparklines + firewall diffs, and site management cards (deploy/backup/rollback/services)
 - Lizard UI now presents wizards as a full-stage horizontal sliding experience and includes a Containers live image catalog panel with remote filters and direct availability refresh
 - Lizard UI now includes a dedicated Settings app for global operations (system upgrade/update-reload) plus a configurable fast-actions horizontal menu persisted in browser settings
+- Lizard UI now includes an xterm.js-backed Terminal app for host shells plus a recursive container Terminal sub-app, both wired to delegated-token terminal session APIs with server-side user/scope enforcement
 - Lizard UI recipe apply flow surfaces `probe.health_checks` summaries with severity badges, and Packages includes a `/system/upgrade` wizard plus a `/system/update-reload` action for git pull + migration + restart flows
 - Lizard UI Recipes now surfaces persisted health trend cards (runs/pass-rate/failure trend + recent entries) and Sites surfaces TLS renewal/certificate status
 - Sites API/WebUI now support runtime `fpm_pool` tuning updates (pm mode, process caps, timeout directives, and extra overrides) during site update/service operations
@@ -74,6 +76,7 @@ This file contains the directives for AIs and must be kept current with the mini
 |       |-- sites.py
 |       |-- storage.py
 |       |-- system.py
+|       |-- terminal.py
 |       `-- api
 |           |-- __init__.py
 |           `-- containers.py
@@ -104,6 +107,7 @@ This file contains the directives for AIs and must be kept current with the mini
     |-- test_permissions_matrix.py
     |-- test_recipes.py
     |-- test_routing.py
+    |-- test_terminal.py
     `-- test_sites.py
 ```
 
@@ -111,6 +115,7 @@ This file contains the directives for AIs and must be kept current with the mini
 - `py/fortress/api/containers.py`: `/container/create`, `/container/{name}`, `/access/external/*`, `/container/users/*`, `/container/groups`, `/containers/connect/*`
 - `py/fortress/api/containers.py`: `/containers/images/popular`, `/containers/images/popular/remove`
 - `py/server.py`: `/status`, `/monitoring/resources`, `/routing`, `/routing/add`, `/routing/{domain}`, `/tls/renew`, `/api-users*`, `/firewall/*`, `/packages/*`, `/system/upgrade`, `/system/update-reload`, `/recipes*`, `/sites*`, `/migrations*`, `/backup/*`, `/restore`
+- `py/server.py`: `/terminal/sessions`, `/terminal/sessions/{session_id}/output`, `/terminal/sessions/{session_id}/input`, `/terminal/sessions/{session_id}/resize`, `/terminal/sessions/{session_id}`
 - `py/server.py`: `/recipes/health-history`, `/sites/{site_id}/tls/status`
 - `py/server.py`: `/vms*` (VM registry, start/stop/status, snapshots, SSH provisioning/probing)
 - `py/server.py`: `/hosts*` (SSH-managed host registry, provisioning/probing, saved states)

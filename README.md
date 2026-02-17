@@ -19,6 +19,7 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 - Set `FORTRESS_BACKUP_PASSWORD` and store it outside the host; verify backup restores.
 - Keep host OS and LXD patched; apply security updates before provisioning new containers.
 - Restrict firewall rules and `POST /containers/expose` to known allowlists; prefer specific bind addresses.
+- For terminal access, grant `terminal_host`/`terminal_container` only where needed and map each delegated token to a least-privilege OS user via `terminal_host.os_user` / `terminal_container.os_user`.
 - Run the service under a dedicated user with a tight sudoers policy for the required system commands (see Run Server Script).
 - Keep audit logs (`/var/lib/fortress/command_log.db`) and ship them off-host for retention.
 - Use SSH keys only for host/VM provisioning; disable password login for privileged accounts.
@@ -26,7 +27,7 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 ## Authentication
 
 - `X-API-Key`: optional centralized master key with unrestricted access, best used only during bootstrap (set `FORTRESS_API_KEY` or `API_SECRET_KEY`). Disable it long-term to reduce blast radius.
-- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `migration_admin`) and optional `allowed_containers` scope.
+- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `migration_admin`, `terminal_host`, `terminal_container`, optional `terminal_root`, optional `terminal_impersonate`) and optional `allowed_containers` scope.
 - Either header grants access; if both are provided the master key takes precedence. Tokens scoped to containers must match the container(s) referenced by the request payload.
 
 Once bootstrap tokens are created, unset `FORTRESS_API_KEY` (or keep the default placeholder) to disable the centralized key and reduce long-term risk.
@@ -62,6 +63,7 @@ Environment variables:
 - Admin security: `FORTRESS_UI_ADMIN_DB`, `FORTRESS_UI_ADMIN_AUDIT_LOG`, `FORTRESS_UI_ADMIN_SESSION_COOKIE`, `FORTRESS_UI_ADMIN_SESSION_TTL`, `FORTRESS_UI_PASSWORD_MIN_LENGTH`, `FORTRESS_UI_LOCKOUT_THRESHOLD`, `FORTRESS_UI_LOCKOUT_MINUTES`, `FORTRESS_UI_TOTP_ISSUER`, `FORTRESS_UI_TOTP_WINDOW`, `FORTRESS_UI_ADMIN_ENABLED=0` to disable enforcement (not recommended).
 
 For full LAMP automation and routing flows, the delegated token should include `manage_containers`, `manage_routing`, `recipes_manage`, `recipes_apply`, and `sites_manage`.
+For interactive shell access in the UI Terminal apps, add `terminal_host` (host shell) and/or `terminal_container` (container shell), then set per-token OS-user mappings in `/api-users`.
 
 The UI service enforces admin login (password policy + lockout + audit log + optional TOTP) before allowing delegated-token sessions. If no admin exists yet, the UI presents a bootstrap form backed by `/api/admin/bootstrap`. Admin sessions are stored in a UI-only cookie (`FORTRESS_UI_ADMIN_SESSION_COOKIE`).
 
@@ -89,6 +91,7 @@ Global maintenance actions now live in a dedicated **Settings** app card (System
 The stage now includes a configurable fast-actions horizontal menu; action selection is editable from Settings and persisted in browser local storage.
 The Settings app includes a guided System Upgrade wizard that runs `/system/upgrade` preflight (`dry_run=true`) and requires backup confirmation before execution.
 The Settings app also includes **Check Update + Reload**, which runs `/system/update-reload` to `git pull --ff-only`, auto-stashes/restores local changes by default, applies pending migrations when new commits arrive, then restarts API/UI using auto mode detection.
+The UI now includes an xterm.js-powered **Terminal** app for host shells and a recursive per-container **Terminal** sub-app; both use server-managed terminal sessions (`/terminal/sessions*`) so delegated token scope and OS-user mapping are enforced server-side.
 
 ## Run Server Script
 
@@ -537,10 +540,30 @@ Body:
 {
   "username": "automation-bot",
   "permissions": ["manage_containers", "read_status"],
-  "allowed_containers": ["web01", "db01"]
+  "allowed_containers": ["web01", "db01"],
+  "terminal_host": {
+    "os_user": "automation",
+    "allow_root": false,
+    "allow_user_override": false,
+    "allowed_shells": ["/bin/bash", "/bin/sh"],
+    "default_shell": "/bin/bash"
+  },
+  "terminal_container": {
+    "os_user": "root",
+    "allow_root": true,
+    "allow_user_override": false,
+    "allowed_shells": ["/bin/bash", "/bin/sh"],
+    "default_shell": "/bin/bash"
+  }
 }
 ```
 - Returns a generated token plus the stored record.
+- `terminal_host` / `terminal_container` are optional per-token terminal policies.
+  - `os_user`: delegated username-to-OS-user mapping (required in hardened deployments).
+  - `allow_root`: allow `root` shell sessions for that target.
+  - `allow_user_override`: allow request-time `requested_os_user`.
+  - `allowed_shells`: optional shell path allowlist (intersected with global `FORTRESS_TERMINAL_ALLOWED_SHELLS`).
+  - `default_shell`: default shell when the client does not provide one.
 
 #### `GET /api-users` (permission `api_user_admin`)
 - Lists every token with `username`, `permissions`, and scope.
@@ -549,6 +572,8 @@ Body:
 Body may include:
 - `permissions` (array of strings, optional)
 - `allowed_containers` (array of strings, optional)
+- `terminal_host` (object or `null`, optional)
+- `terminal_container` (object or `null`, optional)
 
 #### `DELETE /api-users/{token}` (permission `api_user_admin`)
 - Removes the delegated token.
@@ -698,6 +723,50 @@ Body requires `container_name` plus either:
 
 #### `POST /containers/connect/share/remove`
 - Body requires same `share_name` and the list of `containers` that should have the disk detached.
+
+### Terminal Sessions
+
+Interactive shell access now uses server-side terminal sessions so delegated tokens stay scoped and mapped to explicit OS identities.
+
+#### `POST /terminal/sessions` (permission `terminal_host` or `terminal_container`)
+Body:
+```json
+{
+  "target": "container",
+  "container_name": "web01",
+  "requested_os_user": "root",
+  "shell": "/bin/bash",
+  "cols": 120,
+  "rows": 32
+}
+```
+- `target`: `host` or `container`.
+- `container_name`: required when `target=container`; container scope (`allowed_containers`) is enforced.
+- `requested_os_user`: optional override; allowed only when policy permits (`allow_user_override`) or token has `terminal_impersonate`.
+- `shell`: absolute shell path; must pass the global allowlist (`FORTRESS_TERMINAL_ALLOWED_SHELLS`) and optional token allowlist.
+- `cols`/`rows`: initial PTY dimensions (validated bounds).
+- Root shells require `terminal_root` or a policy with `allow_root=true` (master key remains unrestricted when enabled).
+
+#### `GET /terminal/sessions/{session_id}/output`
+- Returns incremental terminal bytes as base64 (`output_b64`) plus `running` and `exit_code`.
+- Session ownership is bound to the authenticated token fingerprint; other delegated tokens cannot read the stream.
+
+#### `POST /terminal/sessions/{session_id}/input`
+Body:
+```json
+{"data_b64": "bHMgLWxhCg=="}
+```
+- Sends base64-encoded UTF-8 keystrokes/input to the PTY.
+
+#### `POST /terminal/sessions/{session_id}/resize`
+Body:
+```json
+{"cols": 140, "rows": 40}
+```
+- Updates PTY geometry for responsive terminal rendering.
+
+#### `DELETE /terminal/sessions/{session_id}`
+- Closes the terminal session and returns close metadata (`exit_code`, byte counters, reason).
 
 ### Firewall Management (permission `firewall_admin`)
 

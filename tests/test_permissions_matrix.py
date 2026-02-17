@@ -588,6 +588,155 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
                 lambda: self.module.list_sites(x_api_key=None, x_user_token="token-none")
             )
 
+    def test_permission_matrix_terminal_create_permissions(self) -> None:
+        self._write_users(
+            {
+                "token-host": {"username": "hostuser", "permissions": ["terminal_host"], "allowed_containers": None},
+                "token-container": {
+                    "username": "containeruser",
+                    "permissions": ["terminal_container"],
+                    "allowed_containers": ["alpha"],
+                },
+                "token-none": {"username": "none", "permissions": [], "allowed_containers": None},
+            }
+        )
+
+        with (
+            mock.patch.object(self.module.terminal_manager, "validate_shell", return_value="/bin/bash"),
+            mock.patch.object(
+                self.module.terminal_manager,
+                "create_host_session",
+                return_value={"session_id": "host-session", "target": "host", "os_user": "hostuser"},
+            ),
+            mock.patch.object(
+                self.module.terminal_manager,
+                "create_container_session",
+                return_value={
+                    "session_id": "container-session",
+                    "target": "container",
+                    "container_name": "alpha",
+                    "os_user": "containeruser",
+                },
+            ),
+        ):
+            host_result = self.module.create_terminal_session(
+                self.module.TerminalSessionCreateRequest(target="host", shell="/bin/bash"),
+                x_api_key=None,
+                x_user_token="token-host",
+            )
+            self.assertEqual(host_result["session"]["session_id"], "host-session")
+
+            container_result = self.module.create_terminal_session(
+                self.module.TerminalSessionCreateRequest(target="container", container_name="alpha", shell="/bin/bash"),
+                x_api_key=None,
+                x_user_token="token-container",
+            )
+            self.assertEqual(container_result["session"]["session_id"], "container-session")
+
+            self._expect_denied(
+                lambda: self.module.create_terminal_session(
+                    self.module.TerminalSessionCreateRequest(target="host", shell="/bin/bash"),
+                    x_api_key=None,
+                    x_user_token="token-none",
+                )
+            )
+            self._expect_denied(
+                lambda: self.module.create_terminal_session(
+                    self.module.TerminalSessionCreateRequest(target="container", container_name="beta", shell="/bin/bash"),
+                    x_api_key=None,
+                    x_user_token="token-container",
+                )
+            )
+
+    def test_permission_matrix_terminal_session_access_permissions(self) -> None:
+        self._write_users(
+            {
+                "token-host": {"username": "hostuser", "permissions": ["terminal_host"], "allowed_containers": None},
+                "token-container": {
+                    "username": "containeruser",
+                    "permissions": ["terminal_container"],
+                    "allowed_containers": ["alpha"],
+                },
+            }
+        )
+
+        def describe_side_effect(session_id, owner_id, allow_any=False):
+            if session_id == "host-session":
+                return {"session_id": session_id, "target": "host", "container_name": None}
+            if session_id == "container-session":
+                return {"session_id": session_id, "target": "container", "container_name": "alpha"}
+            if session_id == "container-session-out-of-scope":
+                return {"session_id": session_id, "target": "container", "container_name": "beta"}
+            raise self.module.HTTPException(status_code=404, detail="missing")
+
+        with (
+            mock.patch.object(self.module.terminal_manager, "describe", side_effect=describe_side_effect),
+            mock.patch.object(
+                self.module.terminal_manager,
+                "read",
+                return_value={"session_id": "host-session", "output": b"ok", "running": True, "exit_code": None},
+            ),
+            mock.patch.object(
+                self.module.terminal_manager,
+                "write",
+                return_value={"session_id": "container-session", "written": 2},
+            ),
+            mock.patch.object(
+                self.module.terminal_manager,
+                "resize",
+                return_value={"session_id": "container-session", "cols": 120, "rows": 32},
+            ),
+            mock.patch.object(
+                self.module.terminal_manager,
+                "close",
+                return_value={"session_id": "container-session", "exit_code": 0, "closed_reason": "closed_by_client"},
+            ),
+        ):
+            host_read = self.module.read_terminal_session_output(
+                "host-session",
+                x_api_key=None,
+                x_user_token="token-host",
+            )
+            self.assertTrue(host_read["running"])
+
+            container_write = self.module.write_terminal_session_input(
+                "container-session",
+                self.module.TerminalSessionInputRequest(data_b64="aGk="),
+                x_api_key=None,
+                x_user_token="token-container",
+            )
+            self.assertEqual(container_write["written"], 2)
+
+            container_resize = self.module.resize_terminal_session(
+                "container-session",
+                self.module.TerminalSessionResizeRequest(cols=120, rows=32),
+                x_api_key=None,
+                x_user_token="token-container",
+            )
+            self.assertEqual(container_resize["cols"], 120)
+
+            container_close = self.module.close_terminal_session(
+                "container-session",
+                x_api_key=None,
+                x_user_token="token-container",
+            )
+            self.assertIn("session", container_close)
+
+            self._expect_denied(
+                lambda: self.module.read_terminal_session_output(
+                    "host-session",
+                    x_api_key=None,
+                    x_user_token="token-container",
+                )
+            )
+            self._expect_denied(
+                lambda: self.module.read_terminal_session_output(
+                    "container-session-out-of-scope",
+                    x_api_key=None,
+                    x_user_token="token-container",
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
