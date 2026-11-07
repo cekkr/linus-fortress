@@ -157,3 +157,74 @@ class MigrationEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SchemaFieldCoverageTests(unittest.TestCase):
+    """Every field the code writes must be listed in ``schemas/<store>.json``.
+
+    Otherwise ``migrate_record`` parks it under ``_legacy`` on the next apply (e.g. revoking terminal policies or
+    wiping recipe history from the live record).
+    """
+
+    SCHEMA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "schemas"))
+    PY_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "py"))
+
+    def setUp(self) -> None:
+        from fortress.migrations import load_schema_registry
+
+        self.registry = load_schema_registry(self.SCHEMA_DIR)
+
+    def _assert_no_legacy(self, store: str, record: dict) -> None:
+        migrated, actions = migrate_record(record, self.registry[store])
+        self.assertNotIn("_legacy", migrated, f"{store}: unknown fields {sorted(set(record) - set(migrated))}")
+        self.assertFalse([a for a in actions if a.startswith(("legacy", "prune"))], actions)
+
+    def test_api_user_record_fields_are_known(self) -> None:
+        record = {
+            "username": "ops",
+            "permissions": ["terminal_host"],
+            "allowed_containers": None,
+            "created_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2027-01-01T00:00:00Z",
+            "terminal_host": {"os_user": "ops"},
+            "terminal_container": {"os_user": "root"},
+        }
+        self._assert_no_legacy("api_users", record)
+
+    def test_recipe_record_fields_are_known(self) -> None:
+        from fortress.recipes import create_recipe_record
+
+        self._assert_no_legacy("recipes", create_recipe_record({"name": "demo", "packages": ["curl"]}))
+
+    def test_site_record_fields_are_known(self) -> None:
+        from fortress.sites import SiteCreateRequest, create_site_record
+
+        record = create_site_record(
+            SiteCreateRequest(name="s1", primary_domain="a.example.com", container_name="c1", docroot="/var/www"),
+            {},
+        )
+        self._assert_no_legacy("sites", record)
+
+    def test_vm_and_host_assigned_fields_are_known(self) -> None:
+        import re
+
+        pattern = re.compile(r'\b(?:vm|record|host)\["([a-z_]+)"\]\s*=(?!=)')
+        for store, module in (("vms", "vms.py"), ("hosts", "hosts.py")):
+            with open(os.path.join(self.PY_DIR, "fortress", module)) as fh:
+                assigned = set(pattern.findall(fh.read()))
+            known = set(self.registry[store]["fields"])
+            with self.subTest(store=store):
+                self.assertEqual(sorted(assigned - known), [])
+
+    def test_known_fields_are_promoted_out_of_legacy(self) -> None:
+        schema = {"fields": ["name", "history", "version"], "defaults": {"history": []}, "prune_unknown": False}
+        record = {"name": "demo", "_legacy": {"history": [{"v": "1.0.0"}], "version": "1.0.0", "extra": 1}}
+        migrated, actions = migrate_record(record, schema)
+        self.assertEqual(migrated["history"], [{"v": "1.0.0"}])
+        self.assertEqual(migrated["version"], "1.0.0")
+        self.assertEqual(migrated["_legacy"], {"extra": 1})
+        self.assertIn("promote:2", actions)
+        # A live top-level value wins over the parked copy.
+        migrated, _ = migrate_record({"name": "d", "version": "2.0.0", "_legacy": {"version": "1.0.0"}}, schema)
+        self.assertEqual(migrated["version"], "2.0.0")
+        self.assertNotIn("_legacy", migrated)

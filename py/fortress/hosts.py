@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from fortress.remote import SSHConfig, build_probe_script, load_provision_script, run_ssh_script
+from fortress.remote import SSHConfig, build_probe_script, load_provision_script, run_ssh_script, validate_ssh_config
 from fortress.storage import load_json_dict, save_json
 
 HOST_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -119,6 +119,8 @@ def create_host(payload: HostCreateRequest, hosts: Dict[str, Dict[str, Any]]) ->
     if payload.name in hosts:
         raise HTTPException(status_code=409, detail="Host already exists")
     record = payload.dict()
+    if record.get("ssh"):
+        validate_ssh_config(record["ssh"])
     record["created_at"] = utc_now()
     record["updated_at"] = record["created_at"]
     record["saved_states"] = []
@@ -130,7 +132,7 @@ def update_host(name: str, payload: HostUpdateRequest, hosts: Dict[str, Dict[str
     record = _resolve_host(hosts, name)
     updates = payload.dict(exclude_unset=True)
     if "ssh" in updates and updates["ssh"] is not None:
-        record["ssh"] = updates["ssh"]
+        record["ssh"] = validate_ssh_config(updates["ssh"])
     for key in ["os_type", "labels", "notes", "installed", "service_name"]:
         if key in updates and updates[key] is not None:
             record[key] = updates[key]

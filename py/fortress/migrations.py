@@ -188,9 +188,38 @@ def _preserve_unknown_fields(record: Dict[str, Any], allowed: List[str], prune_u
     return updated, actions
 
 
+def _promote_legacy_fields(record: Dict[str, Any], allowed: List[str]) -> Tuple[Dict[str, Any], List[str]]:
+    """Move fields that a newer schema knows about back out of ``_legacy``.
+
+    Earlier schema versions could miss fields the code writes (e.g. recipe ``history``); a migration under
+    such a schema parked them in ``_legacy``. Once the schema lists them again, restore them to the top level
+    unless a live top-level value already exists.
+    """
+    legacy = record.get("_legacy")
+    if not allowed or not isinstance(legacy, dict) or not legacy:
+        return record, []
+    allowed_set = set(allowed)
+    promotable = [key for key in legacy if key in allowed_set]
+    if not promotable:
+        return record, []
+    updated = dict(record)
+    remaining = dict(legacy)
+    for key in promotable:
+        value = remaining.pop(key)
+        if key not in updated or updated[key] is None:
+            updated[key] = value
+    if remaining:
+        updated["_legacy"] = remaining
+    else:
+        updated.pop("_legacy", None)
+    return updated, [f"promote:{len(promotable)}"]
+
+
 def migrate_record(record: Dict[str, Any], schema: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     actions: List[str] = []
     updated = dict(record)
+    updated, promote_actions = _promote_legacy_fields(updated, _known_fields(schema))
+    actions.extend(promote_actions)
     aliases = schema.get("aliases") or {}
     if isinstance(aliases, dict):
         updated, alias_actions = _apply_aliases(updated, aliases)

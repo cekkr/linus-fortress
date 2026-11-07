@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from fortress.remote import SSHConfig, build_probe_script, load_provision_script, run_ssh_script
+from fortress.remote import SSHConfig, build_probe_script, load_provision_script, run_ssh_script, validate_ssh_config
 from fortress.storage import ensure_parent_dir, load_json_dict, save_json
 from fortress.system import run_command
 
@@ -410,6 +410,8 @@ def create_vm(payload: VMCreateRequest, vms: Dict[str, Dict[str, Any]]) -> Dict[
     if payload.name in vms:
         raise HTTPException(status_code=409, detail="VM already exists")
     record = payload.dict()
+    if record.get("ssh"):
+        validate_ssh_config(record["ssh"])
     record["provider"] = normalize_provider(payload.provider)
     record["provider_display"] = payload.provider
     record["created_at"] = utc_now()
@@ -435,7 +437,7 @@ def update_vm(name: str, payload: VMUpdateRequest, vms: Dict[str, Dict[str, Any]
     record = _resolve_vm(vms, name)
     updates = payload.dict(exclude_unset=True)
     if "ssh" in updates and updates["ssh"] is not None:
-        record["ssh"] = updates["ssh"]
+        record["ssh"] = validate_ssh_config(updates["ssh"])
     for key in [
         "cpu_cores",
         "memory_mb",

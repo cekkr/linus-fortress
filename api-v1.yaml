@@ -7,6 +7,10 @@ info:
     firewall, and package management. Authentication can be done either via the master `X-API-Key`
     or delegated `X-User-Token`. Typed tokens (`api-key:<key>` or `user-token:<token>`) are accepted
     in either header and normalized by the API. Both headers are documented as security schemes below.
+
+    Auth failures: **401** (with a `WWW-Authenticate` header) when no credential, an unknown credential,
+    or an expired delegated token is presented; **403** when the credential is valid but lacks the
+    required permission or container scope. These apply to every route and are not repeated per operation.
 servers:
   - url: https://fortress.local:8443
     description: Fortress default listener (change host/port as needed)
@@ -3002,6 +3006,16 @@ components:
           $ref: "#/components/schemas/TerminalAccessPolicy"
         terminal_container:
           $ref: "#/components/schemas/TerminalAccessPolicy"
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Absolute expiry (must be in the future). Mutually exclusive with `ttl_seconds`.
+        ttl_seconds:
+          type: integer
+          minimum: 1
+          maximum: 315360000
+          description: Lifetime from now in seconds. Mutually exclusive with `expires_at`.
     APIUserUpdate:
       type: object
       properties:
@@ -3021,6 +3035,16 @@ components:
           allOf:
             - $ref: "#/components/schemas/TerminalAccessPolicy"
           nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: New absolute expiry (future), or `null` to remove the expiry. Mutually exclusive with `ttl_seconds`.
+        ttl_seconds:
+          type: integer
+          minimum: 1
+          maximum: 315360000
+          description: New lifetime from now in seconds. Mutually exclusive with `expires_at`.
     APIUserRecord:
       type: object
       properties:
@@ -3038,6 +3062,15 @@ components:
           $ref: "#/components/schemas/TerminalAccessPolicy"
         terminal_container:
           $ref: "#/components/schemas/TerminalAccessPolicy"
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: UTC expiry; `null` means the token never expires.
     APIUserRecordWithToken:
       allOf:
         - $ref: "#/components/schemas/APIUserRecord"
@@ -3045,6 +3078,9 @@ components:
           properties:
             token:
               type: string
+            expired:
+              type: boolean
+              description: Present in `GET /api-users`; true once `expires_at` has passed.
     TerminalAccessPolicy:
       type: object
       properties:

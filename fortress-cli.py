@@ -432,6 +432,39 @@ def status_command(args: argparse.Namespace) -> None:
     call_command(args)
 
 
+_DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def parse_duration_seconds(value: str) -> int:
+    """Parse ``3600``, ``90m``, ``12h``, ``30d`` or ``2w`` into a positive number of seconds."""
+    text = (value or "").strip().lower()
+    if not text:
+        raise FortressCLIError("Duration cannot be empty")
+    unit = text[-1]
+    multiplier = 1
+    if unit in _DURATION_UNITS:
+        multiplier = _DURATION_UNITS[unit]
+        text = text[:-1]
+    if not text.isdigit() or int(text) <= 0:
+        raise FortressCLIError(f"Invalid duration: {value!r} (use e.g. 3600, 90m, 12h, 30d, 2w)")
+    return int(text) * multiplier
+
+
+def build_token_expiry_payload(args: argparse.Namespace) -> Dict[str, Any]:
+    ttl = getattr(args, "ttl", None)
+    expires_at = getattr(args, "expires_at", None)
+    never = bool(getattr(args, "never", False))
+    if sum(bool(item) for item in (ttl, expires_at, never)) > 1:
+        raise FortressCLIError("Use only one of --ttl, --expires-at, --never")
+    if ttl:
+        return {"ttl_seconds": parse_duration_seconds(ttl)}
+    if expires_at:
+        return {"expires_at": expires_at}
+    if never:
+        return {"expires_at": None}
+    return {}
+
+
 def api_users_command(args: argparse.Namespace) -> None:
     config = load_config()
     client = FortressClient(config, passphrase=args.passphrase)
@@ -443,7 +476,13 @@ def api_users_command(args: argparse.Namespace) -> None:
             "permissions": args.permissions,
             "allowed_containers": args.containers,
         }
+        payload.update(build_token_expiry_payload(args))
         result = client.request("POST", "/api-users", json_body=payload)
+    elif args.subcommand == "expire":
+        payload = build_token_expiry_payload(args)
+        if not payload:
+            raise FortressCLIError("Provide --ttl, --expires-at, or --never")
+        result = client.request("PUT", f"/api-users/{args.token}", json_body=payload)
     elif args.subcommand == "delete":
         result = client.request("DELETE", f"/api-users/{args.token}")
     else:
@@ -1340,7 +1379,15 @@ def build_parser() -> argparse.ArgumentParser:
     api_users_create.add_argument("username")
     api_users_create.add_argument("--permissions", nargs="+", required=True)
     api_users_create.add_argument("--containers", nargs="*")
+    api_users_create.add_argument("--ttl", help="Token lifetime, e.g. 3600, 90m, 12h, 30d, 2w")
+    api_users_create.add_argument("--expires-at", help="Absolute ISO-8601 expiry, e.g. 2027-01-01T00:00:00Z")
     api_users_create.set_defaults(func=api_users_command)
+    api_users_expire = api_users_sub.add_parser("expire", help="Set, extend, or clear a token's expiry")
+    api_users_expire.add_argument("token")
+    api_users_expire.add_argument("--ttl", help="New lifetime from now, e.g. 12h, 30d")
+    api_users_expire.add_argument("--expires-at", help="Absolute ISO-8601 expiry")
+    api_users_expire.add_argument("--never", action="store_true", help="Remove the expiry")
+    api_users_expire.set_defaults(func=api_users_command)
     api_users_delete = api_users_sub.add_parser("delete", help="Delete an API user by token")
     api_users_delete.add_argument("token")
     api_users_delete.set_defaults(func=api_users_command)

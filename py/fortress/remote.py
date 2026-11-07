@@ -1,5 +1,7 @@
+import ipaddress
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -37,13 +39,62 @@ def _run_subprocess(command: List[str], input_text: Optional[str] = None) -> str
         raise HTTPException(status_code=500, detail=f"System Error: {exc.stderr.strip()}")
 
 
+SSH_USERNAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]{0,63}$")
+SSH_HOSTNAME_PATTERN = re.compile(
+    r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$"
+)
+ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+PROVISION_PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+
+def _invalid_ssh(detail: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=f"Invalid SSH config: {detail}")
+
+
+def validate_ssh_config(ssh_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Reject values that ssh would parse as options (e.g. ``-oProxyCommand=...``) or that are malformed.
+
+    ``host`` must be a DNS name or IP literal, ``username`` a POSIX-style login, ``port`` 1-65535 and
+    ``key_path`` an absolute path. Called both when records are stored and before every ssh invocation.
+    """
+    if not isinstance(ssh_config, dict):
+        raise _invalid_ssh("expected an object")
+    host = str(ssh_config.get("host") or "").strip()
+    username = str(ssh_config.get("username") or "").strip()
+    if not username or not SSH_USERNAME_PATTERN.match(username):
+        raise _invalid_ssh("username must match [A-Za-z_][A-Za-z0-9._-]{0,63}")
+    is_ip = False
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        is_ip = True
+    except ValueError:
+        pass
+    if not host or not (is_ip or SSH_HOSTNAME_PATTERN.match(host)):
+        raise _invalid_ssh("host must be a hostname or IP address")
+    raw_port = ssh_config.get("port")
+    try:
+        port = 22 if raw_port is None else int(raw_port)
+    except (TypeError, ValueError):
+        raise _invalid_ssh("port must be an integer")
+    if not 1 <= port <= 65535:
+        raise _invalid_ssh("port must be between 1 and 65535")
+    key_path = ssh_config.get("key_path")
+    if key_path is not None and key_path != "":
+        if not isinstance(key_path, str) or not os.path.isabs(key_path) or "\0" in key_path or "\n" in key_path:
+            raise _invalid_ssh("key_path must be an absolute path")
+    return ssh_config
+
+
 def build_ssh_command(ssh_config: Dict[str, Any]) -> List[str]:
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-p", str(ssh_config.get("port", 22))]
+    validate_ssh_config(ssh_config)
+    cmd = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-p", str(22 if ssh_config.get("port") is None else int(ssh_config["port"]))]
     key_path = ssh_config.get("key_path")
     if key_path:
         cmd.extend(["-i", key_path])
-    target = f"{ssh_config['username']}@{ssh_config['host']}"
-    cmd.append(target)
+    host = str(ssh_config["host"]).strip().strip("[]")
+    target = f"{str(ssh_config['username']).strip()}@{host}"
+    # "--" ends option parsing so the destination can never be read as an ssh flag.
+    cmd.extend(["--", target])
     return cmd
 
 
@@ -52,6 +103,8 @@ def run_ssh_script(ssh_config: Dict[str, Any], script: str, env: Optional[Dict[s
     for key, value in (env or {}).items():
         if value is None:
             continue
+        if not ENV_NAME_PATTERN.match(str(key)):
+            raise HTTPException(status_code=400, detail=f"Invalid environment variable name: {key!r}")
         env_pairs.append(f"{key}={shlex.quote(str(value))}")
     env_prefix = " ".join(env_pairs)
     remote_cmd = f"{env_prefix} bash -s" if env_prefix else "bash -s"
@@ -65,6 +118,8 @@ def run_ssh_script(ssh_config: Dict[str, Any], script: str, env: Optional[Dict[s
 
 
 def load_provision_script(profile: str, scripts_dir: Optional[str] = None) -> str:
+    if not isinstance(profile, str) or not PROVISION_PROFILE_PATTERN.match(profile):
+        raise HTTPException(status_code=400, detail="Invalid provisioning profile name")
     script_name = f"provision_{profile}.sh"
     script_root = scripts_dir or PROVISION_SCRIPTS_DIR
     script_path = os.path.join(script_root, script_name)

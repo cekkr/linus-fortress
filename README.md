@@ -29,6 +29,8 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 - `X-API-Key`: optional centralized master key with unrestricted access, best used only during bootstrap (set `FORTRESS_API_KEY` or `API_SECRET_KEY`). Disable it long-term to reduce blast radius.
 - `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `migration_admin`, `terminal_host`, `terminal_container`, optional `terminal_root`, optional `terminal_impersonate`) and optional `allowed_containers` scope.
 - Either header grants access; if both are provided the master key takes precedence. Tokens scoped to containers must match the container(s) referenced by the request payload.
+- Delegated tokens may carry an expiry (`expires_at`, set at creation with `ttl_seconds`/`expires_at` or later via `PUT /api-users/{token}`). Tokens without one never expire; a record with an unparseable `expires_at` is treated as expired.
+- Status codes: **401** (with `WWW-Authenticate`) = no credential, unknown credential, or expired token — re-authenticate; **403** = authenticated, but the token lacks the permission or the container is outside `allowed_containers`.
 
 Once bootstrap tokens are created, unset `FORTRESS_API_KEY` (or keep the default placeholder) to disable the centralized key and reduce long-term risk.
 If `FORTRESS_API_KEY` is unset or left as the default placeholder, `X-API-Key` authentication is disabled.
@@ -465,6 +467,8 @@ Body (excerpt):
 }
 ```
 - QEMU uses `qemu-img` + `qemu-system-*`, VirtualBox uses `VBoxManage`. UTM is treated as QEMU.
+- `ssh` is validated on create/update and before every SSH call: `username` must match `[A-Za-z_][A-Za-z0-9._-]{0,63}`, `host` must be a hostname or IP literal, `port` 1–65535, `key_path` absolute (`400` otherwise).
+- Security: `qemu_binary` and `extra_args` are currently passed through unvalidated, so grant `vm_manage` only to root-equivalent operators.
 
 #### `POST /vms/{name}/start` + `POST /vms/{name}/stop` (permission `vm_manage`)
 - Start/stop VMs, optionally booting from ISO on start.
@@ -520,6 +524,7 @@ Body (excerpt):
   "ssh": {"host": "198.51.100.10", "username": "root", "key_path": "/root/.ssh/id_rsa"}
 }
 ```
+- `ssh` is validated on create/update and before every SSH call: `username` must match `[A-Za-z_][A-Za-z0-9._-]{0,63}`, `host` must be a hostname or IP literal, `port` 1–65535, `key_path` absolute (`400` otherwise).
 
 #### `POST /hosts/{name}/provision` (permission `host_manage`)
 - Pushes the provisioning script over SSH and installs Linus' Fortress on the remote host.
@@ -556,10 +561,12 @@ Body:
     "allow_user_override": false,
     "allowed_shells": ["/bin/bash", "/bin/sh"],
     "default_shell": "/bin/bash"
-  }
+  },
+  "ttl_seconds": 2592000
 }
 ```
-- Returns a generated token plus the stored record.
+- Returns a generated token plus the stored record (with `created_at` and `expires_at`).
+- Expiry (optional, mutually exclusive): `ttl_seconds` (1 s – 10 years from now) or `expires_at` (ISO-8601, must be in the future; naive values are UTC). Omit both for a non-expiring token. Conflicting or past values return `400`. CLI: `fortress-cli api-users create ci --permissions read_status --ttl 30d`.
 - `terminal_host` / `terminal_container` are optional per-token terminal policies.
   - `os_user`: delegated username-to-OS-user mapping (required in hardened deployments).
   - `allow_root`: allow `root` shell sessions for that target.
@@ -568,7 +575,7 @@ Body:
   - `default_shell`: default shell when the client does not provide one.
 
 #### `GET /api-users` (permission `api_user_admin`)
-- Lists every token with `username`, `permissions`, and scope.
+- Lists every token with `username`, `permissions`, scope, `created_at`, `expires_at`, and a computed `expired` flag.
 
 #### `PUT /api-users/{token}` (permission `api_user_admin`)
 Body may include:
@@ -576,6 +583,8 @@ Body may include:
 - `allowed_containers` (array of strings, optional)
 - `terminal_host` (object or `null`, optional)
 - `terminal_container` (object or `null`, optional)
+- `ttl_seconds` (integer, optional) — reset the expiry to now + N seconds
+- `expires_at` (ISO-8601 or `null`, optional) — set an absolute expiry, or `null` to remove it. CLI: `fortress-cli api-users expire <token> --ttl 12h | --expires-at <iso> | --never`.
 
 #### `DELETE /api-users/{token}` (permission `api_user_admin`)
 - Removes the delegated token.

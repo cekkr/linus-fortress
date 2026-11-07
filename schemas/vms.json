@@ -1,6 +1,6 @@
 {
   "store": "vms",
-  "schema_version": "1",
+  "schema_version": "2",
   "record_type": "mapping",
   "fields": [
     "name",
@@ -26,7 +26,18 @@
     "pid",
     "created_at",
     "updated_at",
-    "snapshots"
+    "snapshots",
+    "last_probe",
+    "last_probe_at",
+    "last_provision_profile",
+    "last_provisioned_at",
+    "last_snapshot",
+    "last_snapshot_restore",
+    "last_start_at",
+    "last_stop_at",
+    "pid_file",
+    "saved_states",
+    "service_name"
   ],
   "defaults": {
     "labels": {},

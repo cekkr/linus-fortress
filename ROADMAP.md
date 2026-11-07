@@ -30,7 +30,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add route-level integration tests for recipes/system-upgrade flows with delegated-token permission matrix coverage.
 - Done: Validate container-scope enforcement during recipe applies (`allowed_containers` checks).
 - Done: Expand integration coverage to routing/sites/firewall endpoint sequences with fixture-backed state setup.
-- Next: Add token-expiry/invalid-token integration cases and 401-vs-403 assertions across the permission matrix.
+- Done: Delegated-token expiry (`ttl_seconds`/`expires_at` on create/update, `expired` flag in listings, CLI `api-users create --ttl` / `api-users expire`) and a 401 (missing/unknown/expired credential, with `WWW-Authenticate`) vs 403 (insufficient permission/scope) split, with a route-level status matrix in `tests/test_auth_tokens.py`.
+- Next: Sweep (or flag in the WebUI) expired delegated tokens, and surface `expires_at` in the Lizard UI token/session views.
 
 ## Path 5: Recipes lifecycle management (mid term)
 - Done: Add export/import bundles for recipes.
@@ -215,9 +216,14 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Done: `encodeURIComponent` all path params proxied by `ui/server.js` (covered by `ui/tests/proxy_path_encoding.test.js`).
 - Done: Filter `/status` container output by `allowed_containers`.
 - Next: Consider hashing stored delegated tokens (needs a migration + `PUT/DELETE /api-users/{token}` redesign).
-- Next: Move hot read-modify-write paths in server.py (api users, routes, sites, recipe health history) onto `update_json`.
+- Done: Moved `/api-users` writes, route persistence (routing add/remove, site routing/delete), and recipe health history appends onto locked `update_json` helpers.
+- Next: Move the remaining read-modify-write stores (sites, recipes, hosts, VMs) onto `update_json`.
+- Done: Fixed schema registry gaps that made migrations park live fields under `_legacy` (api_users `terminal_host`/`terminal_container`, recipes `version`/`history`/timestamps, VM lifecycle fields); schemas bumped to v2, `_promote_legacy_fields` restores already-parked fields, and `SchemaFieldCoverageTests` guards new fields.
+- Done: Validate SSH host/username/port/key_path (ssh option-injection → host command execution), add `--` before the ssh destination, and validate env names and provision profile names in `fortress.remote`.
+- Next: Constrain VM `qemu_binary` (allowlist) and `extra_args` (reject `-netdev …script=`, `-chardev`, `-monitor`, `-plugin`, etc. or an allowlist) — today `vm_manage` can run arbitrary commands as the API user.
 - Next: Versioned chunked backup format (streaming encrypt/decrypt) to drop the in-memory Fernet limit, keeping v1 decrypt for old archives.
 - Next: Refresh or make environment-independent the Puppeteer visual baselines (`app_home_visual_regression`, `css_dark_surface_token_regression` fail on macOS Chromium at HEAD).
 - Done: Validated the Python suite, cross-process `update_json` locking, and real firewalld partial-failure revert on an AlmaLinux 10.2 x86_64 QEMU VM; fixed firewalld 2.x rich-rule parsing (attribute order) found there.
 - Next: Pin `requirements.txt` versions (fresh installs already resolve FastAPI 0.162 / Starlette 1.10, which changed router internals) and add a CI lane running Python and UI tests.
-- Next: Add focused tests for `fortress.monitoring`, `fortress.tls`, `fortress.hosts`, `fortress.vms`, `fortress.remote`, and container lifecycle/backup routes.
+- Done: Focused tests for `fortress.tls` and `fortress.remote` (`tests/test_remote_tls.py`) and `fortress.monitoring` (`tests/test_monitoring.py`); monitoring history appends moved onto locked `update_json` (concurrent samples were being dropped).
+- Next: Add focused tests for `fortress.hosts`/`fortress.vms` lifecycle and container lifecycle routes.

@@ -1,6 +1,6 @@
 {
   "store": "recipes",
-  "schema_version": "1",
+  "schema_version": "2",
   "record_type": "mapping",
   "fields": [
     "name",
@@ -9,7 +9,11 @@
     "packages",
     "commands",
     "parameters",
-    "required_parameters"
+    "required_parameters",
+    "version",
+    "history",
+    "created_at",
+    "updated_at"
   ],
   "defaults": {
     "dependencies": [],

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 
 from fortress.system import run_command
-from fortress.storage import load_json, save_json
+from fortress.storage import load_json, update_json
 
 DEFAULT_HOST_THRESHOLDS = {
     "memory_percent": 90.0,
@@ -705,18 +705,29 @@ def record_resource_snapshot(
         snapshot.setdefault("thresholds", {})["anomalies"] = merge_anomaly_thresholds(anomaly_thresholds)
         return snapshot
 
-    history = load_json(history_path, default=[], label="monitoring history")
-    if not isinstance(history, list):
-        history = []
     merged_thresholds = merge_anomaly_thresholds(anomaly_thresholds)
-    anomalies = detect_rate_anomalies(snapshot, history, baseline_samples=baseline_samples, thresholds=merged_thresholds)
-    history.append(_strip_alerts(snapshot))
-    history = history[-history_limit:]
+    result: Dict[str, Any] = {}
+
+    def _append(history: Any) -> List[Dict[str, Any]]:
+        if not isinstance(history, list):
+            history = []
+        result["anomalies"] = detect_rate_anomalies(
+            snapshot, history, baseline_samples=baseline_samples, thresholds=merged_thresholds
+        )
+        history.append(_strip_alerts(snapshot))
+        history = history[-history_limit:]
+        result["count"] = len(history)
+        return history
+
     try:
-        save_json(history_path, history)
+        # Locked read-modify-write: concurrent /monitoring/resources calls must not drop samples.
+        update_json(history_path, [], _append, label="monitoring history")
     except OSError as exc:
         logging.error("Failed to write monitoring history: %s", exc)
-    snapshot["anomalies"] = anomalies
-    snapshot["history"] = {"count": len(history), "limit": history_limit}
+        if "anomalies" not in result:
+            history = load_json(history_path, default=[], label="monitoring history")
+            _append(history if isinstance(history, list) else [])
+    snapshot["anomalies"] = result["anomalies"]
+    snapshot["history"] = {"count": result["count"], "limit": history_limit}
     snapshot.setdefault("thresholds", {})["anomalies"] = merged_thresholds
     return snapshot

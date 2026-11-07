@@ -62,17 +62,18 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 
 ## Critical Implementation Contracts
 
-- **Auth resolution:** `verify_token` in [`py/fortress/auth.py`](py/fortress/auth.py) accepts `X-API-Key` or `X-User-Token`, either optionally typed (`api-key:…`, `user-token:…`, aliases in `TOKEN_TYPE_ALIASES`). Master key wins when both are present. The master key is disabled when unset *or equal to* `DEFAULT_API_SECRET`. All failures raise **403** (no 401 distinction yet). Tests: [`tests/test_auth_audit.py`](tests/test_auth_audit.py), [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py).
+- **Auth resolution:** `verify_token` in [`py/fortress/auth.py`](py/fortress/auth.py) accepts `X-API-Key` or `X-User-Token`, either optionally typed (`api-key:…`, `user-token:…`, aliases in `TOKEN_TYPE_ALIASES`). Master key wins when both are present (compared with `hmac.compare_digest`). The master key is disabled when unset *or equal to* `DEFAULT_API_SECRET`. **401** (+ `WWW-Authenticate`) = no credential, unknown credential, or expired token; **403** = valid credential lacking the permission or container scope. Tests: [`tests/test_auth_tokens.py`](tests/test_auth_tokens.py), [`tests/test_auth_audit.py`](tests/test_auth_audit.py), [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py).
+- **Token expiry:** a delegated record may carry `expires_at` (ISO-8601 UTC, written by `format_expiry`); `is_token_expired` treats `now >= expires_at` *and* an unparseable value as expired (fail closed). `null`/missing = never expires (legacy records). Set via `ttl_seconds` or `expires_at` on `POST`/`PUT /api-users` (mutually exclusive; past → 400; `PUT {"expires_at": null}` clears).
 - **Wildcard permission:** a token with `"*"` in `permissions` passes every permission check, and `_terminal_admin_access` lets it read/write *any user's* terminal sessions.
 - **Empty scope means unrestricted:** `enforce_container_scope` only restricts when `allowed_containers` is a **non-empty** list. `null` *and* `[]` both grant every container. Never treat `[]` as "no containers".
 - **Container-terminal exception:** `_require_terminal_permission` accepts `terminal_container` **or** `manage_containers` for container shells. Host shells require `terminal_host`. Root shells require `terminal_root` (or policy `allow_root`); OS-user override requires `terminal_impersonate` (or `allow_user_override`). A token with no `terminal_*.os_user` mapping falls back to its username if that is a valid unix name, else 403.
 - **Terminal session ownership:** sessions are bound to `owner_id` = `subject_id` (`user:<sha256-prefix>` or `master`). `TerminalSessionManager` enforces owner checks, shell allowlist (`FORTRESS_TERMINAL_ALLOWED_SHELLS`), size limits, idle timeout, and max sessions. Tests: [`tests/test_terminal.py`](tests/test_terminal.py), permission matrix.
-- **Delegated tokens are stored in plaintext** as the keys of `/var/lib/fortress/api_users.json` (`users[token] = record`). Responses and audit details MUST use `mask_token`. `PUT/DELETE /api-users/{token}` take the raw token in the path.
+- **Delegated tokens are stored in plaintext** as the keys of `/var/lib/fortress/api_users.json` (`users[token] = record`). Responses and audit details MUST use `mask_token`. `PUT/DELETE /api-users/{token}` take the raw token in the path. All `/api-users` writes go through `update_api_users` (locked `update_json`); route persistence after nginx changes goes through `update_routes`. Both helpers mutate in place and ignore the callback's return value.
 - **Routing domain conflicts:** `/routing/add` MUST call `find_domain_conflicts` (primary, aliases, and wildcard overlap via `domains_conflict`) and return **409** on conflict. Tests: [`tests/test_routing.py`](tests/test_routing.py).
 - **Let's Encrypt bootstrap order:** for `tls.mode=letsencrypt` the route first writes an HTTP-only config with the ACME location (`_build_acme_location`), then runs certbot, then writes the TLS config; a certbot failure restores the previous nginx config. Do not reorder.
 - **Recipe bundles:** export/import use format `fortress.recipe-bundle.v1` with SHA-256 checksum and optional HMAC-SHA256 signature. Verification tries the active key `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` then every key in `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS`. Unsigned import requires explicit `require_signature=false` (CLI `--allow-unsigned`). Tests: [`tests/test_recipes.py`](tests/test_recipes.py), permission matrix.
 - **Recipe templating:** `{{param}}` placeholders (`PLACEHOLDER_PATTERN`) are rendered by `render_template`; a missing parameter is a `ValueError` → HTTP 400. Recipe dependency cycles are rejected by `resolve_recipe_plan`.
-- **Migrations:** every JSON store registered in `MIGRATION_ENGINE` (server.py) MUST have a matching `schemas/<store>.json`. `apply` takes a file lock (`migrations.lock`), backs up each store, appends to `ledger.jsonl`, and updates `versions.json`. Unknown fields are preserved under `_legacy` unless `prune_unknown`. Tests: [`tests/test_migrations.py`](tests/test_migrations.py).
+- **Migrations:** every JSON store registered in `MIGRATION_ENGINE` (server.py) MUST have a matching `schemas/<store>.json`, and its `fields` MUST list every key the code writes — otherwise `migrate_record` parks it under `_legacy` (this silently revoked terminal policies and recipe history before schema v2; guarded by `SchemaFieldCoverageTests`). `_promote_legacy_fields` moves now-known fields back out of `_legacy` on the next apply. `apply` takes a file lock (`migrations.lock`), backs up each store, appends to `ledger.jsonl`, and updates `versions.json`. Unknown fields are preserved under `_legacy` unless `prune_unknown`. Tests: [`tests/test_migrations.py`](tests/test_migrations.py).
 - **Backups:** `perform_encrypted_backup` runs `lxc export` then Fernet-encrypts with a key derived by SHA-256 of `FORTRESS_BACKUP_PASSWORD` (`get_fernet_key`; the CLI uses the same derivation to decrypt). Changing the derivation breaks every existing backup.
 - **Update-reload:** `/system/update-reload` runs `git pull --ff-only` in the repo root, auto-stashes local changes by default, applies pending migrations only when HEAD changed, then schedules `restart.sh --no-pull --mode <mode>` in a detached process. It refuses to restart if the stash could not be restored cleanly.
 - **Firewall anti-DDoS ordering:** allowlist ACCEPT rules MUST be inserted *before* conn-limit DROP rules. iptables is preferred; nftables fallback uses table `inet fortress`, chain `input`, and comment tags from `_build_nft_rule_tag`. Tests: [`tests/test_firewall.py`](tests/test_firewall.py).
@@ -167,10 +168,10 @@ LXC/LXD operations and image discovery. Owns everything that shells out to `lxc`
 
 Master-key resolution, typed-token parsing, delegated-token verification, and container scope enforcement. No storage access of its own (users are injected via `load_users`).
 
-- **Key functions and subparts:** `resolve_master_key`, `parse_prefixed_token` + `TOKEN_TYPE_ALIASES`, `normalize_auth_headers`, `verify_token` (returns `auth_context` with `actor`, `permissions`, `allowed_containers`, `is_master`, `subject_id`, `user_record`), `token_fingerprint`, `mask_token`, `enforce_container_scope(s)`.
+- **Key functions and subparts:** `resolve_master_key`, `parse_prefixed_token` + `TOKEN_TYPE_ALIASES`, `normalize_auth_headers`, expiry helpers `parse_expiry` / `format_expiry` / `is_token_expired`, `AUTH_CHALLENGE_HEADERS`, `verify_token` (optional `now` callable for tests; returns `auth_context` with `actor`, `permissions`, `allowed_containers`, `is_master`, `subject_id`, `user_record`), `token_fingerprint`, `mask_token`, `enforce_container_scope(s)`.
 - **Called by / depends on:** `authorize` in [`py/server.py`](py/server.py).
 - **Tests:** [`tests/test_auth_audit.py`](tests/test_auth_audit.py), [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py).
-- **Common mistakes:** see [Critical Implementation Contracts](#critical-implementation-contracts) — empty `allowed_containers` is unrestricted; `*` bypasses permission checks; comparisons are plain `==` (not constant-time).
+- **Common mistakes:** see [Critical Implementation Contracts](#critical-implementation-contracts) — empty `allowed_containers` is unrestricted; `*` bypasses permission checks; delegated tokens are looked up by dict key (not constant-time); auth failures are 401, authorization failures 403 — don't raise 403 for a bad/expired credential.
 
 ### [`py/fortress/audit.py`](py/fortress/audit.py)
 
@@ -205,7 +206,7 @@ Pure helpers for nginx reverse-proxy configs and domain rules; owns no persisten
 Certbot HTTP-01 integration: `ensure_certbot_available`, `ensure_acme_challenge_dir`, `build_certificate_paths` (`/etc/letsencrypt/live/<name>`), `validate_letsencrypt_domains` (rejects wildcards — DNS-01 is not supported), `issue_letsencrypt_certificate`, `renew_letsencrypt`.
 
 - **Called by:** routing and sites flows plus `POST /tls/renew` in [`py/server.py`](py/server.py).
-- **Tests:** none focused (gap).
+- **Tests:** [`tests/test_remote_tls.py`](tests/test_remote_tls.py) (certbot mocked).
 
 ### [`py/fortress/firewall.py`](py/fortress/firewall.py)
 
@@ -222,7 +223,7 @@ Host (`/proc/meminfo`, `/proc/stat`, `/proc/net/dev`, `df`) and container (`lxc 
 
 - **Key functions and subparts:** `collect_host_metrics`, `collect_container_metrics`, `gather_resource_snapshot`, `evaluate_host_alerts`, `evaluate_container_alerts`, `detect_rate_anomalies`, `record_resource_snapshot` (appends to history, trims to `history_limit`), defaults `DEFAULT_HOST_THRESHOLDS`, `DEFAULT_CONTAINER_THRESHOLDS`, `DEFAULT_ANOMALY_THRESHOLDS`.
 - **Called by:** `GET /monitoring/resources` in [`py/server.py`](py/server.py) (thresholds are query parameters).
-- **Tests:** none focused (gap). Linux-only (`/proc`).
+- **Tests:** [`tests/test_monitoring.py`](tests/test_monitoring.py) (`/proc` readers mocked). Linux-only at runtime (`/proc`). `record_resource_snapshot` computes anomalies and appends inside one locked `update_json`.
 
 ### [`py/fortress/recipes.py`](py/fortress/recipes.py)
 
@@ -262,19 +263,21 @@ PTY-backed host and container shell sessions with resource limits and owner bind
 
 SSH-managed (non-VM) host registry: models `HostCreateRequest`, `HostUpdateRequest`, `HostProvisionRequest`, `HostProbeRequest`, `HostSSHConfig`; `create/update/delete_host`, `provision_host`, `probe_host`, `list_saved_states`, `sanitize_host_record` (masks SSH password).
 
-- **Depends on:** [`py/fortress/remote.py`](py/fortress/remote.py). **Tests:** none focused (gap).
+- **Depends on:** [`py/fortress/remote.py`](py/fortress/remote.py). **Tests:** SSH validation in [`tests/test_remote_tls.py`](tests/test_remote_tls.py); lifecycle untested (gap).
 
 ### [`py/fortress/vms.py`](py/fortress/vms.py)
 
 VM registry plus QEMU and VirtualBox lifecycle: models `VMCreateRequest`…`VMProbeRequest`; `create_vm`, `update_vm`, `delete_vm` (`purge`, `force`), `start_vm`, `stop_vm`, `vm_status`, snapshot create/restore/delete/list, `provision_vm`, `probe_vm`; provider internals `_start_qemu_vm`, `_build_qemu_network`, `_create_virtualbox_vm`, etc. Default disk dir `/var/lib/fortress/vms`.
 
-- **Depends on:** [`py/fortress/remote.py`](py/fortress/remote.py). **Tests:** none focused (gap).
+- **Depends on:** [`py/fortress/remote.py`](py/fortress/remote.py). **Tests:** SSH validation in [`tests/test_remote_tls.py`](tests/test_remote_tls.py); providers untested (gap).
+- **Security gap:** `qemu_binary` and `extra_args` are passed to `run_command` unvalidated, so `vm_manage` currently implies arbitrary command execution as the API user (ROADMAP Path 11 `Next:`). Treat `vm_manage` as root-equivalent until that is fixed.
 
 ### [`py/fortress/remote.py`](py/fortress/remote.py)
 
-SSH execution shared by hosts and VMs: `SSHConfig`, `build_ssh_command` (`StrictHostKeyChecking=accept-new`), `run_ssh_script` (pipes script to `bash -s`, quotes env values, uses `sshpass` for passwords), `load_provision_script` (from [`scripts/provision/`](scripts/provision/)), `build_probe_script` (embedded Python probe; its inner `def run` is part of the script string, not a module function).
+SSH execution shared by hosts and VMs: `SSHConfig`, `validate_ssh_config` (username/host/port/key_path; called on host/VM create/update and inside every `build_ssh_command`), `build_ssh_command` (`StrictHostKeyChecking=accept-new`, `--` before the destination), `run_ssh_script` (pipes script to `bash -s`, quotes env values, uses `sshpass` for passwords), `load_provision_script` (from [`scripts/provision/`](scripts/provision/)), `build_probe_script` (embedded Python probe; its inner `def run` is part of the script string, not a module function).
 
-- **Common mistakes:** `sshpass -p` exposes the password in the process list — prefer key auth; don't add new password flows.
+- **Common mistakes:** `sshpass -p` exposes the password in the process list — prefer key auth; don't add new password flows. Never build the ssh destination from unvalidated input (a `-o…` username/host is an option injection → command execution on the API host). `run_ssh_script` rejects non-identifier env names; `load_provision_script` validates the profile name (`PROVISION_PROFILE_PATTERN`).
+- **Tests:** [`tests/test_remote_tls.py`](tests/test_remote_tls.py).
 
 ### [`py/fortress/__init__.py`](py/fortress/__init__.py) and [`py/fortress/api/__init__.py`](py/fortress/api/__init__.py)
 
@@ -284,8 +287,8 @@ Package markers only.
 
 Standalone client. Stores credentials in `~/.fortress-cli/config.json` encrypted with a passphrase-protected 4096-bit RSA keypair; decrypts backups locally.
 
-- **Key functions and subparts:** `setup_command` (keys, server URL, TLS mode/CA bundle), `CredentialContext.get_secret`, `FortressClient.request` / `stream_download` (`FORTRESS_API_KEY` / `FORTRESS_USER_TOKEN` env override stored secrets), `get_fernet_key` (must match server), `build_parser` (subcommands: `setup`, `info`, `call`, `status`, `api-users`, `backup`, `recipes`, `firewall`, `sites`, `migrations`, `system upgrade|update-reload`, `tls renew`, `terminal open|read|write|resize|close`, `vms`, `hosts`), per-group `*_command` handlers.
-- **Tests:** [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py), [`tests/test_cli_terminal.py`](tests/test_cli_terminal.py).
+- **Key functions and subparts:** `setup_command` (keys, server URL, TLS mode/CA bundle), `CredentialContext.get_secret`, `FortressClient.request` / `stream_download` (`FORTRESS_API_KEY` / `FORTRESS_USER_TOKEN` env override stored secrets), `get_fernet_key` (must match server), `build_parser` (subcommands: `setup`, `info`, `call`, `status`, `api-users list|create|expire|delete` (`--ttl 30d` / `--expires-at` / `--never`, via `parse_duration_seconds`), `backup`, `recipes`, `firewall`, `sites`, `migrations`, `system upgrade|update-reload`, `tls renew`, `terminal open|read|write|resize|close`, `vms`, `hosts`), per-group `*_command` handlers.
+- **Tests:** [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py), [`tests/test_cli_terminal.py`](tests/test_cli_terminal.py), [`tests/test_cli_api_users.py`](tests/test_cli_api_users.py).
 - **Common mistakes:** a new API route needs a CLI handler *and* parser entry; container lifecycle, routing, packages, and monitoring are only reachable via `call`.
 
 ### [`ui/server.js`](ui/server.js)
@@ -405,7 +408,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 - **Behavior:** `/api-users` CRUD issues 64-hex tokens with permission lists, optional `allowed_containers`, and per-target terminal policies.
 - **Flow and owners:** route → `authorize` ([`py/server.py`](py/server.py)) → `verify_token` ([`py/fortress/auth.py`](py/fortress/auth.py)) → `api_users.json`.
 - **Constraints:** permission names are listed in [README Authentication](README.md#authentication); adding one requires README + `api-v1.yaml` updates.
-- **Tests and gaps:** permission matrix; no token expiry, no hashed storage, no 401/403 split.
+- **Tests and gaps:** permission matrix, [`tests/test_auth_tokens.py`](tests/test_auth_tokens.py) (expiry + 401/403 matrix); no hashed storage, no expiry sweeping (expired records stay until deleted).
 
 ### Container lifecycle, access, and connectivity — Shipped
 
@@ -440,7 +443,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 ### Monitoring — Shipped
 
 - **Behavior:** `/monitoring/resources` returns host + container metrics, threshold alerts, and rate anomalies against a persisted baseline.
-- **Owners:** [`py/fortress/monitoring.py`](py/fortress/monitoring.py). **Gaps:** no focused tests; no alert delivery (webhooks).
+- **Owners:** [`py/fortress/monitoring.py`](py/fortress/monitoring.py). **Tests:** [`tests/test_monitoring.py`](tests/test_monitoring.py). **Gaps:** no alert delivery (webhooks).
 
 ### Encrypted backups and restore — Shipped
 
@@ -585,20 +588,23 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 ## Test Ownership Map
 
 - Auth, scope, audit redaction → [`tests/test_auth_audit.py`](tests/test_auth_audit.py)
+- Token expiry, 401-vs-403 route matrix, concurrent `/api-users` writes → [`tests/test_auth_tokens.py`](tests/test_auth_tokens.py)
+- SSH command building/validation, provision profiles, certbot wrappers → [`tests/test_remote_tls.py`](tests/test_remote_tls.py)
 - Route permissions, scope on recipes/routing/sites/firewall/terminal/system → [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py)
 - Container images and create → [`tests/test_container_images.py`](tests/test_container_images.py)
 - Recipes (resolution, templating, versioning, bundles, LAMP targets) → [`tests/test_recipes.py`](tests/test_recipes.py)
 - Routing configs and conflicts → [`tests/test_routing.py`](tests/test_routing.py)
 - Firewall parsing and conn-limit ordering → [`tests/test_firewall.py`](tests/test_firewall.py)
-- Migrations → [`tests/test_migrations.py`](tests/test_migrations.py)
+- Migrations, schema field coverage, `_legacy` promotion → [`tests/test_migrations.py`](tests/test_migrations.py)
 - Site models → [`tests/test_sites.py`](tests/test_sites.py)
 - Terminal helpers → [`tests/test_terminal.py`](tests/test_terminal.py)
-- CLI crypto and terminal commands → [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py), [`tests/test_cli_terminal.py`](tests/test_cli_terminal.py)
+- CLI crypto, terminal, and api-users expiry commands → [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py), [`tests/test_cli_terminal.py`](tests/test_cli_terminal.py), [`tests/test_cli_api_users.py`](tests/test_cli_api_users.py)
 - UI admin gate, proxying, rendering, visuals → [`ui/tests/`](ui/tests/)
 - Backup/restore routes and `/status` scoping → [`tests/test_backups.py`](tests/test_backups.py)
 - JSON storage atomicity/locking → [`tests/test_storage.py`](tests/test_storage.py)
 - Route registry ↔ `api-v1.yaml` parity and `$ref` resolution → [`tests/test_api_spec.py`](tests/test_api_spec.py)
-- **Known test gaps:** `fortress.monitoring`, `fortress.tls`, `fortress.hosts`, `fortress.vms`, `fortress.remote`; container lifecycle/exec/connectivity routes; invalid/expired token and 401-vs-403 cases; no test runs against a real LXD daemon.
+- Monitoring helpers, alerts, anomaly detection, history persistence → [`tests/test_monitoring.py`](tests/test_monitoring.py)
+- **Known test gaps:** `fortress.hosts`/`fortress.vms` lifecycle (only SSH validation is covered); container lifecycle/exec/connectivity routes; no test runs against a real LXD daemon.
 
 ## Data, Security, Privacy, and Compatibility Boundaries
 
@@ -625,8 +631,9 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 ### Known Gaps
 
 - **Restore/backup memory:** Fernet encrypt/decrypt holds the whole archive in memory (cap uploads with `FORTRESS_RESTORE_MAX_BYTES`); a streamable format would need a new versioned backup format.
-- **Auth:** all auth failures are 403; no token expiry; tokens stored unhashed.
-- **Concurrency:** most server.py writers still do unlocked `load_json` → `save_json` (atomic, but last writer wins); migrate hot stores to `update_json`. Terminal sessions and UI sessions are in-process memory.
+- **Auth:** tokens stored unhashed; expired tokens are rejected but never swept from the store.
+- **VM privilege:** `vm_manage` is effectively root (unvalidated `qemu_binary` / `extra_args`).
+- **Concurrency:** api users, routes, recipe health history, and monitoring history now persist via `update_json`; sites, recipes, hosts, and VMs still do unlocked `load_json` → `save_json` (atomic, but last writer wins). Terminal sessions and UI sessions are in-process memory.
 - **Visual baselines:** `app_home_visual_regression` and `css_dark_surface_token_regression` hashes are environment-sensitive (they fail on macOS Chromium at this revision without code changes).
 - **Dependencies:** `requirements.txt` is unpinned (a fresh AlmaLinux 10 install pulled FastAPI 0.162 / Starlette 1.10 vs 0.128 / 0.49 on the dev venv — newer FastAPI no longer flattens included routers into `app.routes`, so enumerate routes via `app.openapi()`); code uses Pydantic v1-style `.dict()`.
 - **No CI** and no real-LXD integration test lane.
@@ -636,7 +643,7 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 Detailed sequencing lives in [`ROADMAP.md`](ROADMAP.md). Highest-leverage next steps:
 
 1. Close the remaining Known Gaps above (tracked in ROADMAP Path 11).
-2. Path 4: token-expiry/invalid-token and 401-vs-403 integration cases.
+2. Path 11: constrain VM `qemu_binary`/`extra_args` so `vm_manage` is not root-equivalent.
 3. Path 7 / production checklist: scheduled certbot renewals with failure alerts; automatic upstream refresh on container IP change.
 4. Path 10.5: register remaining JSON stores (firewall state) in schemas/migrations.
 

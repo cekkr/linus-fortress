@@ -1,11 +1,20 @@
 {
   "store": "api_users",
-  "schema_version": "1",
+  "schema_version": "2",
   "record_type": "mapping",
-  "fields": ["username", "permissions", "allowed_containers"],
+  "fields": [
+    "username",
+    "permissions",
+    "allowed_containers",
+    "terminal_host",
+    "terminal_container",
+    "created_at",
+    "expires_at"
+  ],
   "defaults": {
     "permissions": [],
-    "allowed_containers": []
+    "allowed_containers": [],
+    "expires_at": null
   },
   "aliases": {},
   "prune_unknown": false

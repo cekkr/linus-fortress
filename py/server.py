@@ -26,7 +26,10 @@ from fortress.auth import (
     DEFAULT_API_SECRET,
     enforce_container_scope,
     enforce_container_scopes,
+    format_expiry,
+    is_token_expired,
     mask_token,
+    parse_expiry,
     resolve_master_key,
     verify_token,
 )
@@ -123,7 +126,7 @@ from fortress.monitoring import (
     gather_resource_snapshot,
     record_resource_snapshot,
 )
-from fortress.storage import load_json, load_json_dict, save_json
+from fortress.storage import load_json, load_json_dict, save_json, update_json
 from fortress.vms import (
     VMCreateRequest,
     VMUpdateRequest,
@@ -472,6 +475,24 @@ def load_api_users() -> Dict[str, Dict]:
 def save_api_users(users: Dict[str, Dict]):
     save_json(API_USERS_DB, users)
 
+def update_api_users(mutate) -> Dict[str, Dict]:
+    """Locked read-modify-write of the API user store (no lost updates between concurrent admins)."""
+    def _apply(current):
+        if not isinstance(current, dict):
+            current = {}
+        mutate(current)  # in-place; return value ignored so dict.pop() results can't replace the store
+        return current
+    return update_json(API_USERS_DB, {}, _apply, label="API user")
+
+def update_routes(mutate) -> Dict[str, Dict[str, Any]]:
+    """Locked read-modify-write of routes.json; use for the final persist after host changes succeed."""
+    def _apply(current):
+        if not isinstance(current, dict):
+            current = {}
+        mutate(current)  # in-place; return value ignored so dict.pop() results can't replace the store
+        return current
+    return update_json(ROUTING_DB, {}, _apply, label="routing")
+
 def load_routes() -> Dict[str, Dict[str, Any]]:
     return load_json_dict(
         ROUTING_DB,
@@ -516,18 +537,24 @@ class TerminalAccessPolicy(BaseModel):
     allowed_shells: Optional[List[str]] = None
     default_shell: Optional[str] = None
 
+MAX_API_TOKEN_TTL_SECONDS = 10 * 365 * 24 * 3600
+
 class APIUserCreate(BaseModel):
     username: str
     permissions: List[str] = []
     allowed_containers: Optional[List[str]] = None
     terminal_host: Optional[TerminalAccessPolicy] = None
     terminal_container: Optional[TerminalAccessPolicy] = None
+    expires_at: Optional[datetime] = None
+    ttl_seconds: Optional[int] = Field(default=None, gt=0, le=MAX_API_TOKEN_TTL_SECONDS)
 
 class APIUserUpdate(BaseModel):
     permissions: Optional[List[str]] = None
     allowed_containers: Optional[List[str]] = None
     terminal_host: Optional[TerminalAccessPolicy] = None
     terminal_container: Optional[TerminalAccessPolicy] = None
+    expires_at: Optional[datetime] = None
+    ttl_seconds: Optional[int] = Field(default=None, gt=0, le=MAX_API_TOKEN_TTL_SECONDS)
 
 class TerminalSessionCreateRequest(BaseModel):
     target: Literal["host", "container"] = "host"
@@ -1056,8 +1083,7 @@ def add_domain_routing(route: DomainRoute, x_api_key: Optional[str] = Header(def
     route_payload = route.dict()
     route_payload["domains"] = domain_aliases or None
     route_payload["tls"] = tls_payload
-    routes[route.domain] = route_payload
-    save_routes(routes)
+    update_routes(lambda current: current.update({route.domain: route_payload}))
 
     audit_api(
         "routing_add",
@@ -1214,8 +1240,7 @@ def remove_domain_routing(domain: str, x_api_key: Optional[str] = Header(default
             raise
         raise HTTPException(status_code=500, detail=str(exc))
 
-    routes.pop(domain, None)
-    save_routes(routes)
+    update_routes(lambda current: current.pop(domain, None))
     audit_api("routing_remove", target=domain, details={"container": record.get("container_name")})
     return {"message": f"Routing removed for {domain}"}
 
@@ -1260,91 +1285,165 @@ def renew_tls(payload: TLSRenewRequest, x_api_key: Optional[str] = Header(defaul
 
 # --- API USER MANAGEMENT ---
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _resolve_api_token_expiry(expires_at: Optional[datetime], ttl_seconds: Optional[int]) -> Optional[str]:
+    """Return the ISO-8601 ``expires_at`` to store, or ``None`` for a non-expiring token."""
+    if expires_at is not None and ttl_seconds is not None:
+        raise HTTPException(status_code=400, detail="Provide either expires_at or ttl_seconds, not both")
+    now = _utcnow()
+    if ttl_seconds is not None:
+        return format_expiry(datetime.fromtimestamp(now.timestamp() + ttl_seconds, tz=timezone.utc))
+    if expires_at is None:
+        return None
+    resolved = parse_expiry(expires_at)
+    if resolved <= now:
+        raise HTTPException(status_code=400, detail="expires_at must be in the future")
+    return format_expiry(resolved)
+
+
+def _present_api_user(token: str, record: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {"token": token, **record}
+    payload["expired"] = is_token_expired(record, _utcnow())
+    return payload
+
+
+class _APIUserNotFound(Exception):
+    pass
+
+
 @app.post("/api-users")
 def create_api_user(user: APIUserCreate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("api_user_create", "api_user_admin", x_api_key, x_user_token)
     token = secrets.token_hex(32)
     try:
-        users = load_api_users()
+        expires_at = _resolve_api_token_expiry(user.expires_at, user.ttl_seconds)
         terminal_host_policy = _serialize_terminal_policy(user.terminal_host, "terminal_host")
         terminal_container_policy = _serialize_terminal_policy(user.terminal_container, "terminal_container")
         record: Dict[str, Any] = {
             "username": user.username,
             "permissions": user.permissions,
             "allowed_containers": user.allowed_containers,
+            "created_at": format_expiry(_utcnow()),
+            "expires_at": expires_at,
         }
         if terminal_host_policy is not None:
             record["terminal_host"] = terminal_host_policy
         if terminal_container_policy is not None:
             record["terminal_container"] = terminal_container_policy
-        users[token] = record
-        save_api_users(users)
+
+        def _insert(users: Dict[str, Dict]) -> None:
+            users[token] = record
+
+        update_api_users(_insert)
         audit_api(
             "api_user_create",
             target=user.username,
             details={
                 "token": mask_token(token),
                 "permissions": user.permissions,
+                "expires_at": expires_at,
                 "terminal_host_policy": bool(terminal_host_policy),
                 "terminal_container_policy": bool(terminal_container_policy),
             },
         )
-        return {"token": token, "user": users[token]}
+        return {"token": token, "user": record}
     except Exception as exc:
-        audit_api("api_user_create", target=user.username, details={"error": str(exc)}, status="error")
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        audit_api("api_user_create", target=user.username, details={"error": detail}, status="error")
         raise
 
 @app.get("/api-users")
 def list_api_users(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("api_user_list", "api_user_admin", x_api_key, x_user_token)
     users = load_api_users()
-    response = [{"token": token, **info} for token, info in users.items()]
+    response = [_present_api_user(token, info) for token, info in users.items()]
     audit_api("api_user_list", details={"count": len(response)})
     return {"users": response}
 
 @app.put("/api-users/{token}")
 def update_api_user(token: str, update: APIUserUpdate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("api_user_update", "api_user_admin", x_api_key, x_user_token)
-    users = load_api_users()
-    if token not in users:
+    audit_details: Dict[str, Any] = {}
+    fields_set = update.__fields_set__
+    try:
+        terminal_host_policy = (
+            _serialize_terminal_policy(update.terminal_host, "terminal_host") if "terminal_host" in fields_set else None
+        )
+        terminal_container_policy = (
+            _serialize_terminal_policy(update.terminal_container, "terminal_container")
+            if "terminal_container" in fields_set
+            else None
+        )
+        expiry_change = "expires_at" in fields_set or "ttl_seconds" in fields_set
+        new_expiry = (
+            _resolve_api_token_expiry(
+                update.expires_at if "expires_at" in fields_set else None,
+                update.ttl_seconds if "ttl_seconds" in fields_set else None,
+            )
+            if expiry_change
+            else None
+        )
+    except HTTPException as exc:
+        audit_api("api_user_update", target=mask_token(token), details={"error": exc.detail}, status="error")
+        raise
+
+    updated: Dict[str, Any] = {}
+
+    def _mutate(users: Dict[str, Dict]) -> None:
+        record = users.get(token)
+        if record is None:
+            raise _APIUserNotFound()
+        if update.permissions is not None:
+            record["permissions"] = update.permissions
+            audit_details["permissions"] = update.permissions
+        if update.allowed_containers is not None:
+            record["allowed_containers"] = update.allowed_containers
+            audit_details["allowed_containers"] = update.allowed_containers
+        if "terminal_host" in fields_set:
+            if terminal_host_policy is None:
+                record.pop("terminal_host", None)
+                audit_details["terminal_host"] = "removed"
+            else:
+                record["terminal_host"] = terminal_host_policy
+                audit_details["terminal_host"] = "updated"
+        if "terminal_container" in fields_set:
+            if terminal_container_policy is None:
+                record.pop("terminal_container", None)
+                audit_details["terminal_container"] = "removed"
+            else:
+                record["terminal_container"] = terminal_container_policy
+                audit_details["terminal_container"] = "updated"
+        if expiry_change:
+            record["expires_at"] = new_expiry
+            audit_details["expires_at"] = new_expiry
+        updated.update(record)
+
+    try:
+        update_api_users(_mutate)
+    except _APIUserNotFound:
         audit_api("api_user_update", target=mask_token(token), details={"error": "not found"}, status="error")
         raise HTTPException(status_code=404, detail="API user token not found")
-    audit_details: Dict[str, Any] = {}
-    if update.permissions is not None:
-        users[token]["permissions"] = update.permissions
-        audit_details["permissions"] = update.permissions
-    if update.allowed_containers is not None:
-        users[token]["allowed_containers"] = update.allowed_containers
-        audit_details["allowed_containers"] = update.allowed_containers
-    if "terminal_host" in update.__fields_set__:
-        policy = _serialize_terminal_policy(update.terminal_host, "terminal_host")
-        if policy is None:
-            users[token].pop("terminal_host", None)
-            audit_details["terminal_host"] = "removed"
-        else:
-            users[token]["terminal_host"] = policy
-            audit_details["terminal_host"] = "updated"
-    if "terminal_container" in update.__fields_set__:
-        policy = _serialize_terminal_policy(update.terminal_container, "terminal_container")
-        if policy is None:
-            users[token].pop("terminal_container", None)
-            audit_details["terminal_container"] = "removed"
-        else:
-            users[token]["terminal_container"] = policy
-            audit_details["terminal_container"] = "updated"
-    save_api_users(users)
     audit_api("api_user_update", target=mask_token(token), details=audit_details)
-    return {"message": "API user updated", "user": users[token]}
+    return {"message": "API user updated", "user": updated}
 
 @app.delete("/api-users/{token}")
 def delete_api_user(token: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("api_user_delete", "api_user_admin", x_api_key, x_user_token)
-    users = load_api_users()
-    if token not in users:
+    removed: Dict[str, Any] = {}
+
+    def _mutate(users: Dict[str, Dict]) -> None:
+        if token not in users:
+            raise _APIUserNotFound()
+        removed.update(users.pop(token))
+
+    try:
+        update_api_users(_mutate)
+    except _APIUserNotFound:
         audit_api("api_user_delete", target=mask_token(token), details={"error": "not found"}, status="error")
         raise HTTPException(status_code=404, detail="API user token not found")
-    removed = users.pop(token)
-    save_api_users(users)
     audit_api("api_user_delete", target=removed.get("username"), details={"token": mask_token(token)})
     return {"message": f"API user {removed.get('username')} removed"}
 
@@ -2335,6 +2434,10 @@ def _collect_lamp_health_report(container_name: str, targets: Dict[str, Any]) ->
 
 def _load_recipe_health_history_store() -> Dict[str, Any]:
     payload = load_json(RECIPE_HEALTH_HISTORY_DB, {"entries": []}, label="recipe health history")
+    return _normalize_recipe_health_history_payload(payload)
+
+
+def _normalize_recipe_health_history_payload(payload: Any) -> Dict[str, Any]:
     if isinstance(payload, dict):
         entries = payload.get("entries")
         if isinstance(entries, list):
@@ -2342,10 +2445,6 @@ def _load_recipe_health_history_store() -> Dict[str, Any]:
     if isinstance(payload, list):
         return {"entries": payload}
     return {"entries": []}
-
-
-def _save_recipe_health_history_store(payload: Dict[str, Any]) -> None:
-    save_json(RECIPE_HEALTH_HISTORY_DB, payload)
 
 
 def _trim_recipe_health_check_details(value: Any) -> Optional[str]:
@@ -2404,14 +2503,16 @@ def _append_recipe_health_history_entry(
         },
         "checks": checks,
     }
-    store = _load_recipe_health_history_store()
-    entries = store.get("entries") if isinstance(store.get("entries"), list) else []
-    entries.append(entry)
     max_entries = max(1, int(RECIPE_HEALTH_HISTORY_MAX))
-    if len(entries) > max_entries:
-        entries = entries[-max_entries:]
-    store["entries"] = entries
-    _save_recipe_health_history_store(store)
+
+    def _append(current: Any) -> Dict[str, Any]:
+        entries = _normalize_recipe_health_history_payload(current)["entries"]
+        entries.append(entry)
+        if len(entries) > max_entries:
+            entries = entries[-max_entries:]
+        return {"entries": entries}
+
+    update_json(RECIPE_HEALTH_HISTORY_DB, {"entries": []}, _append, label="recipe health history")
     return entry
 
 
@@ -3375,9 +3476,7 @@ def _apply_site_routing(site: Dict[str, Any], previous_domain: Optional[str] = N
         raise HTTPException(status_code=400, detail="Unsupported TLS mode")
     payload["tls"] = tls_payload
     _apply_nginx_route(site["primary_domain"], domain_aliases, payload, previous_config=previous_config)
-    if previous_domain and previous_domain != site["primary_domain"]:
-        routes.pop(previous_domain, None)
-    routes[site["primary_domain"]] = {
+    route_record = {
         "domain": site["primary_domain"],
         "domains": domain_aliases or None,
         "container_name": site["container_name"],
@@ -3387,7 +3486,13 @@ def _apply_site_routing(site: Dict[str, Any], previous_domain: Optional[str] = N
         "listen_port": payload["listen_port"],
         "tls": tls_payload,
     }
-    save_routes(routes)
+
+    def _persist_site_route(current: Dict[str, Any]) -> None:
+        if previous_domain and previous_domain != site["primary_domain"]:
+            current.pop(previous_domain, None)
+        current[site["primary_domain"]] = route_record
+
+    update_routes(_persist_site_route)
     if previous_domain and previous_domain != site["primary_domain"]:
         _remove_nginx_route(previous_domain)
 
@@ -3648,9 +3753,7 @@ def delete_site(site_id: str, x_api_key: Optional[str] = Header(default=None), x
     delete_site_record(site_id, sites)
     save_sites(SITES_DB, sites)
     _remove_nginx_route(record["primary_domain"])
-    routes = load_routes()
-    routes.pop(record["primary_domain"], None)
-    save_routes(routes)
+    update_routes(lambda current: current.pop(record["primary_domain"], None))
     audit_api("sites_delete", target=site_id, details={"domain": record.get("primary_domain")})
     return {"message": "Site removed", "site": sanitize_site_record(record)}
 
