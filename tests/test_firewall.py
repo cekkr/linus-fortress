@@ -9,6 +9,58 @@ import fortress.firewall as firewall
 from fortress.firewall import _parse_firewalld_ports, _parse_firewalld_rich_rules, _parse_ufw_rules
 
 
+class FirewallApplyRollbackTests(unittest.TestCase):
+    def _rule(self, port: int) -> dict:
+        return {"port": port, "protocol": "tcp", "source": None, "action": "allow", "direction": "in"}
+
+    def test_partial_failure_reverts_applied_rules_in_reverse(self) -> None:
+        calls = []
+
+        def fake_apply(rule, allow):
+            calls.append((rule["port"], allow))
+            if rule["port"] == 3 and allow:
+                raise RuntimeError("boom")
+
+        with mock.patch.object(firewall, "list_firewall_rules", return_value=[]), \
+                mock.patch.object(firewall, "_apply_single_rule", side_effect=fake_apply), \
+                mock.patch.object(firewall, "_build_rollback_id") as rollback_id:
+            with self.assertRaises(firewall.HTTPException) as ctx:
+                firewall.apply_firewall_rules([self._rule(1), self._rule(2), self._rule(3)], "merge", False, "/nonexistent")
+        self.assertEqual(calls, [(1, True), (2, True), (3, True), (2, False), (1, False)])
+        self.assertEqual(ctx.exception.detail["reverted"], 2)
+        self.assertEqual(ctx.exception.detail["revert_errors"], [])
+        rollback_id.assert_not_called()
+
+    def test_replace_mode_failure_restores_removed_rule(self) -> None:
+        calls = []
+        existing = [self._rule(22)]
+
+        def fake_apply(rule, allow):
+            calls.append((rule["port"], allow))
+            if rule["port"] == 22 and not allow:
+                raise RuntimeError("cannot delete")
+
+        with mock.patch.object(firewall, "list_firewall_rules", return_value=existing), \
+                mock.patch.object(firewall, "_apply_single_rule", side_effect=fake_apply):
+            with self.assertRaises(firewall.HTTPException):
+                firewall.apply_firewall_rules([self._rule(80)], "replace", False, "/nonexistent")
+        self.assertEqual(calls, [(80, True), (22, False), (80, False)])
+
+    def test_revert_errors_are_reported(self) -> None:
+        def fake_apply(rule, allow):
+            if rule["port"] == 2:
+                raise RuntimeError("apply fail")
+            if not allow:
+                raise RuntimeError("revert fail")
+
+        with mock.patch.object(firewall, "list_firewall_rules", return_value=[]), \
+                mock.patch.object(firewall, "_apply_single_rule", side_effect=fake_apply):
+            with self.assertRaises(firewall.HTTPException) as ctx:
+                firewall.apply_firewall_rules([self._rule(1), self._rule(2)], "merge", False, "/nonexistent")
+        self.assertEqual(ctx.exception.detail["reverted"], 0)
+        self.assertEqual(len(ctx.exception.detail["revert_errors"]), 1)
+
+
 class FirewallParseTests(unittest.TestCase):
     def test_parse_ufw_rules(self) -> None:
         output = "\n".join(
@@ -39,6 +91,24 @@ class FirewallParseTests(unittest.TestCase):
         self.assertEqual(len(rules), 3)
         self.assertEqual(rules[1]["protocol"], "udp")
         self.assertEqual(rules[2]["port"], 443)
+
+    def test_parse_firewalld_rich_rules_attribute_order(self) -> None:
+        # firewalld 2.x (AlmaLinux 10) prints port before protocol; forward-port must not be parsed as a rule.
+        output = "\n".join(
+            [
+                'rule family="ipv4" source address="203.0.113.0/24" port port="18081" protocol="tcp" accept',
+                'rule family="ipv4" source address="198.51.100.7" port port="22" protocol="tcp" reject',
+                'rule family="ipv4" forward-port port="80" protocol="tcp" to-port="8080"',
+            ]
+        )
+        rules = _parse_firewalld_rich_rules(output)
+        self.assertEqual(
+            rules,
+            [
+                {"port": 18081, "protocol": "tcp", "source": "203.0.113.0/24", "action": "allow", "direction": "in"},
+                {"port": 22, "protocol": "tcp", "source": "198.51.100.7", "action": "deny", "direction": "in"},
+            ],
+        )
 
     def test_parse_firewalld_rich_rules(self) -> None:
         output = "\n".join(

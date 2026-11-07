@@ -1491,7 +1491,7 @@ app.post(
 app.delete(
   "/api/containers/:name",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "DELETE", `/container/${req.params.name}`);
+    const payload = await fortressRequestFor(req, "DELETE", `/container/${encodeURIComponent(req.params.name)}`);
     res.json(payload);
   })
 );
@@ -1515,7 +1515,7 @@ app.post(
 app.post(
   "/api/containers/:name/backup",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/backup/${req.params.name}`);
+    const payload = await fortressRequestFor(req, "POST", `/backup/${encodeURIComponent(req.params.name)}`);
     res.json(payload);
   })
 );
@@ -1568,7 +1568,7 @@ app.post(
 app.get(
   "/api/containers/:name/snapshots",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/containers/${req.params.name}/snapshots`);
+    const payload = await fortressRequestFor(req, "GET", `/containers/${encodeURIComponent(req.params.name)}/snapshots`);
     res.json(payload);
   })
 );
@@ -1603,7 +1603,7 @@ app.delete(
     const payload = await fortressRequestFor(
       req,
       "DELETE",
-      `/containers/${req.params.name}/snapshots/${req.params.snapshot}`
+      `/containers/${encodeURIComponent(req.params.name)}/snapshots/${encodeURIComponent(req.params.snapshot)}`
     );
     res.json(payload);
   })
@@ -1684,7 +1684,7 @@ app.delete(
 app.get(
   "/api/containers/:name/logs",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/containers/${req.params.name}/logs`);
+    const payload = await fortressRequestFor(req, "GET", `/containers/${encodeURIComponent(req.params.name)}/logs`);
     res.json(payload);
   })
 );
@@ -1700,7 +1700,7 @@ app.get(
 app.get(
   "/api/sites/:site_id",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}`);
+    const payload = await fortressRequestFor(req, "GET", `/sites/${encodeURIComponent(req.params.site_id)}`);
     res.json(payload);
   })
 );
@@ -1708,7 +1708,7 @@ app.get(
 app.get(
   "/api/sites/:site_id/backups",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}/backups`);
+    const payload = await fortressRequestFor(req, "GET", `/sites/${encodeURIComponent(req.params.site_id)}/backups`);
     res.json(payload);
   })
 );
@@ -1716,7 +1716,7 @@ app.get(
 app.get(
   "/api/sites/:site_id/tls/status",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}/tls/status`);
+    const payload = await fortressRequestFor(req, "GET", `/sites/${encodeURIComponent(req.params.site_id)}/tls/status`);
     res.json(payload);
   })
 );
@@ -1732,7 +1732,7 @@ app.post(
 app.put(
   "/api/sites/:site_id",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "PUT", `/sites/${req.params.site_id}`, req.body || {});
+    const payload = await fortressRequestFor(req, "PUT", `/sites/${encodeURIComponent(req.params.site_id)}`, req.body || {});
     res.json(payload);
   })
 );
@@ -1740,7 +1740,7 @@ app.put(
 app.delete(
   "/api/sites/:site_id",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "DELETE", `/sites/${req.params.site_id}`);
+    const payload = await fortressRequestFor(req, "DELETE", `/sites/${encodeURIComponent(req.params.site_id)}`);
     res.json(payload);
   })
 );
@@ -1748,7 +1748,7 @@ app.delete(
 app.post(
   "/api/sites/:site_id/deploy",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/sites/${req.params.site_id}/deploy`, req.body || {});
+    const payload = await fortressRequestFor(req, "POST", `/sites/${encodeURIComponent(req.params.site_id)}/deploy`, req.body || {});
     res.json(payload);
   })
 );
@@ -1756,7 +1756,7 @@ app.post(
 app.post(
   "/api/sites/:site_id/backup",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/sites/${req.params.site_id}/backup`, req.body || {});
+    const payload = await fortressRequestFor(req, "POST", `/sites/${encodeURIComponent(req.params.site_id)}/backup`, req.body || {});
     res.json(payload);
   })
 );
@@ -1764,7 +1764,7 @@ app.post(
 app.post(
   "/api/sites/:site_id/rollback",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/sites/${req.params.site_id}/rollback`, req.body || {});
+    const payload = await fortressRequestFor(req, "POST", `/sites/${encodeURIComponent(req.params.site_id)}/rollback`, req.body || {});
     res.json(payload);
   })
 );
@@ -1775,7 +1775,7 @@ app.post(
     const payload = await fortressRequestFor(
       req,
       "POST",
-      `/sites/${req.params.site_id}/services/restart`,
+      `/sites/${encodeURIComponent(req.params.site_id)}/services/restart`,
       req.body || {}
     );
     res.json(payload);
@@ -1785,7 +1785,7 @@ app.post(
 app.get(
   "/api/sites/:site_id/logs",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}/logs`);
+    const payload = await fortressRequestFor(req, "GET", `/sites/${encodeURIComponent(req.params.site_id)}/logs`);
     res.json(payload);
   })
 );
@@ -1793,7 +1793,7 @@ app.get(
 app.get(
   "/api/sites/:site_id/health",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/sites/${req.params.site_id}/health`);
+    const payload = await fortressRequestFor(req, "GET", `/sites/${encodeURIComponent(req.params.site_id)}/health`);
     res.json(payload);
   })
 );
@@ -1882,7 +1882,7 @@ app.get(
 app.get(
   "/api/recipes/:name",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/recipes/${req.params.name}`);
+    const payload = await fortressRequestFor(req, "GET", `/recipes/${encodeURIComponent(req.params.name)}`);
     res.json(payload);
   })
 );
@@ -1948,7 +1948,7 @@ app.post(
 app.delete(
   "/api/routing/:domain",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "DELETE", `/routing/${req.params.domain}`);
+    const payload = await fortressRequestFor(req, "DELETE", `/routing/${encodeURIComponent(req.params.domain)}`);
     res.json(payload);
   })
 );
@@ -2015,7 +2015,7 @@ app.get(
 app.get(
   "/api/vms/:name",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/vms/${req.params.name}`);
+    const payload = await fortressRequestFor(req, "GET", `/vms/${encodeURIComponent(req.params.name)}`);
     res.json(payload);
   })
 );
@@ -2023,7 +2023,7 @@ app.get(
 app.post(
   "/api/vms/:name/start",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/vms/${req.params.name}/start`);
+    const payload = await fortressRequestFor(req, "POST", `/vms/${encodeURIComponent(req.params.name)}/start`);
     res.json(payload);
   })
 );
@@ -2031,7 +2031,7 @@ app.post(
 app.post(
   "/api/vms/:name/stop",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/vms/${req.params.name}/stop`);
+    const payload = await fortressRequestFor(req, "POST", `/vms/${encodeURIComponent(req.params.name)}/stop`);
     res.json(payload);
   })
 );
@@ -2039,7 +2039,7 @@ app.post(
 app.get(
   "/api/vms/:name/status",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/vms/${req.params.name}/status`);
+    const payload = await fortressRequestFor(req, "GET", `/vms/${encodeURIComponent(req.params.name)}/status`);
     res.json(payload);
   })
 );
@@ -2047,7 +2047,7 @@ app.get(
 app.get(
   "/api/vms/:name/snapshots",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/vms/${req.params.name}/snapshots`);
+    const payload = await fortressRequestFor(req, "GET", `/vms/${encodeURIComponent(req.params.name)}/snapshots`);
     res.json(payload);
   })
 );
@@ -2055,7 +2055,7 @@ app.get(
 app.post(
   "/api/vms/:name/snapshots",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/vms/${req.params.name}/snapshots`, req.body || {});
+    const payload = await fortressRequestFor(req, "POST", `/vms/${encodeURIComponent(req.params.name)}/snapshots`, req.body || {});
     res.json(payload);
   })
 );
@@ -2066,7 +2066,7 @@ app.post(
     const payload = await fortressRequestFor(
       req,
       "POST",
-      `/vms/${req.params.name}/snapshots/${req.params.snapshot}/restore`,
+      `/vms/${encodeURIComponent(req.params.name)}/snapshots/${encodeURIComponent(req.params.snapshot)}/restore`,
       req.body || {}
     );
     res.json(payload);
@@ -2079,7 +2079,7 @@ app.delete(
     const payload = await fortressRequestFor(
       req,
       "DELETE",
-      `/vms/${req.params.name}/snapshots/${req.params.snapshot}`
+      `/vms/${encodeURIComponent(req.params.name)}/snapshots/${encodeURIComponent(req.params.snapshot)}`
     );
     res.json(payload);
   })
@@ -2096,7 +2096,7 @@ app.get(
 app.get(
   "/api/hosts/:name",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/hosts/${req.params.name}`);
+    const payload = await fortressRequestFor(req, "GET", `/hosts/${encodeURIComponent(req.params.name)}`);
     res.json(payload);
   })
 );
@@ -2112,7 +2112,7 @@ app.post(
 app.put(
   "/api/hosts/:name",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "PUT", `/hosts/${req.params.name}`, req.body || {});
+    const payload = await fortressRequestFor(req, "PUT", `/hosts/${encodeURIComponent(req.params.name)}`, req.body || {});
     res.json(payload);
   })
 );
@@ -2120,7 +2120,7 @@ app.put(
 app.delete(
   "/api/hosts/:name",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "DELETE", `/hosts/${req.params.name}`);
+    const payload = await fortressRequestFor(req, "DELETE", `/hosts/${encodeURIComponent(req.params.name)}`);
     res.json(payload);
   })
 );
@@ -2128,7 +2128,7 @@ app.delete(
 app.post(
   "/api/hosts/:name/probe",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/hosts/${req.params.name}/probe`, req.body || {});
+    const payload = await fortressRequestFor(req, "POST", `/hosts/${encodeURIComponent(req.params.name)}/probe`, req.body || {});
     res.json(payload);
   })
 );
@@ -2136,7 +2136,7 @@ app.post(
 app.post(
   "/api/hosts/:name/provision",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/hosts/${req.params.name}/provision`, req.body || {});
+    const payload = await fortressRequestFor(req, "POST", `/hosts/${encodeURIComponent(req.params.name)}/provision`, req.body || {});
     res.json(payload);
   })
 );
@@ -2144,7 +2144,7 @@ app.post(
 app.get(
   "/api/hosts/:name/states",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", `/hosts/${req.params.name}/states`);
+    const payload = await fortressRequestFor(req, "GET", `/hosts/${encodeURIComponent(req.params.name)}/states`);
     res.json(payload);
   })
 );

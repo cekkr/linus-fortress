@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 
+from fortress.storage import save_json
 from fortress.system import run_command
 
 NFT_DDOS_TABLE_FAMILY = "inet"
@@ -341,14 +342,19 @@ def _parse_firewalld_rich_rules(output: str) -> List[Dict[str, Any]]:
         if not line.startswith("rule"):
             continue
         source_match = re.search(r'source address="([^"]+)"', line)
-        port_match = re.search(r'port protocol="([^"]+)" port="([^"]+)"', line)
-        action = "allow" if "accept" in line else "deny" if "drop" in line else None
-        if not port_match or not action:
+        # firewalld versions differ in attribute order (`port protocol=".." port=".."` vs
+        # `port port=".." protocol=".."`); ignore forward-port/source-port elements.
+        port_element = re.search(r'(?<![\w-])port((?:\s+[\w-]+="[^"]*")+)', line)
+        action = "allow" if "accept" in line else "deny" if "drop" in line or "reject" in line else None
+        if not port_element or not action:
             continue
-        protocol = port_match.group(1).lower()
+        attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', port_element.group(1)))
+        protocol = (attrs.get("protocol") or "").lower()
         try:
-            port = int(port_match.group(2))
+            port = int(attrs.get("port", ""))
         except ValueError:
+            continue
+        if not protocol:
             continue
         rules.append(
             {
@@ -473,25 +479,47 @@ def apply_firewall_rules(
         to_remove = [rule for rule in existing if _build_rule_key(rule) not in desired_keys]
     changes: List[Dict[str, Any]] = []
     if not dry_run:
-        for rule in to_add:
-            _apply_single_rule(rule, allow=True)
-            changes.append({"action": "add", "rule": rule})
-        for rule in to_remove:
-            _apply_single_rule(rule, allow=False)
-            changes.append({"action": "remove", "rule": rule})
+        planned = [("add", rule) for rule in to_add] + [("remove", rule) for rule in to_remove]
+        for action, rule in planned:
+            try:
+                _apply_single_rule(rule, allow=(action == "add"))
+            except Exception as exc:
+                revert_errors = _revert_firewall_changes(changes)
+                detail = {
+                    "message": "Firewall rule apply failed; previously applied changes were reverted",
+                    "failed_action": action,
+                    "failed_rule": rule,
+                    "error": getattr(exc, "detail", None) or str(exc),
+                    "reverted": len(changes) - len(revert_errors),
+                    "revert_errors": revert_errors,
+                }
+                raise HTTPException(status_code=500, detail=detail) from exc
+            changes.append({"action": action, "rule": rule})
     rollback_id = None
     if changes and not dry_run:
-        os.makedirs(rollback_dir, exist_ok=True)
         rollback_id = _build_rollback_id()
         path = os.path.join(rollback_dir, f"{rollback_id}.json")
-        with open(path, "w") as fh:
-            json.dump({"rollback_id": rollback_id, "changes": changes, "created_at": time.time()}, fh, indent=2)
+        save_json(path, {"rollback_id": rollback_id, "changes": changes, "created_at": time.time()})
     return {
         "applied": len(to_add) + len(to_remove),
         "skipped": len(rules) - len(to_add),
         "rollback_id": rollback_id,
         "dry_run": dry_run,
     }
+
+
+def _revert_firewall_changes(changes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Undo applied changes in reverse order; returns per-change errors (best effort)."""
+    errors: List[Dict[str, Any]] = []
+    for change in reversed(changes):
+        rule = change.get("rule")
+        if not rule:
+            continue
+        try:
+            _apply_single_rule(rule, allow=(change.get("action") != "add"))
+        except Exception as exc:  # keep reverting the rest
+            errors.append({"action": change.get("action"), "rule": rule, "error": getattr(exc, "detail", None) or str(exc)})
+    return errors
 
 
 def rollback_firewall_rules(rollback_path: str, dry_run: bool) -> None:
@@ -519,11 +547,7 @@ def get_ddos_policy(policy_path: str) -> Dict[str, Any]:
 
 
 def update_ddos_policy(policy: Dict[str, Any], policy_path: str) -> Dict[str, Any]:
-    ensure_dir = os.path.dirname(policy_path)
-    if ensure_dir:
-        os.makedirs(ensure_dir, exist_ok=True)
-    with open(policy_path, "w") as fh:
-        json.dump(policy, fh, indent=2)
+    save_json(policy_path, policy)
     return policy
 
 

@@ -16,7 +16,7 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 
 1. **This file's [Essential Project Principles](#essential-project-principles)** and the README [Security posture](README.md#security-posture) section — threat model and least-privilege rules. Code that contradicts them is a bug, even if it runs.
 2. **Executable contracts:** route registrations in [`py/server.py`](py/server.py) and [`py/fortress/api/containers.py`](py/fortress/api/containers.py), schema registry [`schemas/*.json`](schemas/), and tests in [`tests/`](tests/) and [`ui/tests/`](ui/tests/).
-3. **[`api-v1.yaml`](api-v1.yaml)** — OpenAPI 3.0.3 HTTP contract. It is *intended* to be canonical but currently lags the code (see [Known Gaps](#known-gaps)); when it disagrees with the route code, the code is the current behavior and the spec MUST be updated.
+3. **[`api-v1.yaml`](api-v1.yaml)** — OpenAPI 3.0.3 HTTP contract. Method+path parity with the route registry is enforced by [`tests/test_api_spec.py`](tests/test_api_spec.py); when request/response details disagree with the route code, the code is the current behavior and the spec MUST be updated.
 4. **Current source and launch scripts** ([`run-server.sh`](run-server.sh), [`restart.sh`](restart.sh), [`run-client.sh`](run-client.sh), [`requirements.txt`](requirements.txt), [`ui/package.json`](ui/package.json)).
 5. **[`README.md`](README.md)** — operator documentation: auth headers, permission names, per-endpoint request bodies, env vars, setup flows. Does not prove a command still works.
 6. **[`ROADMAP.md`](ROADMAP.md)** — planned work in numbered "Paths"; `Done:` items are history, `Next:` items are NOT implemented.
@@ -104,7 +104,7 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 | `/var/lib/fortress/container_images.json` | container router | popular image presets |
 | `/var/lib/fortress/firewall/{rollbacks/,ddos_policy.json}` | `fortress.firewall` | |
 | `/var/lib/fortress/migrations/{versions.json,ledger.jsonl,migrations.lock}` | `fortress.migrations` | |
-| `/var/lib/fortress/backups/*.enc` | server.py backup | Fernet-encrypted `lxc export` |
+| `/var/lib/fortress/backups/*.enc` | server.py backup | Fernet-encrypted `lxc export`, `<container>_<ts>.tar.gz.enc`, `0600`; `.restore-*` staging dirs are transient |
 | `/var/lib/fortress/command_log.db` | `fortress.audit` | override `FORTRESS_COMMAND_LOG_DB` |
 | `/var/lib/fortress/shares/`, `acme-challenges/` | container router, `fortress.tls` | |
 | `/etc/fortress/fortress.env` | `run-server.sh` | env for service/screen modes |
@@ -118,7 +118,7 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 The FastAPI application and the owner of most routes, configuration constants, auth glue, audit glue, and orchestration that spans modules. Domain logic that can be unit-tested without FastAPI belongs in `py/fortress/*`; keep this file as route wiring and cross-module orchestration.
 
 - **Key functions and subparts:**
-  - Module constants (lines ~183–216) — all runtime paths (`API_USERS_DB`, `ROUTING_DB`, `BACKUP_DIR`, …) and env-driven settings (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`, `FORTRESS_HOST_INTERFACE`/`PORT`, `FORTRESS_SCHEMA_DIR`, `FORTRESS_ACME_CHALLENGE_DIR`, `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY(S)`, `FORTRESS_LOG_PATH`, `FORTRESS_COMMAND_LOG_DB`, `FORTRESS_UPDATE_RELOAD_LOG`, `FORTRESS_RECIPE_HEALTH_HISTORY_MAX`). Evaluated at import time.
+  - Module constants (lines ~183–216) — all runtime paths (`API_USERS_DB`, `ROUTING_DB`, `BACKUP_DIR`, …) and env-driven settings (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`, `FORTRESS_HOST_INTERFACE`/`PORT`, `FORTRESS_SCHEMA_DIR`, `FORTRESS_ACME_CHALLENGE_DIR`, `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY(S)`, `FORTRESS_LOG_PATH`, `FORTRESS_COMMAND_LOG_DB`, `FORTRESS_UPDATE_RELOAD_LOG`, `FORTRESS_RECIPE_HEALTH_HISTORY_MAX`, `FORTRESS_RESTORE_MAX_BYTES`). Evaluated at import time.
   - `MIGRATION_ENGINE` — registry of store name → path; add new JSON stores here *and* in `schemas/`.
   - `authorize` — the single entry point for permission + scope checks; sets `REQUEST_CONTEXT` so audits carry the actor.
   - `audit_event` / `audit_api` / `audit_internal`, `sanitize_payload`, `sanitize_payload_fuzzy` — audit glue.
@@ -128,7 +128,8 @@ The FastAPI application and the owner of most routes, configuration constants, a
   - Routing: `add_domain_routing`, `refresh_domain_routing`, `remove_domain_routing`, `_apply_nginx_config`, `_restore_nginx_config`, `_apply_nginx_route`.
   - Recipes: `LAMP_RECIPE_BUNDLE` + `FILEMANAGER_COMMAND` (seed data), `_collect_lamp_health_report` and probe builders, health-history store helpers (`_append_recipe_health_history_entry`, `_build_recipe_health_trend`).
   - Sites: `_resolve_site_tls_status`, `_apply_php_ini_overrides`, `_normalize_fpm_pool_tuning`, `_apply_php_fpm_pool_tuning`, `_apply_site_routing`, `_backup_site_files`, `_restore_site_db`, `_restart_site_services`.
-  - Backups: `get_fernet_key`, `perform_encrypted_backup` (background task), `restore_container`.
+  - Backups: `get_fernet_key`, `perform_encrypted_backup` (background task; `.partial` + rename, `0600`), `CONTAINER_NAME_PATTERN`, `BACKUP_FILENAME_PATTERN` (`<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc`, used to scope list/download), `_ensure_backup_dir`, `restore_container` (per-request staging dir, `RESTORE_MAX_BYTES`).
+  - `/status` scoping: `_filter_status_containers`.
 - **Called by / depends on:** started by [`run-server.sh`](run-server.sh) / [`restart.sh`](restart.sh) as `.venv/bin/python py/server.py` (the script dir `py/` is on `sys.path`, which is how `import fortress` resolves). Imports every module in [`py/fortress/`](py/fortress/).
 - **Tests:** [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py) loads this file with `importlib` into a temp sandbox; [`tests/test_container_images.py`](tests/test_container_images.py) for popular-image endpoints.
 - **Common mistakes:** path constants are read at import, so tests reassign `module.API_USERS_DB` etc. after loading — helpers MUST read the module global at call time (don't capture paths in default args). Use `.dict()` on models consistently (Pydantic v1-style API is used throughout). Don't forget the error-path `audit_api(..., status="error")`.
@@ -181,9 +182,11 @@ Master-key resolution, typed-token parsing, delegated-token verification, and co
 
 ### [`py/fortress/storage.py`](py/fortress/storage.py)
 
-JSON helpers: `load_json` (default on missing/corrupt), `load_json_dict` (resets non-dict to `{}`), `save_json` (creates parent dir), `ensure_parent_dir`.
+JSON helpers: `load_json` (default on missing/corrupt), `load_json_dict` (resets non-dict to `{}`), `save_json` (creates parent dir; atomic + locked), `update_json`, `json_store_lock`, `ensure_parent_dir`.
 
-- **Common mistakes:** writes are not atomic and not locked; concurrent writers can lose updates. A corrupt store silently loads as empty — and a subsequent save overwrites it. Keep that in mind before adding high-frequency writers.
+- `save_json` is atomic (temp file in the same dir + fsync + `os.replace`) and holds `json_store_lock(path)` (in-process `RLock` + `flock` on a hidden `.<name>.lock` sidecar). New files are created `0600`; existing files keep their mode. `update_json(path, default, mutate)` does a locked read-modify-write.
+- **Tests:** [`tests/test_storage.py`](tests/test_storage.py).
+- **Common mistakes:** a plain `load_json` → modify → `save_json` sequence is still racy across writers; use `update_json` for read-modify-write. A corrupt store silently loads as empty — and a subsequent save overwrites it.
 
 ### [`py/fortress/system.py`](py/fortress/system.py)
 
@@ -211,7 +214,7 @@ Firewall driver abstraction over ufw and firewalld plus anti-DDoS conn-limit rul
 - **Key functions and subparts:** `detect_firewall_backend`, `apply_firewall_rule` (single open/close incl. firewalld rich rules), parsers `_parse_ufw_status`, `_parse_ufw_rules`, `_parse_firewalld_ports`, `_parse_firewalld_rich_rules`, `get_firewall_status`, `list_firewall_rules`, `apply_firewall_rules` (merge/replace diff + rollback file), `rollback_firewall_rules`, DDoS policy `get/update/apply/remove_ddos_policy`, conn-limit backends `detect_connlimit_backend`, `_apply_connlimit_rule` (iptables), `_apply_nft_connlimit_rule` + `_ensure_nft_ddos_chain` (nftables).
 - **Called by:** firewall routes in [`py/server.py`](py/server.py); `/containers/expose` allowlists.
 - **Tests:** [`tests/test_firewall.py`](tests/test_firewall.py).
-- **Common mistakes:** parser changes must keep both ufw and firewalld output shapes working. `apply_firewall_rules` does not undo already-applied rules if a later rule fails (see Known Gaps).
+- **Common mistakes:** parser changes must keep both ufw and firewalld output shapes working, including firewalld attribute order differences (`port port=".." protocol=".."` on firewalld 2.x / AlmaLinux 10) — `_parse_firewalld_rich_rules` parses attributes order-independently and skips `forward-port`/`source-port`. `apply_firewall_rules` reverts already-applied changes (reverse order, via `_revert_firewall_changes`) when a later rule fails and raises `HTTPException(500)` with a structured `detail`; keep that contract when adding new rule actions.
 
 ### [`py/fortress/monitoring.py`](py/fortress/monitoring.py)
 
@@ -291,7 +294,7 @@ Lizard UI Express server: static assets, admin auth (PBKDF2-SHA256 passwords, lo
 
 - **Key functions and subparts:** `loadEnvFileSync` (reads `ui/.env.local` or `FORTRESS_UI_ENV_FILE`), config constants (`FORTRESS_UI_*`, `FORTRESS_API_URL`, `FORTRESS_DEBUG`), `/api` admin guard middleware + `ensureAdminAuthorized`, admin store `loadAdminStore`/`saveAdminStore`/`logAdminEvent`, `passwordPolicyErrors`, `hashPassword`/`verifyPassword`, TOTP (`generateTotpSecret`, `verifyTotp`), sessions (`createSession`, `getSessionToken`, `createAdminSession`), `parseTypedToken`, `fortressRequest` / `fortressRequestFor`, `detectApiIdentity`, app graph (`loadModules`, `buildAppGraph`, `resolveContainerStack`), `/api/*` proxy routes, SPA fallback `app.get("*")`.
 - **Tests:** [`ui/tests/`](ui/tests/) (spawns this server).
-- **Common mistakes:** most proxy routes interpolate `req.params.*` into the upstream path without `encodeURIComponent` (only terminal routes encode) — encode new params. Sessions are in-memory `Map`s; restart logs everyone out.
+- **Common mistakes:** every `req.params.*` interpolated into an upstream path MUST be wrapped in `encodeURIComponent` (guarded by [`ui/tests/proxy_path_encoding.test.js`](ui/tests/proxy_path_encoding.test.js)). Sessions are in-memory `Map`s; restart logs everyone out.
 
 ### [`ui/public/js/app.js`](ui/public/js/app.js)
 
@@ -385,6 +388,7 @@ Standalone Puppeteer helper library (and its design doc) that snapshots visible 
 - [`app_bridge_wizard_reload.test.js`](ui/tests/app_bridge_wizard_reload.test.js) — card bridge open/close, wizard flow, update-reload browser reload (Puppeteer).
 - [`app_home_visual_regression.test.js`](ui/tests/app_home_visual_regression.test.js), [`css_dark_surface_token_regression.test.js`](ui/tests/css_dark_surface_token_regression.test.js) — screenshot/CSS hash baselines in [`fixtures/`](ui/tests/fixtures/).
 - [`wizard_css_transform_guard.test.js`](ui/tests/wizard_css_transform_guard.test.js) — static CSS guard for wizard transforms.
+- [`proxy_path_encoding.test.js`](ui/tests/proxy_path_encoding.test.js) — proxied path params are URI-encoded upstream.
 
 ### [`dev_samples/`](dev_samples/)
 
@@ -407,7 +411,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 - **Behavior:** create/delete/start/stop/restart, snapshots, exec, logs, service probes, user/group management, external port access, container↔container TCP links, shared mounts, bulk `/containers/expose`.
 - **Flow and owners:** [`py/fortress/api/containers.py`](py/fortress/api/containers.py) → [`py/fortress/containers.py`](py/fortress/containers.py) → `lxc`.
-- **Tests and gaps:** image/create paths tested; lifecycle/exec/connectivity routes untested and missing from `api-v1.yaml`.
+- **Tests and gaps:** image/create paths tested; lifecycle/exec/connectivity routes untested.
 
 ### Domain routing and TLS — Shipped
 
@@ -431,18 +435,18 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 - **Behavior:** open/close, status, rule inventory, diff, merge/replace apply with rollback IDs, rollback, DDoS policy with conn-limit caps and allowlists.
 - **Flow and owners:** firewall routes ([`py/server.py`](py/server.py)) → [`py/fortress/firewall.py`](py/fortress/firewall.py) → `ufw`/`firewall-cmd`, `iptables`/`nft`.
-- **Tests and gaps:** [`tests/test_firewall.py`](tests/test_firewall.py), matrix; partial-failure revert missing; conn-limit diagnostics not exposed.
+- **Tests and gaps:** [`tests/test_firewall.py`](tests/test_firewall.py), matrix; conn-limit diagnostics not exposed.
 
 ### Monitoring — Shipped
 
 - **Behavior:** `/monitoring/resources` returns host + container metrics, threshold alerts, and rate anomalies against a persisted baseline.
 - **Owners:** [`py/fortress/monitoring.py`](py/fortress/monitoring.py). **Gaps:** no focused tests; no alert delivery (webhooks).
 
-### Encrypted backups and restore — Shipped (download Known gap)
+### Encrypted backups and restore — Shipped
 
-- **Behavior:** background `lxc export` + Fernet encryption; list; download; restore by upload + `lxc import`.
+- **Behavior:** background `lxc export` + Fernet encryption; container-scoped list/download (`FileResponse`, filename pattern validated); restore by streamed upload into a per-request staging dir + `lxc import`.
 - **Owners:** backup section of [`py/server.py`](py/server.py); decryption in [`fortress-cli.py`](fortress-cli.py) `backup decrypt`.
-- **Gaps:** see Known Gaps (download response, unscoped list/download, fixed temp filenames).
+- **Tests:** [`tests/test_backups.py`](tests/test_backups.py). **Gaps:** decrypt/encrypt are in-memory (Fernet format is a compatibility contract); legacy archive names not matching the pattern are only visible to unscoped tokens.
 
 ### Migrations, system upgrade, update-reload — Shipped
 
@@ -485,7 +489,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 - **Symptom:** nginx, LXD devices, or firewall left half-configured after an error.
 - **Cause and invariant:** mutate → verify → persist record; on failure restore the previous state before re-raising, and persist JSON only after the host change succeeded (as `add_domain_routing` does).
 - **Safe pattern:** reuse `_apply_nginx_config`, `expose_ports`, and the `/containers/expose` firewall rollback loop.
-- **Status:** active in `apply_firewall_rules` (Known Gap); regression risk elsewhere.
+- **Status:** fixed in `apply_firewall_rules`; regression risk elsewhere.
 
 ### Pitfall: tests touching the real host
 
@@ -499,7 +503,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 - **Symptom:** UI shows recipes/services the API doesn't seed (or vice versa); docs list routes that don't exist.
 - **Cause:** LAMP recipe definitions exist in server.py (`LAMP_RECIPE_BUNDLE`), recipes.py (`LAMP_STACK_EXPANSION`), and app.js (`RECIPE_CATALOG`, `FILEMANAGER_COMMAND`); routes are described in code, README, and `api-v1.yaml`.
 - **Safe pattern:** change all copies in one commit; diff route registries against `api-v1.yaml` (command in [Validation](#build-run-debug-and-release)).
-- **Status:** active drift in `api-v1.yaml` (Known Gap).
+- **Status:** route drift is caught by `tests/test_api_spec.py`; LAMP definitions remain duplicated.
 
 ## Interface Ownership Map
 
@@ -591,7 +595,10 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - Terminal helpers → [`tests/test_terminal.py`](tests/test_terminal.py)
 - CLI crypto and terminal commands → [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py), [`tests/test_cli_terminal.py`](tests/test_cli_terminal.py)
 - UI admin gate, proxying, rendering, visuals → [`ui/tests/`](ui/tests/)
-- **Known test gaps:** `fortress.monitoring`, `fortress.tls`, `fortress.hosts`, `fortress.vms`, `fortress.remote`, `fortress.storage`; container lifecycle/exec/connectivity routes; backup/restore routes; invalid/expired token and 401-vs-403 cases; firewall partial-failure rollback; no test runs against a real LXD daemon.
+- Backup/restore routes and `/status` scoping → [`tests/test_backups.py`](tests/test_backups.py)
+- JSON storage atomicity/locking → [`tests/test_storage.py`](tests/test_storage.py)
+- Route registry ↔ `api-v1.yaml` parity and `$ref` resolution → [`tests/test_api_spec.py`](tests/test_api_spec.py)
+- **Known test gaps:** `fortress.monitoring`, `fortress.tls`, `fortress.hosts`, `fortress.vms`, `fortress.remote`; container lifecycle/exec/connectivity routes; invalid/expired token and 401-vs-403 cases; no test runs against a real LXD daemon.
 
 ## Data, Security, Privacy, and Compatibility Boundaries
 
@@ -617,21 +624,18 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 
 ### Known Gaps
 
-- **`api-v1.yaml` drift:** missing `/containers/exec`, `/containers/{start,stop,restart}`, `/containers/snapshot`, `/containers/snapshots/restore`, `/containers/{name}/logs`, `/containers/{name}/snapshots`, `/containers/{name}/snapshots/{snapshot_name}`, `/firewall/rules/diff`, `/sites/{site_id}/backups`.
-- **Backup download:** `download_backup` returns `fastapi.File(...)` (a request-parameter marker) instead of a `FileResponse`; downloads are expected to fail — verify and fix. `/backup/list` and `/backup/download/{filename}` are not container-scoped, and `/backup/list` fails if `BACKUP_DIR` doesn't exist.
-- **Restore:** uses fixed temp filenames (`restore_temp.enc`/`.tar.gz`), so concurrent restores collide; the whole file is read into memory.
-- **Firewall apply:** `apply_firewall_rules` does not revert rules already applied when a later rule fails, contrary to the Path 10.1 acceptance criteria.
-- **Auth:** all auth failures are 403; no token expiry; tokens stored unhashed; `/status` returns the full `lxc list` regardless of `allowed_containers`.
-- **Concurrency:** JSON stores have no locking or atomic writes; terminal sessions and UI sessions are in-process memory.
-- **UI proxy:** most `ui/server.js` routes don't `encodeURIComponent` path params.
-- **Dependencies:** `requirements.txt` is unpinned; code uses Pydantic v1-style `.dict()`.
+- **Restore/backup memory:** Fernet encrypt/decrypt holds the whole archive in memory (cap uploads with `FORTRESS_RESTORE_MAX_BYTES`); a streamable format would need a new versioned backup format.
+- **Auth:** all auth failures are 403; no token expiry; tokens stored unhashed.
+- **Concurrency:** most server.py writers still do unlocked `load_json` → `save_json` (atomic, but last writer wins); migrate hot stores to `update_json`. Terminal sessions and UI sessions are in-process memory.
+- **Visual baselines:** `app_home_visual_regression` and `css_dark_surface_token_regression` hashes are environment-sensitive (they fail on macOS Chromium at this revision without code changes).
+- **Dependencies:** `requirements.txt` is unpinned (a fresh AlmaLinux 10 install pulled FastAPI 0.162 / Starlette 1.10 vs 0.128 / 0.49 on the dev venv — newer FastAPI no longer flattens included routers into `app.routes`, so enumerate routes via `app.openapi()`); code uses Pydantic v1-style `.dict()`.
 - **No CI** and no real-LXD integration test lane.
 
 ### Near-Term Priorities
 
 Detailed sequencing lives in [`ROADMAP.md`](ROADMAP.md). Highest-leverage next steps:
 
-1. Close the Known Gaps above (tracked in ROADMAP Path 11).
+1. Close the remaining Known Gaps above (tracked in ROADMAP Path 11).
 2. Path 4: token-expiry/invalid-token and 401-vs-403 integration cases.
 3. Path 7 / production checklist: scheduled certbot renewals with failure alerts; automatic upstream refresh on container IP change.
 4. Path 10.5: register remaining JSON stores (firewall state) in schemas/migrations.

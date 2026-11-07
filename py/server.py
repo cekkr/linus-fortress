@@ -3,10 +3,12 @@ import re
 import shlex
 import shutil
 import secrets
+import tempfile
 import sys
 import logging
 import subprocess
 import hashlib
+import json
 import base64
 import binascii
 import uuid
@@ -17,6 +19,7 @@ from typing import Optional, List, Dict, Literal, Union, Any, Tuple
 import uvicorn
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from fortress.auth import (
@@ -188,6 +191,7 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 RESTART_SCRIPT_PATH = os.path.join(BASE_DIR, "restart.sh")
 UPDATE_RELOAD_LOG_PATH = os.environ.get("FORTRESS_UPDATE_RELOAD_LOG", os.path.join(BASE_DIR, ".update-reload.log"))
 BACKUP_DIR = "/var/lib/fortress/backups"
+RESTORE_MAX_BYTES = max(0, int(os.environ.get("FORTRESS_RESTORE_MAX_BYTES", "0") or "0"))
 NGINX_CONFIG_DIR = "/etc/nginx/sites-available"
 NGINX_ENABLED_DIR = "/etc/nginx/sites-enabled"
 API_USERS_DB = "/var/lib/fortress/api_users.json"
@@ -840,16 +844,36 @@ app.include_router(
     )
 )
 
+def _filter_status_containers(raw: Any, auth_context: Dict[str, Any]) -> Any:
+    """Restrict `lxc list` JSON to the token's allowed_containers (empty/null scope = unrestricted).
+
+    Keeps the response shape (a JSON string). If the output cannot be parsed, a scoped token gets "[]"
+    rather than unfiltered data.
+    """
+    allowed = auth_context.get("allowed_containers")
+    if not allowed:
+        return raw
+    try:
+        entries = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return "[]"
+    if not isinstance(entries, list):
+        return "[]"
+    filtered = [entry for entry in entries if isinstance(entry, dict) and entry.get("name") in allowed]
+    return json.dumps(filtered)
+
+
 @app.get("/status", dependencies=[])
 def system_status(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("status", "read_status", x_api_key, x_user_token)
+    auth_context = authorize("status", "read_status", x_api_key, x_user_token)
     # Check RAM, Disk, and Load
     ram = run_command(["free", "-h"])
     disk = run_command(["df", "-h"])
-    containers = run_command(["lxc", "list", "--format", "json"])
+    containers = _filter_status_containers(run_command(["lxc", "list", "--format", "json"]), auth_context)
     audit_api("status", details={
         "ram_head": ram.splitlines()[0] if ram else "",
-        "disk_head": disk.splitlines()[0] if disk else ""
+        "disk_head": disk.splitlines()[0] if disk else "",
+        "scoped": bool(auth_context.get("allowed_containers")),
     })
     return {"status": "operational", "ram": ram, "disk": disk, "containers": containers}
 
@@ -1543,7 +1567,22 @@ def firewall_rules_apply(
 ):
     authorize("firewall_rules_apply", "firewall_admin", x_api_key, x_user_token)
     rules = [rule.dict() for rule in payload.rules]
-    result = apply_firewall_rules(rules, payload.mode, payload.dry_run, FIREWALL_ROLLBACK_DIR)
+    try:
+        result = apply_firewall_rules(rules, payload.mode, payload.dry_run, FIREWALL_ROLLBACK_DIR)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"error": str(exc.detail)}
+        audit_api(
+            "firewall_rules_apply",
+            details={
+                "mode": payload.mode,
+                "dry_run": payload.dry_run,
+                "error": detail.get("error"),
+                "reverted": detail.get("reverted"),
+                "revert_errors": len(detail.get("revert_errors") or []),
+            },
+            status="error",
+        )
+        raise
     audit_api(
         "firewall_rules_apply",
         details={
@@ -3824,99 +3863,193 @@ def migration_ledger(x_api_key: Optional[str] = Header(default=None), x_user_tok
 
 # --- ENCRYPTED BACKUP SYSTEM ---
 
+# LXD instance names: start with a letter, then letters/digits/hyphens (max 63 chars).
+CONTAINER_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,62}$")
+# Backup archives are written as <container>_<YYYYmmdd_HHMMSS>.tar.gz.enc by perform_encrypted_backup.
+BACKUP_FILENAME_PATTERN = re.compile(r"^(?P<container>[A-Za-z][A-Za-z0-9-]{0,62})_(?P<timestamp>\d{8}_\d{6})\.tar\.gz\.enc$")
+RESTORE_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+def _validate_container_name(container_name: str) -> str:
+    if not isinstance(container_name, str) or not CONTAINER_NAME_PATTERN.match(container_name):
+        raise HTTPException(status_code=400, detail="Invalid container name")
+    return container_name
+
+
+def _ensure_backup_dir() -> str:
+    os.makedirs(BACKUP_DIR, mode=0o700, exist_ok=True)
+    return BACKUP_DIR
+
+
+def _parse_backup_filename(filename: str) -> Optional[Dict[str, str]]:
+    if not isinstance(filename, str) or os.path.basename(filename) != filename:
+        return None
+    match = BACKUP_FILENAME_PATTERN.match(filename)
+    if not match:
+        return None
+    return {"container": match.group("container"), "timestamp": match.group("timestamp")}
+
+
+def _container_in_scope(auth_context: Dict[str, Any], container_name: str) -> bool:
+    allowed = auth_context.get("allowed_containers")
+    return not allowed or container_name in allowed
+
+
 def perform_encrypted_backup(container_name: str, initiator: str = "system"):
     set_request_context(initiator, "backup_task")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    raw_file = f"{BACKUP_DIR}/{container_name}_{timestamp}.tar.gz"
+    backup_dir = BACKUP_DIR
+    raw_file = os.path.join(backup_dir, f"{container_name}_{timestamp}.tar.gz")
     enc_file = f"{raw_file}.enc"
+    partial_file = f"{enc_file}.partial"
 
     try:
+        _ensure_backup_dir()
         audit_internal("backup_start", target=container_name, details={"raw_file": raw_file})
-        # 1. Export Container (Stop, Backup, Start)
-        # Note: 'lxc export' creates a unified backup including config
+        # 1. Export Container ('lxc export' creates a unified backup including config)
         run_command(["lxc", "export", container_name, raw_file])
-        
-        # 2. Encrypt File
+
+        # 2. Encrypt File (Fernet tokens are not streamable; format is a compatibility contract)
         fernet = Fernet(get_fernet_key(BACKUP_ENCRYPTION_PASSWORD))
-        
         with open(raw_file, "rb") as f:
-            file_data = f.read()
-        
-        encrypted_data = fernet.encrypt(file_data)
-        
-        with open(enc_file, "wb") as f:
+            encrypted_data = fernet.encrypt(f.read())
+
+        # Write under a non-listed name, then rename so /backup/list never shows half-written archives.
+        fd = os.open(partial_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
             f.write(encrypted_data)
-            
-        # 3. Cleanup Raw File
-        os.remove(raw_file)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(partial_file, enc_file)
         logging.info(f"Backup for {container_name} created and encrypted.")
         audit_internal("backup_complete", target=container_name, details={"enc_file": enc_file})
-        
+
     except Exception as e:
         logging.error(f"Backup failed for {container_name}: {e}")
         audit_internal("backup_failed", target=container_name, details={"error": str(e)}, status="error")
+    finally:
+        for leftover in (raw_file, partial_file):
+            if os.path.exists(leftover):
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    logging.warning("Unable to remove backup temp file %s", leftover)
 
 @app.post("/backup/{container_name}")
 def trigger_backup(container_name: str, background_tasks: BackgroundTasks, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("backup_trigger", "manage_backups", x_api_key, x_user_token, containers=container_name)
+    try:
+        _validate_container_name(container_name)
+    except HTTPException as exc:
+        audit_api("backup_trigger", target=container_name, details={"error": exc.detail}, status="error")
+        raise
     ctx = get_request_context()
     background_tasks.add_task(perform_encrypted_backup, container_name, ctx.get("actor", "system"))
     audit_api("backup_trigger", target=container_name)
     return {"message": "Backup started in background"}
 
 @app.get("/backup/list")
-def list_backups(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("backup_list", "manage_backups", x_api_key, x_user_token)
-    files = [f for f in os.listdir(BACKUP_DIR) if f.endswith('.enc')]
-    audit_api("backup_list", details={"count": len(files)})
-    return {"backups": files}
+def list_backups(container: Optional[str] = None, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    auth_context = authorize("backup_list", "manage_backups", x_api_key, x_user_token, containers=container)
+    restricted = bool(auth_context.get("allowed_containers"))
+    files: List[str] = []
+    items: List[Dict[str, Any]] = []
+    for name in sorted(os.listdir(_ensure_backup_dir())):
+        if not name.endswith(".enc"):
+            continue
+        parsed = _parse_backup_filename(name)
+        owner = parsed["container"] if parsed else None
+        if restricted and (owner is None or not _container_in_scope(auth_context, owner)):
+            continue
+        if container and owner != container:
+            continue
+        path = os.path.join(BACKUP_DIR, name)
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        files.append(name)
+        items.append({"filename": name, "container": owner, "timestamp": parsed["timestamp"] if parsed else None, "size_bytes": size})
+    audit_api("backup_list", target=container, details={"count": len(files), "scoped": restricted})
+    return {"backups": files, "items": items}
 
 @app.get("/backup/download/{filename}")
 def download_backup(filename: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("backup_download", "manage_backups", x_api_key, x_user_token)
-    file_path = os.path.join(BACKUP_DIR, filename)
-    if not os.path.exists(file_path):
+    auth_context = authorize("backup_download", "manage_backups", x_api_key, x_user_token)
+    parsed = _parse_backup_filename(filename)
+    if parsed is None:
+        audit_api("backup_download", target=filename, details={"error": "invalid filename"}, status="error")
+        raise HTTPException(status_code=400, detail="Invalid backup filename")
+    try:
+        enforce_container_scope(auth_context, parsed["container"])
+    except HTTPException:
+        audit_api("backup_download", target=filename, details={"error": "container out of scope"}, status="error")
+        raise
+    backup_root = os.path.realpath(_ensure_backup_dir())
+    file_path = os.path.realpath(os.path.join(backup_root, filename))
+    if os.path.dirname(file_path) != backup_root or not os.path.isfile(file_path):
+        audit_api("backup_download", target=filename, details={"error": "not found"}, status="error")
         raise HTTPException(status_code=404, detail="File not found")
-    audit_api("backup_download", target=filename)
-    return File(file_path, media_type='application/octet-stream', filename=filename)
+    audit_api("backup_download", target=filename, details={"container": parsed["container"]})
+    return FileResponse(file_path, media_type="application/octet-stream", filename=filename)
 
 # --- RESTORE LOGIC ---
 
 @app.post("/restore")
 async def restore_container(file: UploadFile, container_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("restore_container", "restore_container", x_api_key, x_user_token, containers=container_name)
-    
-    enc_path = os.path.join(BACKUP_DIR, "restore_temp.enc")
-    dec_path = os.path.join(BACKUP_DIR, "restore_temp.tar.gz")
-    
     try:
-        # 1. Save Uploaded Encrypted File
-        with open(enc_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        # 2. Decrypt
+        _validate_container_name(container_name)
+    except HTTPException as exc:
+        audit_api("restore_container", target=container_name, details={"error": exc.detail}, status="error")
+        raise
+
+    # Per-request staging dir (owner-only) so concurrent restores never share temp files.
+    staging_dir = tempfile.mkdtemp(prefix=".restore-", dir=_ensure_backup_dir())
+    enc_path = os.path.join(staging_dir, "upload.enc")
+    dec_path = os.path.join(staging_dir, "restore.tar.gz")
+
+    try:
+        # 1. Stream the upload to disk in chunks (bounded by FORTRESS_RESTORE_MAX_BYTES when set).
+        received = 0
+        fd = os.open(enc_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as buffer:
+            while True:
+                chunk = await file.read(RESTORE_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                received += len(chunk)
+                if RESTORE_MAX_BYTES and received > RESTORE_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="Backup upload exceeds FORTRESS_RESTORE_MAX_BYTES")
+                buffer.write(chunk)
+
+        # 2. Decrypt (Fernet needs the whole token; the decrypted archive goes straight to disk).
         fernet = Fernet(get_fernet_key(BACKUP_ENCRYPTION_PASSWORD))
         with open(enc_path, "rb") as f:
-            encrypted_data = f.read()
-        
-        decrypted_data = fernet.decrypt(encrypted_data)
-        
-        with open(dec_path, "wb") as f:
+            decrypted_data = fernet.decrypt(f.read())
+        os.remove(enc_path)
+        fd = os.open(dec_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
             f.write(decrypted_data)
-            
+        del decrypted_data
+
         # 3. Import to LXD
         run_command(["lxc", "import", dec_path, container_name])
-        audit_api("restore_container", target=container_name)
-        
+        audit_api("restore_container", target=container_name, details={"size_bytes": received})
+
         return {"message": f"Container {container_name} restored successfully"}
-        
+
+    except HTTPException as exc:
+        audit_api("restore_container", target=container_name, details={"error": str(exc.detail)}, status="error")
+        if exc.status_code < 500:
+            raise
+        raise HTTPException(status_code=500, detail=f"Restore failed: {exc.detail}")
     except Exception as e:
-        audit_api("restore_container", target=container_name, details={"error": str(e)}, status="error")
-        raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)}")
+        error = "Invalid backup or wrong FORTRESS_BACKUP_PASSWORD" if e.__class__.__name__ == "InvalidToken" else str(e)
+        audit_api("restore_container", target=container_name, details={"error": error}, status="error")
+        raise HTTPException(status_code=500, detail=f"Restore failed: {error}")
     finally:
-        # Cleanup
-        if os.path.exists(enc_path): os.remove(enc_path)
-        if os.path.exists(dec_path): os.remove(dec_path)
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     # In production, run behind a real webserver or use SSL context here

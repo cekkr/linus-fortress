@@ -18,6 +18,9 @@ paths:
     get:
       summary: Retrieve system RAM/Disk stats and LXD container info
       tags: [Status]
+      description: |
+        Requires `read_status`. `containers` is the `lxc list --format json` output as a JSON string;
+        for tokens with a non-empty `allowed_containers` it only contains in-scope containers.
       security:
         - ApiKeyAuth: []
         - UserTokenAuth: []
@@ -809,6 +812,43 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+  /sites/{site_id}/backups:
+    get:
+      summary: List backups for a website
+      tags: [Sites]
+      description: Requires `sites_read`; scoped by the site's container.
+      parameters:
+        - in: path
+          name: site_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Backups, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backups:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        backup_id:
+                          type: string
+                        created_at:
+                          type: string
+                          nullable: true
+                        include_database:
+                          type: boolean
+                        path:
+                          type: string
+                          nullable: true
+                        size_bytes:
+                          type: integer
+                          nullable: true
   /sites/{site_id}/backup:
     post:
       summary: Backup a website (files and optional database)
@@ -1514,6 +1554,47 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FirewallRulesApplyResponse"
+        "500":
+          description: |
+            A rule failed to apply. Every change already applied in this request is reverted (reverse order)
+            before the error is returned; no rollback id is written. `detail` contains `failed_action`,
+            `failed_rule`, `error`, `reverted`, and `revert_errors`.
+  /firewall/rules/diff:
+    post:
+      summary: Diff current firewall rules against a baseline
+      tags: [Firewall]
+      description: Requires `firewall_admin`. Read-only; rules are compared on port, protocol, source, action, and direction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                baseline:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/FirewallRuleEntry"
+      responses:
+        "200":
+          description: Current rules plus added/removed relative to the baseline
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  current:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FirewallRuleEntry"
+                  added:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FirewallRuleEntry"
+                  removed:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FirewallRuleEntry"
   /firewall/rollback:
     post:
       summary: Roll back firewall rules from a rollback id
@@ -1884,6 +1965,185 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RecipeHealthHistoryResponse"
+  /containers/start:
+    post:
+      summary: Start a container
+      tags: [Containers]
+      description: Requires `manage_containers`; the container must be inside the token's `allowed_containers` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerLifecycle"
+      responses:
+        "200":
+          description: Lifecycle result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /containers/stop:
+    post:
+      summary: Stop a container
+      tags: [Containers]
+      description: Requires `manage_containers`; the container must be inside the token's `allowed_containers` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerLifecycle"
+      responses:
+        "200":
+          description: Lifecycle result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /containers/restart:
+    post:
+      summary: Restart a container
+      tags: [Containers]
+      description: Requires `manage_containers`; the container must be inside the token's `allowed_containers` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerLifecycle"
+      responses:
+        "200":
+          description: Lifecycle result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /containers/snapshot:
+    post:
+      summary: Create a container snapshot
+      tags: [Containers]
+      description: Requires `manage_containers`; the container must be inside the token's `allowed_containers` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerSnapshotRequest"
+      responses:
+        "200":
+          description: Snapshot created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /containers/snapshots/restore:
+    post:
+      summary: Restore a container snapshot
+      tags: [Containers]
+      description: Requires `manage_containers`; the container must be inside the token's `allowed_containers` scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerSnapshotRequest"
+      responses:
+        "200":
+          description: Snapshot restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /containers/{name}/snapshots:
+    get:
+      summary: List container snapshots
+      tags: [Containers]
+      description: Requires `manage_containers`; the container must be inside the token's `allowed_containers` scope.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Snapshot list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  snapshots:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /containers/{name}/snapshots/{snapshot_name}:
+    delete:
+      summary: Delete a container snapshot
+      tags: [Containers]
+      description: Requires `manage_containers`; the container must be inside the token's `allowed_containers` scope.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: snapshot_name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Snapshot deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /containers/exec:
+    post:
+      summary: Execute a command (argument list, no shell) inside a container
+      tags: [Containers]
+      description: Requires `manage_containers`; the container must be inside the token's `allowed_containers` scope. The command is audited without its arguments.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerExecRequest"
+      responses:
+        "200":
+          description: Command output
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  output:
+                    type: string
+  /containers/{name}/logs:
+    get:
+      summary: Fetch container console/log output
+      tags: [Containers]
+      description: Requires `manage_containers`; the container must be inside the token's `allowed_containers` scope.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Log output
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: string
   /backup/{container_name}:
     post:
       summary: Trigger encrypted LXD backup
@@ -1905,6 +2165,17 @@ paths:
     get:
       summary: List encrypted backup archives
       tags: [Backups]
+      description: |
+        Requires `manage_backups`. Creates the backup directory on demand. Tokens with a non-empty
+        `allowed_containers` only see archives named `<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc` for
+        containers in scope (unparseable legacy names are hidden from scoped tokens).
+      parameters:
+        - in: query
+          name: container
+          required: false
+          schema:
+            type: string
+          description: Only list archives for this container (must be in scope).
       responses:
         "200":
           description: Backup filenames
@@ -1917,10 +2188,28 @@ paths:
                     type: array
                     items:
                       type: string
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        filename:
+                          type: string
+                        container:
+                          type: string
+                          nullable: true
+                        timestamp:
+                          type: string
+                          nullable: true
+                        size_bytes:
+                          type: integer
   /backup/download/{filename}:
     get:
       summary: Download encrypted backup
       tags: [Backups]
+      description: |
+        Requires `manage_backups`. `filename` must match `<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc`
+        and the container must be inside the token's `allowed_containers` scope.
       parameters:
         - in: path
           name: filename
@@ -1929,16 +2218,26 @@ paths:
             type: string
       responses:
         "200":
-          description: Binary encrypted archive
+          description: Binary encrypted archive (sent as an attachment)
           content:
             application/octet-stream:
               schema:
                 type: string
                 format: binary
+        "400":
+          description: Invalid backup filename
+        "403":
+          description: Missing permission or container out of scope
+        "404":
+          description: Archive not found
   /restore:
     post:
       summary: Restore encrypted backup into a container
       tags: [Backups]
+      description: |
+        Requires `restore_container` and container scope. The upload is streamed to a per-request
+        owner-only staging directory under the backup dir (removed afterwards), so concurrent restores
+        do not collide. Uploads larger than `FORTRESS_RESTORE_MAX_BYTES` (when set) are rejected with 413.
       parameters:
         - in: query
           name: container_name
@@ -1962,6 +2261,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+        "400":
+          description: Invalid container name
+        "413":
+          description: Upload exceeds FORTRESS_RESTORE_MAX_BYTES
+        "500":
+          description: Decryption (wrong password / corrupt archive) or `lxc import` failed
   /migrations/status:
     get:
       summary: Inspect migration status for JSON stores
@@ -2224,6 +2529,15 @@ components:
       properties:
         message:
           type: string
+    ErrorResponse:
+      type: object
+      description: FastAPI HTTPException body; `detail` is a string or a structured object.
+      properties:
+        detail:
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
     MonitoringAlert:
       type: object
       properties:
@@ -2481,6 +2795,48 @@ components:
         interval_seconds:
           type: number
       additionalProperties: true
+    ContainerLifecycle:
+      type: object
+      required: [container_name]
+      properties:
+        container_name:
+          type: string
+        force:
+          type: boolean
+          default: false
+    ContainerSnapshotRequest:
+      type: object
+      required: [container_name, snapshot_name]
+      properties:
+        container_name:
+          type: string
+        snapshot_name:
+          type: string
+        stateful:
+          type: boolean
+          default: false
+    ContainerExecRequest:
+      type: object
+      required: [container_name, command]
+      properties:
+        container_name:
+          type: string
+        command:
+          type: array
+          items:
+            type: string
+          description: Argument list passed to `lxc exec ... --` (no shell).
+        user:
+          type: string
+          nullable: true
+        workdir:
+          type: string
+          nullable: true
+        environment:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: string
     ContainerCreate:
       type: object
       required: [name]

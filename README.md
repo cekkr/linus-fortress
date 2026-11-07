@@ -37,7 +37,7 @@ If `FORTRESS_API_KEY` is unset or left as the default placeholder, `X-API-Key` a
 
 - `py/server.py`: FastAPI routes and orchestration.
 - `py/fortress/auth.py`: master key resolution, delegated token checks, container scope enforcement.
-- `py/fortress/storage.py`: JSON load/save helpers for API users, recipes, hosts, and VMs.
+- `py/fortress/storage.py`: JSON load/save helpers for API users, recipes, hosts, and VMs. `save_json` writes atomically (temp file + fsync + rename) under a per-store lock (`flock` on a hidden `.<name>.lock` sidecar); new stores are created `0600`; `update_json` does locked read-modify-write.
 - `py/fortress/routing.py`: nginx routing config rendering, domain validation, TLS path checks.
 - `py/fortress/recipes.py`: recipe models, dependency resolution, and template rendering.
 - `ui/`: optional Node/Express Lizard UI with modular app directories in `ui/apps`.
@@ -219,7 +219,8 @@ All endpoints require either `X-API-Key` or `X-User-Token`. Typed tokens (`api-k
 ### Status & Routing
 
 #### `GET /status` (permission `read_status`)
-- No body or query params; returns `{status, ram, disk, containers}` strings straight from `free`, `df`, and `lxc list`.
+- No body or query params; returns `{status, ram, disk, containers}` strings from `free`, `df`, and `lxc list --format json`.
+- For tokens with a non-empty `allowed_containers`, `containers` only lists in-scope containers (unparseable `lxc` output becomes `"[]"` for scoped tokens).
 - Example: `fortress-cli status`
 
 #### `GET /monitoring/resources` (permission `read_status`)
@@ -800,6 +801,7 @@ Body:
 }
 ```
 - Applies a bulk ruleset and returns a rollback id when changes are made.
+- If any rule fails, every change already applied by the request is reverted in reverse order and the route returns `500` with `detail.failed_rule`, `detail.reverted`, and `detail.revert_errors`; no rollback id is written and the failure is audited.
 
 #### `POST /firewall/rollback`
 - Body: `{"rollback_id": "fw-20240301-120000"}`.
@@ -928,16 +930,20 @@ Example dependency recipe:
 ### Backup & Restore
 
 #### `POST /backup/{container_name}` (permission `manage_backups`, scoped)
-- Path parameter `container_name`; no body. Starts encrypted backup task.
+- Path parameter `container_name` (LXD instance name: letter first, then letters/digits/hyphens; `400` otherwise); no body. Starts encrypted backup task.
+- Archives are written as `<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc` (mode `0600`) via a `.partial` file + rename, so half-written archives never appear in listings.
 
-#### `GET /backup/list` (permission `manage_backups`)
-- Returns `{ "backups": ["container_20240101.tar.gz.enc", ...] }`.
+#### `GET /backup/list` (permission `manage_backups`, scoped)
+- Optional query `container` (must be in scope). Creates the backup directory on demand.
+- Returns `{ "backups": ["web01_20240101_120000.tar.gz.enc", ...], "items": [{"filename", "container", "timestamp", "size_bytes"}] }`.
+- Tokens with a non-empty `allowed_containers` only see archives of in-scope containers; legacy names that don't match the pattern are hidden from them.
 
-#### `GET /backup/download/{filename}` (permission `manage_backups`)
-- Streams the encrypted archive bytes; combine with `fortress-cli backup download`.
+#### `GET /backup/download/{filename}` (permission `manage_backups`, scoped)
+- `filename` must match `<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc` (`400` otherwise) and its container must be in scope (`403`). Returns the archive as an `application/octet-stream` attachment; combine with `fortress-cli backup download`.
 
 #### `POST /restore` (permission `restore_container`, scoped)
-- Query parameter `container_name` and multipart form body containing `file` (encrypted `.enc` upload). The service decrypts with the server-side Fernet key and runs `lxc import`.
+- Query parameter `container_name` and multipart form body containing `file` (encrypted `.enc` upload). The upload is streamed to a per-request owner-only staging dir under the backup dir (removed afterwards), decrypted with the server-side Fernet key, and imported with `lxc import`. Concurrent restores don't share temp files.
+- `FORTRESS_RESTORE_MAX_BYTES` (default `0` = unlimited) caps the upload size (`413`). Decryption is still in memory because Fernet tokens aren't streamable.
 
 ### Migrations & Upgrades (permission `migration_admin`)
 
@@ -1002,6 +1008,7 @@ Body:
 - Configure secrets via env vars (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`) instead of hardcoding defaults.
 - Configure `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` as the active signing key for recipe exports; optional `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS` supports signature verification during key rotation.
 - Optional runtime paths: `FORTRESS_LOG_PATH` overrides the API log file target and `FORTRESS_COMMAND_LOG_DB` overrides the SQLite audit DB path.
+- `FORTRESS_RESTORE_MAX_BYTES` caps `POST /restore` uploads in bytes (default `0` = unlimited); set it on hosts with limited RAM since restores decrypt in memory.
 - ACME HTTP-01 challenges are served from `/var/lib/fortress/acme-challenges`; override via `FORTRESS_ACME_CHALLENGE_DIR`.
 - Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), manage nginx reloads, invoke `certbot`, run package commands (`apt-get`, `dnf`, or `yum`), and manage conn-limit tooling (`iptables` and/or `nft`) when anti-DDoS conn caps are enabled.
 
