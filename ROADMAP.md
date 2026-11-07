@@ -224,6 +224,7 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Next: Versioned chunked backup format (streaming encrypt/decrypt) to drop the in-memory Fernet limit, keeping v1 decrypt for old archives.
 - Next: Refresh or make environment-independent the Puppeteer visual baselines (`app_home_visual_regression`, `css_dark_surface_token_regression` fail on macOS Chromium at HEAD).
 - Done: Validated the Python suite, cross-process `update_json` locking, and real firewalld partial-failure revert on an AlmaLinux 10.2 x86_64 QEMU VM; fixed firewalld 2.x rich-rule parsing (attribute order) found there.
+- Done: Validated token expiry, the 401/403 split, cross-process `update_json` locking (4 uvicorn workers, 40 concurrent `/api-users` creates), the api_users v1→v2 migration with `_legacy` promotion, SSH option-injection rejection, and a real-ssh host probe on an AlmaLinux 10.2 x86_64 QEMU VM (FastAPI 0.162 / Starlette 1.10 / Pydantic 2.14 / Python 3.12).
 - Next: Pin `requirements.txt` versions (fresh installs already resolve FastAPI 0.162 / Starlette 1.10, which changed router internals) and add a CI lane running Python and UI tests.
 - Done: Focused tests for `fortress.tls` and `fortress.remote` (`tests/test_remote_tls.py`) and `fortress.monitoring` (`tests/test_monitoring.py`); monitoring history appends moved onto locked `update_json` (concurrent samples were being dropped).
 - Next: Add focused tests for `fortress.hosts`/`fortress.vms` lifecycle and container lifecycle routes.
