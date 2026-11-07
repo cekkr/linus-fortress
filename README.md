@@ -41,6 +41,7 @@ If `FORTRESS_API_KEY` is unset or left as the default placeholder, `X-API-Key` a
 - `py/fortress/routing.py`: nginx routing config rendering, domain validation, TLS path checks.
 - `py/fortress/recipes.py`: recipe models, dependency resolution, and template rendering.
 - `ui/`: optional Node/Express Lizard UI with modular app directories in `ui/apps`.
+- Full per-file reference and contracts: `AGENTS.md`.
 
 ## Optional Lizard UI (Node/Express)
 
@@ -1043,7 +1044,9 @@ By default TLS certificates are verified; pass `--insecure` during `setup` only 
 
 - `python -m unittest discover -s tests`
 - `python -m unittest discover -s tests -p 'test_permissions_matrix.py'` for route-level permission matrix checks.
-- Permission matrix coverage includes recipes, system upgrade, system update-reload, routing, sites, and firewall endpoint sequences.
+- Permission matrix coverage includes recipes, system upgrade, system update-reload, routing, sites, firewall, and terminal endpoint sequences.
+- UI tests: `cd ui && npm install && npm test` (Puppeteer suites self-skip when Chromium is unavailable; regenerate visual baselines only intentionally with `UPDATE_VISUAL_BASELINES=1`).
+- AI agents: see `AGENTS.md` for the file-by-file ownership map, critical contracts, and known gaps.
 
 ## Roadmap
 

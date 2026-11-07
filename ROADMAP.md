@@ -203,3 +203,15 @@ Design: migration engine (schema registry + patch tracking)
 - Patch ledger: append to `/var/lib/fortress/migrations/ledger.jsonl` with `patch_id`, `store`, `from_schema`, `to_schema`, `checksum_before`, `checksum_after`, `backup_path`, and `applied_at`.
 - Dry-run: compute a change plan per store, emit a preview (added/renamed/removed fields) without writing files.
 - Rollback: restore backups for each store, verify checksums, and record a rollback entry; lock migrations with a file lock to prevent concurrent runs.
+
+## Path 11: Known gaps from the AGENTS.md audit (short term)
+Discovered while rebuilding `AGENTS.md` against the code; none are implemented yet.
+- Next: Sync `api-v1.yaml` with the route registry (container start/stop/restart/snapshot/exec/logs routes, `/firewall/rules/diff`, `/sites/{site_id}/backups`) and add a route-vs-spec check to the test suite.
+- Next: Fix `GET /backup/download/{filename}` to return a `FileResponse` with filename validation; scope `/backup/list` and downloads by `allowed_containers`; create `BACKUP_DIR` on demand.
+- Next: Use unique temp files (and streaming) for `POST /restore` to avoid concurrent-restore collisions and full in-memory decrypts.
+- Next: Revert already-applied rules in `apply_firewall_rules` when a later rule fails (Path 10.1 acceptance criteria).
+- Next: Add atomic writes + file locking to `fortress.storage.save_json` for concurrently written JSON stores.
+- Next: `encodeURIComponent` all path params proxied by `ui/server.js`.
+- Next: Filter `/status` container output by `allowed_containers`; consider hashing stored delegated tokens.
+- Next: Pin `requirements.txt` versions and add a CI lane running Python and UI tests.
+- Next: Add focused tests for `fortress.monitoring`, `fortress.tls`, `fortress.hosts`, `fortress.vms`, `fortress.remote`, and container lifecycle/backup routes.
