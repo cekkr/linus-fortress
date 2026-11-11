@@ -2166,12 +2166,14 @@ body {
 }
 
 @media (max-width: 1100px) {
+  /* minmax(0, 1fr): a bare 1fr column grows to the min-content width of the
+     nowrap fast-actions row and pushes the page wider than a phone screen. */
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .layout.wizard-active {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .nav-tree,
@@ -2274,5 +2276,92 @@ body {
 
   .terminal-actions .action {
     width: 100%;
+  }
+}
+
+/* Wizard resume banner (sessionStorage-backed progress markers). */
+.wizard-resume {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px dashed rgba(99, 146, 59, 0.6);
+  background: rgba(230, 246, 200, 0.7);
+  color: #23311f;
+  font-size: 12px;
+}
+
+.wizard-resume-text {
+  flex: 1 1 220px;
+}
+
+.wizard-nav-hint {
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  color: rgba(236, 242, 250, 0.7);
+}
+
+/* Debug panel export toolbar. */
+.debug-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.debug-notice {
+  font-size: 11px;
+  color: #3d5a2a;
+  margin-bottom: 6px;
+}
+
+/* Fast-actions ordering list (Settings). */
+.fast-order-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fast-order-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  color: #23311f;
+  cursor: grab;
+}
+
+.fast-order-item.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.fast-order-handle {
+  color: #7a8a6a;
+  letter-spacing: -2px;
+}
+
+.fast-order-index {
+  font-weight: 700;
+  min-width: 16px;
+}
+
+.fast-order-label {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+
+@media (hover: none) {
+  .wizard-nav-hint {
+    display: none;
   }
 }

@@ -68,7 +68,9 @@ const state = {
   events: [],
   debug: {
     lastError: null,
+    history: [],
     lastFortressErrorSignature: null,
+    notice: null,
   },
   probedContainers: new Set(),
   probeInFlight: false,
@@ -86,6 +88,8 @@ const state = {
     fastActions: [],
     expandedCardId: null,
     cardsAnimated: false,
+    pendingWizardResume: null,
+    draggingFastActionId: null,
   },
   wizard: {
     active: false,
@@ -636,6 +640,336 @@ function updateFastActions(nextActions) {
   persistFastActionsPreference();
 }
 
+function moveFastAction(actions, id, targetIndex) {
+  const list = normalizeFastActions(actions);
+  const fromIndex = list.indexOf(id);
+  if (fromIndex < 0) {
+    return list;
+  }
+  const parsed = Number.parseInt(String(targetIndex), 10);
+  if (!Number.isFinite(parsed)) {
+    return list;
+  }
+  const bounded = Math.max(0, Math.min(list.length - 1, parsed));
+  if (bounded === fromIndex) {
+    return list;
+  }
+  list.splice(fromIndex, 1);
+  list.splice(bounded, 0, id);
+  return list;
+}
+
+// Wizard progress persistence (sessionStorage, per tab). Only non-sensitive form fields
+// are stored: anything that looks like a password/secret/token/env block is dropped, and
+// flows whose later steps depend on server state (system upgrade preflight) resume at step 0.
+const WIZARD_PROGRESS_STORAGE_KEY = "lizard.wizard-progress.v1";
+const WIZARD_PROGRESS_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const WIZARD_PROGRESS_SENSITIVE_KEY = /(pass|secret|token|credential|private|environment|^env)/i;
+const WIZARD_PROGRESS_RESTART_MODES = new Set(["system-upgrade"]);
+const WIZARD_MODE_GROUPS = {
+  "create-container": "form",
+  routing: "routing",
+  filemanager: "filemanager",
+  packages: "packages",
+  "system-upgrade": "upgrade",
+  "recipe-apply": "recipe",
+  "host-create": "host",
+  network: "network",
+  firewall: "firewall",
+  "vm-snapshot": "vmSnapshot",
+  "container-snapshot": "containerSnapshot",
+  exec: "exec",
+  "site-create": "siteCreate",
+  "site-deploy": "siteDeploy",
+  "site-backup": "siteBackup",
+  "site-rollback": "siteRollback",
+  "site-services": "siteServices",
+};
+const WIZARD_UPGRADE_PERSIST_KEYS = ["update_packages", "full_upgrade", "apply_migrations"];
+let wizardProgressOwned = false;
+
+function wizardSessionStorage() {
+  try {
+    if (typeof window === "undefined" || !window.sessionStorage) {
+      return null;
+    }
+    return window.sessionStorage;
+  } catch (err) {
+    return null;
+  }
+}
+
+function pickPersistableWizardFields(mode, group) {
+  const source = group && typeof group === "object" ? group : {};
+  const allowedKeys = mode === "system-upgrade" ? WIZARD_UPGRADE_PERSIST_KEYS : Object.keys(source);
+  const picked = {};
+  for (const key of allowedKeys) {
+    if (WIZARD_PROGRESS_SENSITIVE_KEY.test(key)) {
+      continue;
+    }
+    const value = source[key];
+    if (typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) {
+      picked[key] = value;
+    }
+  }
+  return picked;
+}
+
+function buildWizardProgressSnapshot() {
+  const wizard = state.wizard;
+  if (!wizard.active || !wizard.mode || !WIZARD_MODE_GROUPS[wizard.mode]) {
+    return null;
+  }
+  const groupKey = WIZARD_MODE_GROUPS[wizard.mode];
+  return {
+    version: 1,
+    mode: wizard.mode,
+    step: wizard.step,
+    maxStep: wizard.maxStep,
+    container: wizard.context && wizard.context.container ? String(wizard.context.container) : null,
+    vm: wizard.context && wizard.context.vm ? String(wizard.context.vm) : null,
+    selectedId: state.selectedId || null,
+    fields: pickPersistableWizardFields(wizard.mode, wizard[groupKey]),
+    savedAt: Date.now(),
+  };
+}
+
+function persistWizardProgress() {
+  const storage = wizardSessionStorage();
+  const snapshot = buildWizardProgressSnapshot();
+  if (!storage || !snapshot) {
+    return;
+  }
+  try {
+    storage.setItem(WIZARD_PROGRESS_STORAGE_KEY, JSON.stringify(snapshot));
+    wizardProgressOwned = true;
+    state.ui.pendingWizardResume = null;
+  } catch (err) {
+    // Ignore storage errors.
+  }
+}
+
+function clearWizardProgress() {
+  const storage = wizardSessionStorage();
+  if (storage) {
+    try {
+      storage.removeItem(WIZARD_PROGRESS_STORAGE_KEY);
+    } catch (err) {
+      // Ignore storage errors.
+    }
+  }
+  wizardProgressOwned = false;
+}
+
+function normalizeWizardProgressSnapshot(raw, now = Date.now()) {
+  if (!raw || typeof raw !== "object" || raw.version !== 1) {
+    return null;
+  }
+  const mode = String(raw.mode || "");
+  if (!WIZARD_MODE_GROUPS[mode] || !WIZARD_STEP_COUNTS[mode]) {
+    return null;
+  }
+  const savedAt = Number(raw.savedAt);
+  if (!Number.isFinite(savedAt) || now - savedAt > WIZARD_PROGRESS_MAX_AGE_MS || savedAt - now > 60 * 1000) {
+    return null;
+  }
+  const total = WIZARD_STEP_COUNTS[mode];
+  const clamp = (value) => {
+    const parsed = Number.parseInt(String(value), 10);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(total - 1, parsed)) : 0;
+  };
+  const restart = WIZARD_PROGRESS_RESTART_MODES.has(mode);
+  const step = restart ? 0 : clamp(raw.step);
+  const maxStep = restart ? 0 : Math.max(step, clamp(raw.maxStep));
+  return {
+    mode,
+    step,
+    maxStep,
+    container: typeof raw.container === "string" && raw.container ? raw.container : null,
+    vm: typeof raw.vm === "string" && raw.vm ? raw.vm : null,
+    selectedId: typeof raw.selectedId === "string" && raw.selectedId ? raw.selectedId : null,
+    fields: pickPersistableWizardFields(mode, raw.fields),
+    savedAt,
+  };
+}
+
+function loadPendingWizardResume() {
+  const storage = wizardSessionStorage();
+  state.ui.pendingWizardResume = null;
+  if (!storage) {
+    return;
+  }
+  try {
+    const raw = storage.getItem(WIZARD_PROGRESS_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+    const snapshot = normalizeWizardProgressSnapshot(JSON.parse(raw));
+    if (snapshot) {
+      state.ui.pendingWizardResume = snapshot;
+    } else {
+      storage.removeItem(WIZARD_PROGRESS_STORAGE_KEY);
+    }
+  } catch (err) {
+    state.ui.pendingWizardResume = null;
+  }
+}
+
+function resumePendingWizard() {
+  const snapshot = state.ui.pendingWizardResume;
+  if (!snapshot) {
+    return false;
+  }
+  state.ui.pendingWizardResume = null;
+  if (snapshot.selectedId && state.nodesById.has(snapshot.selectedId) && state.selectedId !== snapshot.selectedId) {
+    selectNode(snapshot.selectedId);
+  }
+  const fields = snapshot.fields || {};
+  openWizard(snapshot.mode, snapshot.container, {
+    packageMode: fields.mode,
+    firewallMode: fields.mode,
+    vmName: snapshot.vm,
+    siteId: fields.site_id,
+  });
+  const groupKey = WIZARD_MODE_GROUPS[snapshot.mode];
+  const group = state.wizard[groupKey];
+  if (group && typeof group === "object") {
+    for (const [key, value] of Object.entries(fields)) {
+      if (Object.prototype.hasOwnProperty.call(group, key) && typeof group[key] === typeof value) {
+        group[key] = value;
+      }
+    }
+  }
+  if (snapshot.container) {
+    state.wizard.context.container = snapshot.container;
+  }
+  state.wizard.maxStep = snapshot.maxStep;
+  state.wizard.step = snapshot.step;
+  state.wizard.prevStep = snapshot.step;
+  renderWizard();
+  renderFastActions();
+  logEvent("success", `Resumed ${wizardModeLabel(snapshot.mode)} at step ${snapshot.step + 1}`);
+  return true;
+}
+
+function discardPendingWizard() {
+  state.ui.pendingWizardResume = null;
+  clearWizardProgress();
+  renderFastActions();
+}
+
+function isEditableKeyTarget(target) {
+  if (!target || typeof target !== "object") {
+    return false;
+  }
+  const tag = String(target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") {
+    return true;
+  }
+  if (target.isContentEditable) {
+    return true;
+  }
+  return Boolean(target.closest && target.closest(".xterm"));
+}
+
+// Keyboard/touch navigation never submits a wizard: forward moves only between steps,
+// and the final step still needs an explicit click on the submit button.
+function navigateWizardByGesture(direction) {
+  const wizard = state.wizard;
+  if (!wizard.active || !wizard.mode || wizard.busy) {
+    return false;
+  }
+  if (direction < 0) {
+    if (wizard.step <= 0) {
+      return false;
+    }
+    handleWizardAction("back");
+    return true;
+  }
+  const total = wizardStepTotal(wizard.mode);
+  if (wizard.step >= total - 1) {
+    return false;
+  }
+  handleWizardAction("next");
+  return true;
+}
+
+const WIZARD_SWIPE_MIN_DISTANCE_PX = 60;
+const WIZARD_SWIPE_MAX_DRIFT_RATIO = 0.6;
+let wizardSwipeStart = null;
+
+function bindWizardGestures() {
+  document.addEventListener("keydown", (event) => {
+    if (!state.wizard.active || event.defaultPrevented) {
+      return;
+    }
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+      return;
+    }
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+    if (isEditableKeyTarget(event.target)) {
+      return;
+    }
+    if (elements.authOverlay && !elements.authOverlay.hidden) {
+      return;
+    }
+    if (elements.adminOverlay && !elements.adminOverlay.hidden) {
+      return;
+    }
+    if (navigateWizardByGesture(event.key === "ArrowLeft" ? -1 : 1)) {
+      event.preventDefault();
+    }
+  });
+
+  if (!elements.wizard) {
+    return;
+  }
+  elements.wizard.addEventListener(
+    "touchstart",
+    (event) => {
+      if (!state.wizard.active || !event.touches || event.touches.length !== 1) {
+        wizardSwipeStart = null;
+        return;
+      }
+      if (!event.target.closest || !event.target.closest(".wizard-viewport")) {
+        wizardSwipeStart = null;
+        return;
+      }
+      const touch = event.touches[0];
+      wizardSwipeStart = { x: touch.clientX, y: touch.clientY };
+    },
+    { passive: true }
+  );
+  elements.wizard.addEventListener(
+    "touchend",
+    (event) => {
+      const start = wizardSwipeStart;
+      wizardSwipeStart = null;
+      if (!start || !event.changedTouches || !event.changedTouches.length) {
+        return;
+      }
+      const touch = event.changedTouches[0];
+      const dx = touch.clientX - start.x;
+      const dy = touch.clientY - start.y;
+      if (Math.abs(dx) < WIZARD_SWIPE_MIN_DISTANCE_PX || Math.abs(dy) > Math.abs(dx) * WIZARD_SWIPE_MAX_DRIFT_RATIO) {
+        return;
+      }
+      // Swipe left = forward, swipe right = back (content follows the finger).
+      navigateWizardByGesture(dx < 0 ? 1 : -1);
+    },
+    { passive: true }
+  );
+  elements.wizard.addEventListener(
+    "touchcancel",
+    () => {
+      wizardSwipeStart = null;
+    },
+    { passive: true }
+  );
+}
+
 function buildRecipeDefinition(name, description, commands, dependencies = []) {
   return {
     name,
@@ -1159,8 +1493,25 @@ function renderFastActions() {
       )}</button>`;
     })
     .join("");
+  const pendingResume = state.ui.pendingWizardResume;
+  const resumeMarkup =
+    pendingResume && !state.wizard.active
+      ? `
+    <div class="wizard-resume" role="status">
+      <span class="wizard-resume-text">
+        Unfinished <strong>${escapeHtml(wizardModeLabel(pendingResume.mode))}</strong> wizard
+        (step ${pendingResume.step + 1}/${wizardStepTotal(pendingResume.mode)}${
+          pendingResume.container ? `, ${escapeHtml(pendingResume.container)}` : ""
+        })
+      </span>
+      <button class="action mini" data-action-id="wizard-resume">Resume</button>
+      <button class="action ghost mini" data-action-id="wizard-resume-discard">Discard</button>
+    </div>
+  `
+      : "";
   elements.fastActions.hidden = false;
   elements.fastActions.innerHTML = `
+    ${resumeMarkup}
     <div class="fast-actions-head">
       <div class="fast-actions-title">Fast Actions</div>
       ${
@@ -1801,7 +2152,7 @@ function buildAppHomeModel(node) {
 
   if (nodeId === "sites") {
     const sites = Array.isArray(state.sites) ? state.sites : [];
-    const active = sites.filter((site) => String(site.status || "").toLowerCase().includes("active")).length;
+    const active = sites.filter((site) => String(site.status || "").trim().toLowerCase() === "active").length;
     let backups = 0;
     for (const list of state.siteBackups.values()) {
       backups += Array.isArray(list) ? list.length : 0;
@@ -1824,7 +2175,7 @@ function buildAppHomeModel(node) {
         detail: `${domain} • ${container}`,
         nodeId: nodeId,
         pills: [
-          { label: status, tone: status.toLowerCase().includes("active") ? "running" : "stopped" },
+          { label: status, tone: status.trim().toLowerCase() === "active" ? "running" : "stopped" },
           detail.runtime && detail.runtime.php_version ? { label: `PHP ${detail.runtime.php_version}` } : null,
         ].filter(Boolean),
         actions:
@@ -2545,10 +2896,27 @@ function renderSettingsPreview(node) {
       </div>
     `;
   }).join("");
-  const currentFastActions = normalizeFastActions(state.ui.fastActions)
+  const orderedFastActions = normalizeFastActions(state.ui.fastActions)
     .map((id) => fastActionOptionById(id))
-    .filter(Boolean)
-    .map((item) => `<span class="pill">${escapeHtml(item.label)}</span>`)
+    .filter(Boolean);
+  const currentFastActions = orderedFastActions
+    .map((item, index) => {
+      const upDisabled = index === 0 ? "disabled" : "";
+      const downDisabled = index === orderedFastActions.length - 1 ? "disabled" : "";
+      return `
+        <li class="fast-order-item" draggable="true" data-fast-order-id="${escapeHtml(item.id)}">
+          <span class="fast-order-handle" aria-hidden="true">⋮⋮</span>
+          <span class="fast-order-index">${index + 1}</span>
+          <span class="fast-order-label">${escapeHtml(item.label)}</span>
+          <button class="action ghost mini" data-action-id="settings-fast-action-move" data-fast-id="${escapeHtml(
+            item.id
+          )}" data-direction="up" aria-label="Move ${escapeHtml(item.label)} left" ${upDisabled}>↑</button>
+          <button class="action ghost mini" data-action-id="settings-fast-action-move" data-fast-id="${escapeHtml(
+            item.id
+          )}" data-direction="down" aria-label="Move ${escapeHtml(item.label)} right" ${downDisabled}>↓</button>
+        </li>
+      `;
+    })
     .join("");
   const systemSummary = (() => {
     const latestUpdateReload = state.systemUpgrade.lastUpdateReload;
@@ -2595,7 +2963,8 @@ function renderSettingsPreview(node) {
       <div class="card-actions">
         <button class="action ghost" data-action-id="settings-fast-actions-default" data-node-id="${node.id}">Reset Defaults</button>
       </div>
-      <div class="card-meta">${currentFastActions}</div>
+      <div class="settings-fast-desc">Drag to reorder (or use the arrows); the top bar follows this order.</div>
+      <ol class="fast-order-list" id="fast-order-list">${currentFastActions}</ol>
     </div>
   `;
 }
@@ -2885,7 +3254,7 @@ function renderSitesPreview(node) {
   const rows = state.sites
     .map((site) => {
       const status = site.status || "unknown";
-      const pill = `<span class="pill ${status.includes("active") ? "running" : "stopped"}">${status}</span>`;
+      const pill = `<span class="pill ${status.trim().toLowerCase() === "active" ? "running" : "stopped"}">${status}</span>`;
       const siteId = site.id || site.name;
       const detail = siteId ? state.siteDetails.get(siteId) || site : site;
       const runtime = detail.runtime || {};
@@ -3256,14 +3625,28 @@ function renderDebugPanel() {
     return;
   }
   const lastError = state.debug.lastError;
+  const historyCount = Array.isArray(state.debug.history) ? state.debug.history.length : 0;
+  const noticeMarkup = state.debug.notice
+    ? `<div class="debug-notice" role="status">${escapeHtml(state.debug.notice)}</div>`
+    : "";
   if (!lastError) {
     elements.debugPanel.innerHTML = `
       <div class="event-item">
         No API errors captured in this session.
       </div>
+      ${noticeMarkup}
     `;
     return;
   }
+  const toolbarMarkup = `
+    <div class="debug-toolbar">
+      <button class="action ghost mini" data-debug-action="copy-latest">Copy latest</button>
+      <button class="action ghost mini" data-debug-action="copy-all">Copy all (${historyCount})</button>
+      <button class="action ghost mini" data-debug-action="export">Export JSON</button>
+      <button class="action ghost mini" data-debug-action="clear">Clear</button>
+    </div>
+    ${noticeMarkup}
+  `;
   const detailsJson =
     lastError.details && typeof lastError.details === "object"
       ? JSON.stringify(lastError.details, null, 2)
@@ -3272,6 +3655,7 @@ function renderDebugPanel() {
       : "";
   const stackJson = lastError.stack ? String(lastError.stack) : "";
   elements.debugPanel.innerHTML = `
+    ${toolbarMarkup}
     <div class="event-item error">
       <div><strong>${escapeHtml(lastError.message || "Request failed")}</strong></div>
       <div class="card-meta">
@@ -3502,10 +3886,18 @@ function renderWizard() {
     if (elements.layout) {
       elements.layout.classList.remove("wizard-active");
     }
+    if (wizardProgressOwned) {
+      clearWizardProgress();
+    }
     renderBreadcrumb();
     renderImageCatalog();
     renderOperationPanel();
     return;
+  }
+  const hadPendingResume = Boolean(state.ui.pendingWizardResume);
+  persistWizardProgress();
+  if (hadPendingResume) {
+    renderFastActions();
   }
   if (elements.wizardStage) {
     elements.wizardStage.hidden = false;
@@ -4742,6 +5134,7 @@ function renderWizard() {
     <div class="wizard-shell">
       <div class="wizard-header">
         <div class="wizard-title">${escapeHtml(wizardModeLabel(wizard.mode))}</div>
+        <div class="wizard-nav-hint" aria-hidden="true">← / → keys move between steps</div>
         <div class="wizard-progress-wrap">
           <div class="wizard-progress" style="width:${progressPercent}%;"></div>
         </div>
@@ -5854,6 +6247,100 @@ function apiErrorMessage(payload, status) {
   return status ? `Request failed (${status})` : "Request failed";
 }
 
+const DEBUG_HISTORY_LIMIT = 20;
+const DEBUG_REDACT_KEY = /(pass(word)?|secret|token|api[_-]?key|authorization|cookie|credential|private[_-]?key)/i;
+
+function redactDebugValue(value, depth = 0) {
+  if (depth > 8) {
+    return "[truncated]";
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactDebugValue(item, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = DEBUG_REDACT_KEY.test(key) ? "[redacted]" : redactDebugValue(item, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
+function buildDebugExport(scope = "all") {
+  const errors = scope === "latest" ? (state.debug.lastError ? [state.debug.lastError] : []) : state.debug.history || [];
+  return redactDebugValue({
+    format: "lizard.debug-export.v1",
+    exported_at: new Date().toISOString(),
+    ui_path: typeof window !== "undefined" && window.location ? window.location.pathname : null,
+    selected_app: state.selectedId || null,
+    wizard: state.wizard.active ? { mode: state.wizard.mode, step: state.wizard.step } : null,
+    fortress: state.fortress || null,
+    errors,
+  });
+}
+
+async function copyTextToClipboard(text) {
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) {
+    // Fall back to execCommand below.
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return Boolean(ok);
+  } catch (err) {
+    return false;
+  }
+}
+
+function downloadJsonFile(filename, payload) {
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function handleDebugAction(action) {
+  if (action === "copy-latest" || action === "copy-all") {
+    const payload = buildDebugExport(action === "copy-latest" ? "latest" : "all");
+    const ok = await copyTextToClipboard(JSON.stringify(payload, null, 2));
+    state.debug.notice = ok ? "Copied debug payload to clipboard." : "Clipboard unavailable; use Export JSON.";
+    renderDebugPanel();
+    return;
+  }
+  if (action === "export") {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    downloadJsonFile(`lizard-debug-${stamp}.json`, buildDebugExport("all"));
+    state.debug.notice = "Exported debug payloads as JSON.";
+    renderDebugPanel();
+    return;
+  }
+  if (action === "clear") {
+    state.debug.lastError = null;
+    state.debug.history = [];
+    state.debug.notice = "Debug history cleared.";
+    renderDebugPanel();
+  }
+}
+
 function captureDebugError(error, context = {}) {
   const details = error && error.details ? error.details : null;
   const payload = {
@@ -5866,6 +6353,7 @@ function captureDebugError(error, context = {}) {
     stack: error && error.stack ? error.stack : null,
   };
   state.debug.lastError = payload;
+  state.debug.history = [payload, ...(state.debug.history || [])].slice(0, DEBUG_HISTORY_LIMIT);
   if (typeof console !== "undefined" && console.error) {
     console.error("[lizard-debug] API error", payload);
   }
@@ -6791,6 +7279,33 @@ async function handleAction(actionId, node, params = {}) {
     } else {
       logEvent("error", "Settings app is not available");
     }
+    return;
+  }
+
+  if (actionId === "wizard-resume") {
+    if (!resumePendingWizard()) {
+      logEvent("error", "No saved wizard progress to resume");
+    }
+    return;
+  }
+
+  if (actionId === "wizard-resume-discard") {
+    discardPendingWizard();
+    logEvent("success", "Discarded saved wizard progress");
+    return;
+  }
+
+  if (actionId === "settings-fast-action-move") {
+    const id = String(params.fastId || "");
+    const current = normalizeFastActions(state.ui.fastActions);
+    const index = current.indexOf(id);
+    if (index < 0) {
+      return;
+    }
+    const offset = params.direction === "up" ? -1 : 1;
+    updateFastActions(moveFastAction(current, id, index + offset));
+    renderFastActions();
+    renderPreview();
     return;
   }
 
@@ -8158,6 +8673,7 @@ function bindEvents() {
     } else {
       state.wizard.form[target.name] = value;
     }
+    persistWizardProgress();
   });
 
   if (elements.preview) {
@@ -8190,6 +8706,68 @@ function bindEvents() {
     });
   }
 
+  if (elements.debugPanel) {
+    elements.debugPanel.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-debug-action]");
+      if (!button) {
+        return;
+      }
+      handleDebugAction(button.getAttribute("data-debug-action")).catch(() => {});
+    });
+  }
+
+  if (elements.preview) {
+    elements.preview.addEventListener("dragstart", (event) => {
+      const item = event.target.closest && event.target.closest("[data-fast-order-id]");
+      if (!item) {
+        return;
+      }
+      state.ui.draggingFastActionId = item.getAttribute("data-fast-order-id");
+      item.classList.add("dragging");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", state.ui.draggingFastActionId || "");
+      }
+    });
+    elements.preview.addEventListener("dragover", (event) => {
+      const item = event.target.closest && event.target.closest("[data-fast-order-id]");
+      if (!item || !state.ui.draggingFastActionId) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+    });
+    elements.preview.addEventListener("drop", (event) => {
+      const item = event.target.closest && event.target.closest("[data-fast-order-id]");
+      const draggedId = state.ui.draggingFastActionId;
+      state.ui.draggingFastActionId = null;
+      if (!item || !draggedId) {
+        return;
+      }
+      event.preventDefault();
+      const targetId = item.getAttribute("data-fast-order-id");
+      const current = normalizeFastActions(state.ui.fastActions);
+      const targetIndex = current.indexOf(targetId);
+      if (targetIndex < 0 || targetId === draggedId) {
+        renderPreview();
+        return;
+      }
+      updateFastActions(moveFastAction(current, draggedId, targetIndex));
+      renderFastActions();
+      renderPreview();
+      logEvent("success", "Fast actions reordered");
+    });
+    elements.preview.addEventListener("dragend", () => {
+      state.ui.draggingFastActionId = null;
+      const dragging = elements.preview.querySelector(".fast-order-item.dragging");
+      if (dragging) {
+        dragging.classList.remove("dragging");
+      }
+    });
+  }
+
   if (elements.imageCatalog) {
     elements.imageCatalog.addEventListener("input", (event) => {
       const target = event.target;
@@ -8204,8 +8782,10 @@ function bindEvents() {
 
 window.addEventListener("DOMContentLoaded", () => {
   loadFastActionsPreference();
+  loadPendingWizardResume();
   renderDebugPanel();
   bindEvents();
+  bindWizardGestures();
   startLayoutGuard();
   window.addEventListener("resize", () => {
     scheduleGridRelayout();

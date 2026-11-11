@@ -66,10 +66,12 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Add monitoring dashboards powered by `/monitoring/resources` with alert overlays.
 - Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
-- Next: Add keyboard + touch navigation for wizard step transitions (left/right arrows, swipe gestures).
+- Done: Add keyboard + touch navigation for wizard step transitions (← / → outside form fields, horizontal swipe on the wizard viewport); gestures never submit the final step.
 - Done: Add an inline wizard step summary/history strip with breadcrumb quick-jump so users can navigate back to Home/sections and prior wizard steps without losing context.
-- Next: Persist wizard progress markers per active flow so users can safely resume after page refresh.
-- Next: Add drag/drop ordering + named profiles for fast-actions menu preferences.
+- Done: Persist wizard progress markers per active flow (sessionStorage, sensitive fields dropped, 12 h expiry, upgrade preflight restarts at step 0) with a Resume/Discard banner after page refresh.
+- Done: Add drag/drop (and ↑/↓ button) ordering for the fast-actions menu in Settings.
+- Next: Add named profiles for fast-actions menu preferences (save/switch sets of actions).
+- Next: Let the system-upgrade wizard resume past preflight by re-running the dry-run automatically.
 - Next: Add a background cache refresh + health indicator for public LXD simplestream lookups and keep Ubuntu/Debian version-to-codename mappings current as new releases ship.
 - Done: Rework app navigation cards into an app-store model where icon click opens directly and title/description toggles an animated more-info panel with deep actions + Open CTA.
 - Done: Align app deck UX closer to legacy Lizard: fixed-height rectangular app buttons, row-level dark-fiber more-info expansion, and active-button bottom-extension animation without resizing sibling cards.
@@ -82,7 +84,11 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Ensure Check Update + Reload triggers browser reload after successful API completion and cover it with Puppeteer automation.
 - Done: Improve browser-side debugging by surfacing backend fortress-status errors (including LXD endpoint mismatch hints) in the Debug panel/event log.
 - Done: Harden container image availability discovery for older LXD CLIs by retrying `lxc image list` without `--limit` when unsupported.
-- Next: Add copy/export controls for latest debug payloads from the UI Debug panel to speed up browser-side troubleshooting.
+- Done: Add copy/export controls for debug payloads in the UI Debug panel (copy latest/all, JSON export with key redaction, last 20 errors, clear).
+- Done: Add `npm run screenshots` (`ui/scripts/capture-screenshots.mjs` + read-only demo API) that captures key Lizard UI screens into `docs/screenshots/`, plus a README Screenshots section.
+- Done: Fix phone-width horizontal overflow (single grid column is now `minmax(0, 1fr)`) and inactive sites being counted/rendered as active.
+- Next: Add a screenshot-freshness check (re-run `npm run screenshots` in CI and flag large diffs) once CI exists.
+- Next: Escape wizard input `value` attributes (several wizards interpolate raw state into `value="..."`) and add a Puppeteer case for quotes in names.
 - Next: Add breakpoint-specific Puppeteer bridge seam checks (desktop/tablet/mobile widths) to prevent future unibody alignment regressions.
 - Next: Continue expanding app-home dashboards with richer per-item actions (route/site/VM quick controls), container sub-app homes, and visual regression coverage for stage rendering.
 - Next: Add a CI lane with a real LXD daemon fixture (including Fedora remotes output variants) to validate image availability discovery end-to-end beyond mocked unit tests.

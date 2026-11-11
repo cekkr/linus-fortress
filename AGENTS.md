@@ -305,9 +305,12 @@ Lizard UI Express server: static assets, admin auth (PBKDF2-SHA256 passwords, lo
 
 Single-file browser app (vanilla JS): app-deck rendering, wizards, previews per app, terminal (xterm.js, polling), debug panel, fast-actions menu.
 
-- **Key functions and subparts:** `apiRequest` (all calls go to the UI server `/api/*`), `loadGraph`, `renderAll`/`renderGrid`/`renderCard`/`renderMoreInfoPanel`/`renderAppHome`, `renderWizard` + `WIZARD_STEP_COUNTS`/`WIZARD_MODE_LABELS`, `render*Preview` per app (routing, recipes, settings, packages, monitoring, firewall, VMs, sites, hosts, terminal), `loadPopularImages`/`renderImageCatalog`, `renderDebugPanel`, fast actions (`FAST_ACTION_OPTIONS`, `FAST_ACTION_STORAGE_KEY` in localStorage), `RECIPE_CATALOG`, `TERMINAL_POLL_INTERVAL_MS`.
+- **Key functions and subparts:** `apiRequest` (all calls go to the UI server `/api/*`), `loadGraph`, `renderAll`/`renderGrid`/`renderCard`/`renderMoreInfoPanel`/`renderAppHome`, `renderWizard` + `WIZARD_STEP_COUNTS`/`WIZARD_MODE_LABELS`, `render*Preview` per app (routing, recipes, settings, packages, monitoring, firewall, VMs, sites, hosts, terminal), `loadPopularImages`/`renderImageCatalog`, `renderDebugPanel`, fast actions (`FAST_ACTION_OPTIONS`, `FAST_ACTION_STORAGE_KEY` in localStorage, `moveFastAction` for drag/drop + ↑/↓ ordering in Settings), `RECIPE_CATALOG`, `TERMINAL_POLL_INTERVAL_MS`.
+  - Wizard navigation: `bindWizardGestures` (ArrowLeft/ArrowRight outside form fields and the xterm, horizontal swipe on `.wizard-viewport`) → `navigateWizardByGesture`, which only calls `back`/`next` between steps and never submits the final step.
+  - Wizard resume: `WIZARD_PROGRESS_STORAGE_KEY` (`lizard.wizard-progress.v1` in **sessionStorage**), `WIZARD_MODE_GROUPS` (mode → wizard state group), `persistWizardProgress` (called from `renderWizard` and the wizard input handler), `normalizeWizardProgressSnapshot` (version, known mode, 12 h max age, clamped steps), `loadPendingWizardResume` at startup, `resumePendingWizard`/`discardPendingWizard` behind the fast-actions **Resume/Discard** banner. `pickPersistableWizardFields` drops keys matching `WIZARD_PROGRESS_SENSITIVE_KEY` (pass/secret/token/credential/private/environment); `system-upgrade` persists only its option booleans and resumes at step 0 (`WIZARD_PROGRESS_RESTART_MODES`).
+  - Debug export: `state.debug.history` (last `DEBUG_HISTORY_LIMIT` = 20 errors), `buildDebugExport` (format `lizard.debug-export.v1`), `redactDebugValue` (`DEBUG_REDACT_KEY`), `handleDebugAction` (`data-debug-action` = `copy-latest` / `copy-all` / `export` / `clear`).
 - **Tests:** Puppeteer suites in [`ui/tests/`](ui/tests/).
-- **Common mistakes:** never store tokens in `localStorage`; only UI preferences go there. Bridge/card animation geometry is guarded by visual hashes — rerun the visual tests after CSS/layout edits.
+- **Common mistakes:** never store tokens in `localStorage`/`sessionStorage`; only UI preferences and sanitized wizard progress go there. A new wizard mode needs a `WIZARD_MODE_GROUPS` entry to be resumable, and any new secret-bearing field name must match `WIZARD_PROGRESS_SENSITIVE_KEY` (or the mode must use an allowlist like `system-upgrade`). Wizards whose later steps depend on server results belong in `WIZARD_PROGRESS_RESTART_MODES`. Top-level `const state` is not `window.state`; scripts driving the page use the bare global binding. Compare statuses with `=== "active"`, not `includes("active")` (matches `inactive`). Bridge/card animation geometry is guarded by visual hashes — rerun the visual tests after CSS/layout edits.
 
 ### [`ui/public/css/app.css`](ui/public/css/app.css) and [`ui/public/index.html`](ui/public/index.html)
 
@@ -319,7 +322,13 @@ One directory per UI app, each containing only an `app.json` manifest (`id`, `ti
 
 ### [`ui/package.json`](ui/package.json), [`ui/package-lock.json`](ui/package-lock.json), [`ui/run.sh`](ui/run.sh)
 
-Node ESM package `fortress-lizard-ui`: deps `express`, `undici`, `web-streams-polyfill`, `xterm`; dev dep `puppeteer`. Scripts `npm start` (`node server.js`) and `npm test` (`node --test`). `run.sh` sources `.env.local` then runs `npm start`.
+Node ESM package `fortress-lizard-ui`: deps `express`, `undici`, `web-streams-polyfill`, `xterm`; dev dep `puppeteer`. Scripts `npm start` (`node server.js`), `npm test` (`node --test`), and `npm run screenshots` (`scripts/capture-screenshots.mjs`). `run.sh` sources `.env.local` then runs `npm start`.
+
+### [`ui/scripts/`](ui/scripts/) and [`docs/screenshots/`](docs/screenshots/)
+
+- [`demo-api.mjs`](ui/scripts/demo-api.mjs) — `startDemoApi(port)`: a deterministic, read-only Fortress API stub with demo data (placeholder domains/IPs; snapshot names as strings like the real API). Non-GET requests are acknowledged without effect; unmatched GETs return 404 and are reported in `unmatched`.
+- [`capture-screenshots.mjs`](ui/scripts/capture-screenshots.mjs) — spawns `ui/server.js` against the demo API with a temp admin store, bootstraps a random throwaway UI admin, signs in with a placeholder token, and captures the `SHOTS` list (plus `admin-login`) at 1440×900 (and one 390×844 mobile shot) into `docs/screenshots/*.webp`. Flags: `--only a,b`, `--list`, `--out DIR`, `--format webp|png`, `--offline-fonts`. Clock pinned to `2026-11-11T09:30Z` (UTC).
+- `docs/screenshots/` — committed README images. Regenerate with `cd ui && npm run screenshots` after visible UI changes and review them before committing; add new screens to `SHOTS` and to the README table.
 
 ### [`run-server.sh`](run-server.sh)
 
@@ -394,6 +403,7 @@ Standalone Puppeteer helper library (and its design doc) that snapshots visible 
 - [`app_home_visual_regression.test.js`](ui/tests/app_home_visual_regression.test.js), [`css_dark_surface_token_regression.test.js`](ui/tests/css_dark_surface_token_regression.test.js) — screenshot/CSS hash baselines in [`fixtures/`](ui/tests/fixtures/).
 - [`wizard_css_transform_guard.test.js`](ui/tests/wizard_css_transform_guard.test.js) — static CSS guard for wizard transforms.
 - [`proxy_path_encoding.test.js`](ui/tests/proxy_path_encoding.test.js) — proxied path params are URI-encoded upstream.
+- [`wizard_nav_resume_debug.test.js`](ui/tests/wizard_nav_resume_debug.test.js) — wizard arrow-key/swipe navigation (ignored inside inputs, never submits), progress resume after reload, password fields never persisted, Debug copy/export redaction, fast-action drag/drop + ↑/↓ ordering (Puppeteer).
 
 ### [`dev_samples/`](dev_samples/)
 
@@ -470,7 +480,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 ### Lizard UI — Shipped (several sub-apps Experimental/scaffold)
 
-- **Behavior:** admin login (password policy, lockout, audit, optional TOTP), token sessions, app deck with wizards, image catalog, Settings (upgrade/update-reload, fast actions), Terminal apps, LAMP sub-apps for tagged containers (`user.lizard.stack=lamp`).
+- **Behavior:** admin login (password policy, lockout, audit, optional TOTP), token sessions, app deck with wizards (keyboard/swipe step navigation, per-tab resume after refresh), image catalog, Settings (upgrade/update-reload, reorderable fast actions), Debug panel copy/export, Terminal apps, LAMP sub-apps for tagged containers (`user.lizard.stack=lamp`). Screenshots of each screen live in `docs/screenshots/` (README "Screenshots").
 - **Owners:** [`ui/server.js`](ui/server.js), [`ui/public/js/app.js`](ui/public/js/app.js), [`ui/apps/`](ui/apps/).
 - **Tests and gaps:** [`ui/tests/`](ui/tests/); container sub-apps (Access, Network, Packages, Recipes, Backups) are not fully wired; manifest schema undocumented.
 
@@ -549,6 +559,12 @@ UI (from `ui/`; Puppeteer suites download Chromium on install and self-skip if u
 cd ui && npm install && npm test
 ```
 
+Regenerate README screenshots (demo API only; writes `docs/screenshots/*.webp`):
+
+```bash
+cd ui && npm run screenshots
+```
+
 ```bash
 cd ui && UPDATE_VISUAL_BASELINES=1 npm test
 ```
@@ -602,6 +618,7 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - Terminal helpers → [`tests/test_terminal.py`](tests/test_terminal.py)
 - CLI crypto, terminal, and api-users expiry commands → [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py), [`tests/test_cli_terminal.py`](tests/test_cli_terminal.py), [`tests/test_cli_api_users.py`](tests/test_cli_api_users.py)
 - UI admin gate, proxying, rendering, visuals → [`ui/tests/`](ui/tests/)
+- Wizard keyboard/swipe navigation and resume, Debug export, fast-action ordering → [`ui/tests/wizard_nav_resume_debug.test.js`](ui/tests/wizard_nav_resume_debug.test.js)
 - Backup/restore routes and `/status` scoping → [`tests/test_backups.py`](tests/test_backups.py)
 - JSON storage atomicity/locking → [`tests/test_storage.py`](tests/test_storage.py)
 - Route registry ↔ `api-v1.yaml` parity and `$ref` resolution → [`tests/test_api_spec.py`](tests/test_api_spec.py)

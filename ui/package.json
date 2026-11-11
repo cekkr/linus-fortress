@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "screenshots": "node scripts/capture-screenshots.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",

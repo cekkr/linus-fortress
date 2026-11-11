@@ -2,6 +2,35 @@
 
 Linus' Fortress is a FastAPI service that centralizes automation for LXD-based deployments: container lifecycle, routing, encrypted backups, delegated API users, monitoring and audit trails, recipe automation, and firewall/package orchestration for Ubuntu/Debian (`apt`) and AlmaLinux/RHEL (`dnf`/`yum`) style hosts. It also supports SSH-based host provisioning and VM-based test environments.
 
+## Screenshots
+
+Lizard UI, the optional web control deck, rendered against the demo API (placeholder data: `example.com` domains, documentation IP ranges). Regenerate with `cd ui && npm run screenshots`; every capture is in [`docs/screenshots/`](docs/screenshots/).
+
+| | |
+| --- | --- |
+| ![Control deck: app cards, fast actions, pages tree, and inspector panels](docs/screenshots/deck-home.webp) | ![A LAMP container with its sub-apps and quick actions](docs/screenshots/container-lamp.webp) |
+| **Control deck**: app cards, fast-actions bar, pages tree, and inspector (preview, operation, command log, debug). | **LAMP container**: per-container sub-apps (access, network, packages, recipes, backups, terminal) and lifecycle/snapshot controls. |
+| ![Create-container wizard with step strip and image catalog](docs/screenshots/create-container-wizard.webp) | ![Monitoring home with host metrics and container alerts](docs/screenshots/monitoring.webp) |
+| **Guided wizards**: full-stage slides with step breadcrumbs, validation, ← / → keys and swipe navigation, and resume after a page refresh. | **Monitoring**: host and container CPU/RAM/disk, threshold alerts, and CPU history. |
+| ![Sites home with TLS, runtime, database, and backups](docs/screenshots/sites.webp) | ![Recipes home with LAMP health-check trend](docs/screenshots/recipes.webp) |
+| **PHP sites**: runtime, TLS status, database binding, and backups with rollback. | **Recipes**: versioned install recipes and LAMP health-check trends. |
+
+<details>
+<summary>More screens: routing, firewall, VM labs, settings, card details, admin sign-in, mobile</summary>
+
+| | |
+| --- | --- |
+| ![Domain routing](docs/screenshots/routing.webp) | ![Firewall rules](docs/screenshots/firewall.webp) |
+| **Domain routing**: nginx routes, TLS modes, wildcard domains. | **Firewall**: backend status and rule inventory. |
+| ![VM labs](docs/screenshots/vms.webp) | ![Settings](docs/screenshots/settings.webp) |
+| **VM labs**: QEMU/VirtualBox VMs with start/stop/snapshot. | **Settings**: update + reload, system upgrade, fast-action order. |
+| ![App card details panel](docs/screenshots/app-card-details.webp) | ![Admin sign-in overlay](docs/screenshots/admin-login.webp) |
+| **App card details**: the more-info panel opened from a card title. | **Admin sign-in**: UI admin gate (password policy, lockout, optional TOTP). |
+| ![Containers home with image catalog](docs/screenshots/containers.webp) | <img src="docs/screenshots/mobile-deck.webp" alt="Mobile layout" width="260"> |
+| **Containers**: container handles and the live LXD image catalog. | **Mobile**: the deck at phone width. |
+
+</details>
+
 ## Security posture
 
 The system assumes capable adversaries and focuses on least privilege, scoped credentials, audit trails, and safe rollback behavior when applying changes.
@@ -94,6 +123,10 @@ Global maintenance actions now live in a dedicated **Settings** app card (System
 The stage now includes a configurable fast-actions horizontal menu; action selection is editable from Settings and persisted in browser local storage.
 The Settings app includes a guided System Upgrade wizard that runs `/system/upgrade` preflight (`dry_run=true`) and requires backup confirmation before execution.
 The Settings app also includes **Check Update + Reload**, which runs `/system/update-reload` to `git pull --ff-only`, auto-stashes/restores local changes by default, applies pending migrations when new commits arrive, then restarts API/UI using auto mode detection.
+Wizards support keyboard and touch navigation: ← / → (when focus is not in a form field) and horizontal swipes on the wizard viewport move between steps. Gestures only advance through validated intermediate steps; the final submit always needs an explicit click.
+Wizard progress (flow, step, and non-sensitive field values) is saved per browser tab in `sessionStorage` (`lizard.wizard-progress.v1`, 12-hour expiry). After a page refresh the fast-actions bar offers **Resume** / **Discard**; nothing reopens automatically. Password, secret, token, and environment fields are never saved, and the System Upgrade wizard always resumes at its preflight step.
+The Debug panel keeps the last 20 captured API errors and offers **Copy latest**, **Copy all**, **Export JSON** (`lizard-debug-<timestamp>.json`, format `lizard.debug-export.v1`), and **Clear**. Exports redact password/secret/token/API-key/cookie-like keys.
+Fast actions can be reordered in Settings by dragging items or with the ↑ / ↓ buttons; the order is saved in `localStorage` (`lizard.fast-actions.v1`).
 The UI now includes an xterm.js-powered **Terminal** app for host shells and a recursive per-container **Terminal** sub-app; both use server-managed terminal sessions (`/terminal/sessions*`) so delegated token scope and OS-user mapping are enforced server-side.
 
 ## Run Server Script
@@ -1070,6 +1103,7 @@ By default TLS certificates are verified; pass `--insecure` during `setup` only 
 - `python -m unittest discover -s tests -p 'test_permissions_matrix.py'` for route-level permission matrix checks.
 - Permission matrix coverage includes recipes, system upgrade, system update-reload, routing, sites, firewall, and terminal endpoint sequences.
 - UI tests: `cd ui && npm install && npm test` (Puppeteer suites self-skip when Chromium is unavailable; regenerate visual baselines only intentionally with `UPDATE_VISUAL_BASELINES=1`).
+- UI screenshots for docs: `cd ui && npm run screenshots` (captures every screen into `docs/screenshots/` as WebP), `npm run screenshots -- --only deck-home,monitoring` for a subset, `-- --list` to see shot names, `-- --format png` for PNG. The script runs `ui/server.js` against the read-only demo API in `ui/scripts/demo-api.mjs` and a throwaway UI admin in a temp dir; it never contacts a real Fortress API.
 - AI agents: see `AGENTS.md` for the file-by-file ownership map, critical contracts, and known gaps.
 
 ## Roadmap
