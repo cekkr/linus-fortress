@@ -39,7 +39,7 @@ If `FORTRESS_API_KEY` is unset or left as the default placeholder, `X-API-Key` a
 
 - `py/server.py`: FastAPI routes and orchestration.
 - `py/fortress/auth.py`: master key resolution, delegated token checks, container scope enforcement.
-- `py/fortress/storage.py`: JSON load/save helpers for API users, recipes, hosts, and VMs. `save_json` writes atomically (temp file + fsync + rename) under a per-store lock (`flock` on a hidden `.<name>.lock` sidecar); new stores are created `0600`; `update_json` does locked read-modify-write.
+- `py/fortress/storage.py`: JSON load/save helpers for API users, recipes, hosts, and VMs. `save_json` writes atomically (temp file + fsync + rename) under a per-store lock (`flock` on a hidden `.<name>.lock` sidecar); new stores are created `0600`; `update_json` does locked read-modify-write, and `json_store_lock` is re-entrant per thread so a route can hold it across load → mutate → save.
 - `py/fortress/routing.py`: nginx routing config rendering, domain validation, TLS path checks.
 - `py/fortress/recipes.py`: recipe models, dependency resolution, and template rendering.
 - `ui/`: optional Node/Express Lizard UI with modular app directories in `ui/apps`.
@@ -468,7 +468,13 @@ Body (excerpt):
 ```
 - QEMU uses `qemu-img` + `qemu-system-*`, VirtualBox uses `VBoxManage`. UTM is treated as QEMU.
 - `ssh` is validated on create/update and before every SSH call: `username` must match `[A-Za-z_][A-Za-z0-9._-]{0,63}`, `host` must be a hostname or IP literal, `port` 1–65535, `key_path` absolute (`400` otherwise).
-- Security: `qemu_binary` and `extra_args` are currently passed through unvalidated, so grant `vm_manage` only to root-equivalent operators.
+- Input constraints (create, update, and again before start/purge, so older records cannot bypass them; violations are `400` and audited):
+  - `qemu_binary`: bare name from the allowlist `qemu-system-{x86_64,aarch64,i386,arm,riscv64,ppc64,s390x}` or `qemu-kvm` (resolved via `PATH`; `qemu-kvm` also via `/usr/libexec/qemu-kvm` as shipped on AlmaLinux/RHEL). Unset = `qemu-system-x86_64`, falling back to `qemu-kvm`. Paths are rejected.
+  - `extra_args` (QEMU only, max 32 items): allowlisted options only — `-cpu`, `-machine`/`-M` (type + `accel|usb|smm|kernel-irqchip|gic-version|hpet|vmport|pic|pit`), `-accel`, `-vga`, `-rtc`, `-boot` (no `splash`), `-k`, `-overcommit`, `-device` (only `virtio-rng-pci`, `virtio-balloon-pci`, `virtio-{keyboard,mouse,tablet,gpu}-pci`, `qemu-xhci`, `usb-ehci`, `usb-{tablet,kbd,mouse}`, `i6300esb`, with `id|bus|addr` options), `-watchdog-action`, and the flags `-no-reboot`, `-no-shutdown`, `-nodefaults`, `-snapshot`. Anything that can name a host file, socket, helper or monitor (`-netdev`, `-chardev`, `-monitor`, `-qmp`, `-plugin`, `-drive`, `-kernel`, `-object`, `-serial`, `-readconfig`, `-D`, …) is rejected.
+  - `bridge_name`: 1–15 chars `[A-Za-z0-9_.-]` (no `,helper=` injection); required when `network_mode=bridge`.
+  - `vm_dir` and `disk_path`: absolute, no commas, and inside `FORTRESS_VM_ROOT` (default `/var/lib/fortress/vms`; the root itself is not allowed). `DELETE /vms/{name}?purge=true` refuses to remove paths outside the root.
+  - `iso_path`: absolute `.iso` file without commas. `cpu_cores` 1–256, `memory_mb` 1–1048576, `disk_gb` 1–65536, `ssh_forward_port` 1–65535, `os_type` `[A-Za-z0-9_.-]{1,64}`.
+- VM and host store writes are serialized under the store lock; `provision`/`probe` run SSH without the lock and then merge only the fields they changed into the current record.
 
 #### `POST /vms/{name}/start` + `POST /vms/{name}/stop` (permission `vm_manage`)
 - Start/stop VMs, optionally booting from ISO on start.
@@ -477,6 +483,7 @@ Body (excerpt):
 - Returns `running`/`stopped` based on provider status checks.
 
 #### `POST /vms/{name}/snapshots` (permission `vm_manage`)
+- QEMU snapshots use `qemu-img snapshot` and need the VM stopped (create/restore/delete return `409` while it is running).
 Body: `{ "name": "baseline", "description": "clean install" }`
 
 #### `POST /vms/{name}/snapshots/{snapshot}/restore` (permission `vm_manage`)
@@ -1018,6 +1025,7 @@ Body:
 - Configure `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` as the active signing key for recipe exports; optional `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS` supports signature verification during key rotation.
 - Optional runtime paths: `FORTRESS_LOG_PATH` overrides the API log file target and `FORTRESS_COMMAND_LOG_DB` overrides the SQLite audit DB path.
 - `FORTRESS_RESTORE_MAX_BYTES` caps `POST /restore` uploads in bytes (default `0` = unlimited); set it on hosts with limited RAM since restores decrypt in memory.
+- `FORTRESS_VM_ROOT` (default `/var/lib/fortress/vms`) is the directory that must contain every VM `vm_dir`/`disk_path`; it is read per request.
 - ACME HTTP-01 challenges are served from `/var/lib/fortress/acme-challenges`; override via `FORTRESS_ACME_CHALLENGE_DIR`.
 - Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), manage nginx reloads, invoke `certbot`, run package commands (`apt-get`, `dnf`, or `yum`), and manage conn-limit tooling (`iptables` and/or `nft`) when anti-DDoS conn caps are enabled.
 

@@ -59,7 +59,7 @@ def utc_now() -> str:
 
 
 def validate_host_name(name: str) -> None:
-    if not name or not HOST_NAME_PATTERN.match(name):
+    if not name or not HOST_NAME_PATTERN.fullmatch(name):
         raise HTTPException(status_code=400, detail="Host name must be 1-64 chars using letters, digits, ., _, or -")
 
 

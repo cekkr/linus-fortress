@@ -18,6 +18,216 @@ from fortress.system import run_command
 VM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 DEFAULT_VM_DIR = "/var/lib/fortress/vms"
 
+# --- Input constraints -------------------------------------------------------
+# `vm_manage` must not imply arbitrary command execution on the API host, so every
+# record field that reaches a qemu/VBoxManage argv is validated here (on create,
+# update, *and* again before use, so legacy records cannot bypass it).
+
+QEMU_BINARY_ALLOWLIST = frozenset(
+    {
+        "qemu-system-x86_64",
+        "qemu-system-aarch64",
+        "qemu-system-i386",
+        "qemu-system-arm",
+        "qemu-system-riscv64",
+        "qemu-system-ppc64",
+        "qemu-system-s390x",
+        "qemu-kvm",
+    }
+)
+DEFAULT_QEMU_BINARY = "qemu-system-x86_64"
+# RHEL/AlmaLinux ship QEMU as /usr/libexec/qemu-kvm (not on PATH); only these fixed paths are searched.
+QEMU_KVM_FALLBACK_PATHS = ("/usr/libexec/qemu-kvm", "/usr/bin/qemu-kvm")
+BRIDGE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$")
+OS_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+MAX_EXTRA_ARGS = 32
+MAX_CPU_CORES = 256
+MAX_MEMORY_MB = 1024 * 1024
+MAX_DISK_GB = 64 * 1024
+
+_TOKEN = r"[A-Za-z0-9_.:-]+"
+
+
+def _kv_list(keys: str) -> re.Pattern:
+    return re.compile(rf"^({keys})={_TOKEN}(,({keys})={_TOKEN})*$")
+
+
+# Allowlisted qemu options -> value validator (None = flag without a value).
+# Anything that can name a host file, socket, helper program, or monitor
+# (-netdev/-chardev/-monitor/-qmp/-plugin/-drive/-kernel/-object/-add-fd/
+# -readconfig/-serial/-incoming/-D/-L/-bios/-pflash/...) is deliberately absent.
+QEMU_EXTRA_ARG_RULES: Dict[str, Optional[re.Pattern]] = {
+    "-cpu": re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+=,-]{0,255}$"),
+    "-machine": re.compile(
+        rf"^[A-Za-z0-9][A-Za-z0-9_.-]*(,(accel|usb|smm|kernel-irqchip|gic-version|hpet|vmport|pic|pit)={_TOKEN})*$"
+    ),
+    "-accel": re.compile(r"^(kvm|tcg|hvf|whpx)(,thread=(single|multi))?$"),
+    "-vga": re.compile(r"^(std|virtio|qxl|cirrus|none)$"),
+    "-rtc": _kv_list("base|clock|driftfix"),
+    "-boot": _kv_list("order|once|menu|strict|reboot-timeout"),
+    "-k": re.compile(r"^[a-z]{2}(-[a-z]{2})?$"),
+    "-overcommit": re.compile(r"^(mem-lock|cpu-pm)=(on|off)$"),
+    "-device": re.compile(
+        r"^(virtio-rng-pci|virtio-balloon-pci|virtio-keyboard-pci|virtio-mouse-pci|virtio-tablet-pci|"
+        r"virtio-gpu-pci|qemu-xhci|usb-ehci|usb-tablet|usb-kbd|usb-mouse|i6300esb)"
+        rf"(,(id|bus|addr)={_TOKEN})*$"
+    ),
+    "-watchdog-action": re.compile(r"^(reset|shutdown|poweroff|pause|debug|none|inject-nmi)$"),
+    "-no-reboot": None,
+    "-no-shutdown": None,
+    "-nodefaults": None,
+    "-snapshot": None,
+}
+QEMU_EXTRA_ARG_ALIASES = {"-M": "-machine"}
+
+
+def _bad_request(detail: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=detail)
+
+
+def get_vm_root() -> str:
+    """Directory that must contain every VM's vm_dir and disk (``FORTRESS_VM_ROOT``)."""
+    return os.path.realpath(os.environ.get("FORTRESS_VM_ROOT") or DEFAULT_VM_DIR)
+
+
+def _is_within(path: str, root: str) -> bool:
+    return os.path.commonpath([path, root]) == root and path != root
+
+
+def validate_qemu_binary(binary: Optional[str]) -> Optional[str]:
+    """Return the allowlisted bare name, or ``None`` for "auto" (qemu-system-x86_64, then qemu-kvm)."""
+    if binary is None or binary == "":
+        return None
+    if binary not in QEMU_BINARY_ALLOWLIST:
+        raise _bad_request(
+            "qemu_binary must be one of: " + ", ".join(sorted(QEMU_BINARY_ALLOWLIST)) + " (bare name, resolved via PATH)"
+        )
+    return binary
+
+
+def resolve_qemu_executable(binary: Optional[str]) -> Optional[str]:
+    """Map a validated qemu_binary to an executable path (``None`` when not installed)."""
+    name = validate_qemu_binary(binary)
+    candidates = [name] if name else [DEFAULT_QEMU_BINARY, "qemu-kvm"]
+    for candidate in candidates:
+        found = shutil.which(candidate)
+        if found:
+            return found
+        if candidate == "qemu-kvm":
+            for path in QEMU_KVM_FALLBACK_PATHS:
+                if os.path.isfile(path) and os.access(path, os.X_OK):
+                    return path
+    return None
+
+
+def validate_extra_args(extra_args: Optional[List[str]]) -> List[str]:
+    args = list(extra_args or [])
+    if len(args) > MAX_EXTRA_ARGS:
+        raise _bad_request(f"extra_args accepts at most {MAX_EXTRA_ARGS} items")
+    normalized: List[str] = []
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if not isinstance(option, str):
+            raise _bad_request("extra_args items must be strings")
+        canonical = QEMU_EXTRA_ARG_ALIASES.get(option, option)
+        if canonical.startswith("--"):
+            canonical = canonical[1:]
+        if canonical not in QEMU_EXTRA_ARG_RULES:
+            raise _bad_request(
+                f"extra_args option not allowed: {option!r}; allowed: " + ", ".join(sorted(QEMU_EXTRA_ARG_RULES))
+            )
+        rule = QEMU_EXTRA_ARG_RULES[canonical]
+        normalized.append(canonical)
+        index += 1
+        if rule is None:
+            continue
+        if index >= len(args):
+            raise _bad_request(f"extra_args option {option} requires a value")
+        value = args[index]
+        if not isinstance(value, str) or not rule.fullmatch(value):
+            raise _bad_request(f"extra_args value not allowed for {option}: {value!r}")
+        normalized.append(value)
+        index += 1
+    return normalized
+
+
+def validate_bridge_name(bridge: Optional[str]) -> Optional[str]:
+    if bridge is None or bridge == "":
+        return None
+    if not BRIDGE_NAME_PATTERN.fullmatch(bridge):
+        raise _bad_request("bridge_name must be 1-15 chars using letters, digits, ., _, or -")
+    return bridge
+
+
+def _validate_plain_path(path: str, field: str) -> str:
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise _bad_request(f"{field} must be an absolute path")
+    if "," in path or "\x00" in path or "\n" in path:
+        raise _bad_request(f"{field} must not contain commas, NUL, or newlines")
+    return os.path.realpath(path)
+
+
+def validate_vm_dir(vm_dir: Optional[str]) -> Optional[str]:
+    if not vm_dir:
+        return None
+    resolved = _validate_plain_path(vm_dir, "vm_dir")
+    if not _is_within(resolved, get_vm_root()):
+        raise _bad_request(f"vm_dir must be inside {get_vm_root()}")
+    return resolved
+
+
+def validate_disk_path(disk_path: Optional[str]) -> Optional[str]:
+    if not disk_path:
+        return None
+    resolved = _validate_plain_path(disk_path, "disk_path")
+    if not _is_within(resolved, get_vm_root()):
+        raise _bad_request(f"disk_path must be inside {get_vm_root()}")
+    return resolved
+
+
+def validate_iso_path(iso_path: Optional[str]) -> Optional[str]:
+    if not iso_path:
+        return None
+    resolved = _validate_plain_path(iso_path, "iso_path")
+    if not resolved.lower().endswith(".iso"):
+        raise _bad_request("iso_path must point to a .iso file")
+    return resolved
+
+
+def validate_vm_resources(record: Dict[str, Any]) -> None:
+    limits = {"cpu_cores": MAX_CPU_CORES, "memory_mb": MAX_MEMORY_MB, "disk_gb": MAX_DISK_GB}
+    for field, maximum in limits.items():
+        value = record.get(field)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > maximum:
+            raise _bad_request(f"{field} must be an integer between 1 and {maximum}")
+    port = record.get("ssh_forward_port")
+    if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535):
+        raise _bad_request("ssh_forward_port must be between 1 and 65535")
+    os_type = record.get("os_type")
+    if os_type and not OS_TYPE_PATTERN.fullmatch(os_type):
+        raise _bad_request("os_type must be 1-64 chars using letters, digits, ., _, or -")
+
+
+def validate_vm_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate (and normalize in place) every record field that reaches a host command."""
+    validate_vm_resources(record)
+    if record.get("qemu_binary") and record.get("provider") not in (None, "qemu"):
+        raise _bad_request("qemu_binary is only supported for the qemu provider")
+    record["qemu_binary"] = validate_qemu_binary(record.get("qemu_binary"))
+    record["extra_args"] = validate_extra_args(record.get("extra_args"))
+    if record.get("extra_args") and record.get("provider") not in (None, "qemu"):
+        raise _bad_request("extra_args is only supported for the qemu provider")
+    record["bridge_name"] = validate_bridge_name(record.get("bridge_name"))
+    if record.get("network_mode") == "bridge" and not record.get("bridge_name"):
+        raise _bad_request("bridge_name is required for bridge networking")
+    record["vm_dir"] = validate_vm_dir(record.get("vm_dir"))
+    record["disk_path"] = validate_disk_path(record.get("disk_path"))
+    record["iso_path"] = validate_iso_path(record.get("iso_path"))
+    return record
+
 
 class VMSSHConfig(SSHConfig):
     pass
@@ -103,7 +313,7 @@ def utc_now() -> str:
 
 
 def validate_vm_name(name: str) -> None:
-    if not name or not VM_NAME_PATTERN.match(name):
+    if not name or not VM_NAME_PATTERN.fullmatch(name):
         raise HTTPException(status_code=400, detail="VM name must be 1-64 chars using letters, digits, ., _, or -")
 
 
@@ -162,7 +372,7 @@ def _resolve_vm_dir(record: Dict[str, Any]) -> str:
     vm_dir = record.get("vm_dir")
     if vm_dir:
         return vm_dir
-    return os.path.join(DEFAULT_VM_DIR, record["name"])
+    return os.path.join(get_vm_root(), record["name"])
 
 
 def _ensure_disk_path(record: Dict[str, Any]) -> None:
@@ -175,16 +385,17 @@ def _ensure_disk_path(record: Dict[str, Any]) -> None:
 
 
 def _ensure_iso_path(record: Dict[str, Any], iso_path: Optional[str]) -> Optional[str]:
-    resolved = iso_path or record.get("iso_path")
-    if resolved and not os.path.exists(resolved):
+    resolved = validate_iso_path(iso_path or record.get("iso_path"))
+    if resolved and not os.path.isfile(resolved):
         raise HTTPException(status_code=400, detail=f"ISO not found at {resolved}")
     return resolved
 
 
 def _ensure_qemu_tools(record: Dict[str, Any]) -> str:
-    binary = record.get("qemu_binary") or "qemu-system-x86_64"
-    if shutil.which(binary) is None:
-        raise HTTPException(status_code=500, detail=f"QEMU binary not found: {binary}")
+    binary = resolve_qemu_executable(record.get("qemu_binary"))
+    if binary is None:
+        wanted = record.get("qemu_binary") or f"{DEFAULT_QEMU_BINARY} or qemu-kvm"
+        raise HTTPException(status_code=500, detail=f"QEMU binary not found: {wanted}")
     if shutil.which("qemu-img") is None:
         raise HTTPException(status_code=500, detail="qemu-img not found; install qemu-utils")
     return binary
@@ -274,7 +485,7 @@ def _qemu_pid_file(record: Dict[str, Any]) -> str:
 def _build_qemu_network(record: Dict[str, Any]) -> List[str]:
     mode = record.get("network_mode", "user")
     if mode == "bridge":
-        bridge = record.get("bridge_name")
+        bridge = validate_bridge_name(record.get("bridge_name"))
         if not bridge:
             raise HTTPException(status_code=400, detail="bridge_name is required for bridge networking")
         return ["-netdev", f"bridge,id=net0,br={bridge}", "-device", "virtio-net-pci,netdev=net0"]
@@ -285,6 +496,7 @@ def _build_qemu_network(record: Dict[str, Any]) -> List[str]:
 
 
 def _start_qemu_vm(record: Dict[str, Any], request: VMStartRequest) -> None:
+    validate_vm_record(record)  # re-check stored values; legacy records predate validation
     binary = _ensure_qemu_tools(record)
     pid_file = _qemu_pid_file(record)
     iso_path = _ensure_iso_path(record, request.iso_path if request.use_iso else None)
@@ -309,8 +521,7 @@ def _start_qemu_vm(record: Dict[str, Any], request: VMStartRequest) -> None:
     if iso_path:
         cmd.extend(["-cdrom", iso_path, "-boot", "order=d"])
     cmd.extend(_build_qemu_network(record))
-    extra_args = record.get("extra_args") or []
-    cmd.extend(extra_args)
+    cmd.extend(validate_extra_args(record.get("extra_args")))
     run_command(cmd)
     record["pid_file"] = pid_file
 
@@ -369,17 +580,26 @@ def _status_virtualbox_vm(record: Dict[str, Any]) -> str:
     return "running" if state == "running" else "stopped"
 
 
+def _require_qemu_stopped(record: Dict[str, Any], action: str) -> None:
+    # qemu-img needs the image write lock; a running guest holds it (and restoring under it would corrupt the disk).
+    if _status_qemu_vm(record) == "running":
+        raise HTTPException(status_code=409, detail=f"Stop the VM before {action} a QEMU snapshot")
+
+
 def _snapshot_qemu(record: Dict[str, Any], snapshot_name: str) -> None:
+    _require_qemu_stopped(record, "creating")
     if not record.get("disk_path"):
         raise HTTPException(status_code=400, detail="disk_path missing for QEMU snapshot")
     run_command(["qemu-img", "snapshot", "-c", snapshot_name, record["disk_path"]])
 
 
 def _snapshot_qemu_restore(record: Dict[str, Any], snapshot_name: str) -> None:
+    _require_qemu_stopped(record, "restoring")
     run_command(["qemu-img", "snapshot", "-a", snapshot_name, record["disk_path"]])
 
 
 def _snapshot_qemu_delete(record: Dict[str, Any], snapshot_name: str) -> None:
+    _require_qemu_stopped(record, "deleting")
     run_command(["qemu-img", "snapshot", "-d", snapshot_name, record["disk_path"]])
 
 
@@ -414,6 +634,7 @@ def create_vm(payload: VMCreateRequest, vms: Dict[str, Dict[str, Any]]) -> Dict[
         validate_ssh_config(record["ssh"])
     record["provider"] = normalize_provider(payload.provider)
     record["provider_display"] = payload.provider
+    validate_vm_record(record)
     record["created_at"] = utc_now()
     record["updated_at"] = record["created_at"]
     record["state"] = "stopped"
@@ -436,8 +657,9 @@ def create_vm(payload: VMCreateRequest, vms: Dict[str, Dict[str, Any]]) -> Dict[
 def update_vm(name: str, payload: VMUpdateRequest, vms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     record = _resolve_vm(vms, name)
     updates = payload.dict(exclude_unset=True)
+    candidate = dict(record)  # validate before touching the stored record
     if "ssh" in updates and updates["ssh"] is not None:
-        record["ssh"] = validate_ssh_config(updates["ssh"])
+        candidate["ssh"] = validate_ssh_config(updates["ssh"])
     for key in [
         "cpu_cores",
         "memory_mb",
@@ -456,9 +678,12 @@ def update_vm(name: str, payload: VMUpdateRequest, vms: Dict[str, Dict[str, Any]
         "installed",
     ]:
         if key in updates and updates[key] is not None:
-            record[key] = updates[key]
+            candidate[key] = updates[key]
+    validate_vm_record(candidate)
     if "iso_path" in updates:
-        _ensure_iso_path(record, record.get("iso_path"))
+        _ensure_iso_path(candidate, candidate.get("iso_path"))
+    record.clear()
+    record.update(candidate)
     record["updated_at"] = utc_now()
     return record
 
@@ -470,11 +695,17 @@ def delete_vm(name: str, vms: Dict[str, Dict[str, Any]], purge: bool = False, fo
             _stop_virtualbox_vm(record, force=True)
             run_command(["VBoxManage", "unregistervm", name, "--delete"])
         elif record.get("provider") == "qemu":
+            root = get_vm_root()
+            disk_path = os.path.realpath(record["disk_path"]) if record.get("disk_path") else None
+            vm_dir = os.path.realpath(record["vm_dir"]) if record.get("vm_dir") else None
+            for label, path in (("disk_path", disk_path), ("vm_dir", vm_dir)):
+                if path and not _is_within(path, root):
+                    raise _bad_request(
+                        f"Refusing to purge {label} outside {root}; delete without purge and clean up manually"
+                    )
             _stop_qemu_vm(record, force=True)
-            disk_path = record.get("disk_path")
-            if disk_path and os.path.exists(disk_path):
+            if disk_path and os.path.isfile(disk_path):
                 os.remove(disk_path)
-            vm_dir = record.get("vm_dir")
             if vm_dir and os.path.isdir(vm_dir):
                 shutil.rmtree(vm_dir, ignore_errors=True)
     vms.pop(name, None)

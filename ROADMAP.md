@@ -217,14 +217,20 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Done: Filter `/status` container output by `allowed_containers`.
 - Next: Consider hashing stored delegated tokens (needs a migration + `PUT/DELETE /api-users/{token}` redesign).
 - Done: Moved `/api-users` writes, route persistence (routing add/remove, site routing/delete), and recipe health history appends onto locked `update_json` helpers.
-- Next: Move the remaining read-modify-write stores (sites, recipes, hosts, VMs) onto `update_json`.
+- Done: Serialized the remaining read-modify-write stores: `json_store_lock` is re-entrant per thread; recipes and site create/update/delete hold the store lock (`_holds_store_lock`), hosts/VMs use `_locked_store_operation` (with the error-path audits they were missing), and SSH provision/probe run unlocked then merge changed fields.
+- Next: Serialize site deploy/backup/rollback per site (host-side work is not locked today).
 - Done: Fixed schema registry gaps that made migrations park live fields under `_legacy` (api_users `terminal_host`/`terminal_container`, recipes `version`/`history`/timestamps, VM lifecycle fields); schemas bumped to v2, `_promote_legacy_fields` restores already-parked fields, and `SchemaFieldCoverageTests` guards new fields.
 - Done: Validate SSH host/username/port/key_path (ssh option-injection → host command execution), add `--` before the ssh destination, and validate env names and provision profile names in `fortress.remote`.
-- Next: Constrain VM `qemu_binary` (allowlist) and `extra_args` (reject `-netdev …script=`, `-chardev`, `-monitor`, `-plugin`, etc. or an allowlist) — today `vm_manage` can run arbitrary commands as the API user.
+- Done: Constrained VM inputs so `vm_manage` no longer implies command execution: `qemu_binary` allowlist (bare names), `extra_args` option/value allowlist, `bridge_name` pattern (no `,helper=`), `vm_dir`/`disk_path` confined to `FORTRESS_VM_ROOT` (purge refuses paths outside it), `.iso`-only `iso_path`, bounded resources; re-validated before start so legacy records can't bypass it.
+- Done: QEMU snapshot create/restore/delete return 409 while the VM is running (found on AlmaLinux: `qemu-img` can't take the write lock and restore would corrupt a live disk).
+- Next: Live QEMU snapshots via QMP `savevm` (would need a guarded monitor socket).
+- Next: Add a migration/report that flags stored VM records failing the new validation (today they fail at start/purge with 400).
 - Next: Versioned chunked backup format (streaming encrypt/decrypt) to drop the in-memory Fernet limit, keeping v1 decrypt for old archives.
 - Next: Refresh or make environment-independent the Puppeteer visual baselines (`app_home_visual_regression`, `css_dark_surface_token_regression` fail on macOS Chromium at HEAD).
 - Done: Validated the Python suite, cross-process `update_json` locking, and real firewalld partial-failure revert on an AlmaLinux 10.2 x86_64 QEMU VM; fixed firewalld 2.x rich-rule parsing (attribute order) found there.
 - Done: Validated token expiry, the 401/403 split, cross-process `update_json` locking (4 uvicorn workers, 40 concurrent `/api-users` creates), the api_users v1→v2 migration with `_legacy` promotion, SSH option-injection rejection, and a real-ssh host probe on an AlmaLinux 10.2 x86_64 QEMU VM (FastAPI 0.162 / Starlette 1.10 / Pydantic 2.14 / Python 3.12).
+- Done: Validated VM hardening and store locking on an AlmaLinux 10.2 x86_64 QEMU VM (Python 3.12, FastAPI 0.162 / Starlette 1.10 / Pydantic 2.14): full suite green; via the real API under 4 uvicorn workers, injection attempts (`qemu_binary` path, `-netdev …script=`, `-monitor`, `bridge_name ,helper=`, disks outside the VM root) are rejected and audited, a VM is created with real `qemu-img` and started through auto-detected `/usr/libexec/qemu-kvm` (RHEL has no `qemu-system-*` on PATH — `qemu-kvm` support was added because of this), legacy unsafe records are refused at start/purge, and 40 concurrent `/hosts` creates all persist.
 - Next: Pin `requirements.txt` versions (fresh installs already resolve FastAPI 0.162 / Starlette 1.10, which changed router internals) and add a CI lane running Python and UI tests.
 - Done: Focused tests for `fortress.tls` and `fortress.remote` (`tests/test_remote_tls.py`) and `fortress.monitoring` (`tests/test_monitoring.py`); monitoring history appends moved onto locked `update_json` (concurrent samples were being dropped).
-- Next: Add focused tests for `fortress.hosts`/`fortress.vms` lifecycle and container lifecycle routes.
+- Done: Focused tests for `fortress.hosts`/`fortress.vms` lifecycle and VM hardening (`tests/test_hosts_vms.py`).
+- Next: Add focused tests for container lifecycle/exec/connectivity routes.

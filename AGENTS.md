@@ -131,6 +131,7 @@ The FastAPI application and the owner of most routes, configuration constants, a
   - Sites: `_resolve_site_tls_status`, `_apply_php_ini_overrides`, `_normalize_fpm_pool_tuning`, `_apply_php_fpm_pool_tuning`, `_apply_site_routing`, `_backup_site_files`, `_restore_site_db`, `_restart_site_services`.
   - Backups: `get_fernet_key`, `perform_encrypted_backup` (background task; `.partial` + rename, `0600`), `CONTAINER_NAME_PATTERN`, `BACKUP_FILENAME_PATTERN` (`<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc`, used to scope list/download), `_ensure_backup_dir`, `restore_container` (per-request staging dir, `RESTORE_MAX_BYTES`).
   - `/status` scoping: `_filter_status_containers`.
+  - Store locking: `_holds_store_lock(path_getter)` (decorator for recipe and site writers), `_locked_store_operation` (hosts/VMs: locked load → mutate → save, error-path audit, nothing saved on failure), `_long_store_operation` (SSH provision/probe: run unlocked, merge changed fields under the lock).
 - **Called by / depends on:** started by [`run-server.sh`](run-server.sh) / [`restart.sh`](restart.sh) as `.venv/bin/python py/server.py` (the script dir `py/` is on `sys.path`, which is how `import fortress` resolves). Imports every module in [`py/fortress/`](py/fortress/).
 - **Tests:** [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py) loads this file with `importlib` into a temp sandbox; [`tests/test_container_images.py`](tests/test_container_images.py) for popular-image endpoints.
 - **Common mistakes:** path constants are read at import, so tests reassign `module.API_USERS_DB` etc. after loading — helpers MUST read the module global at call time (don't capture paths in default args). Use `.dict()` on models consistently (Pydantic v1-style API is used throughout). Don't forget the error-path `audit_api(..., status="error")`.
@@ -185,9 +186,9 @@ Master-key resolution, typed-token parsing, delegated-token verification, and co
 
 JSON helpers: `load_json` (default on missing/corrupt), `load_json_dict` (resets non-dict to `{}`), `save_json` (creates parent dir; atomic + locked), `update_json`, `json_store_lock`, `ensure_parent_dir`.
 
-- `save_json` is atomic (temp file in the same dir + fsync + `os.replace`) and holds `json_store_lock(path)` (in-process `RLock` + `flock` on a hidden `.<name>.lock` sidecar). New files are created `0600`; existing files keep their mode. `update_json(path, default, mutate)` does a locked read-modify-write.
+- `save_json` is atomic (temp file in the same dir + fsync + `os.replace`) and holds `json_store_lock(path)` (in-process `RLock` + `flock` on a hidden `.<name>.lock` sidecar). New files are created `0600`; existing files keep their mode. `update_json(path, default, mutate)` does a locked read-modify-write. `json_store_lock` is re-entrant per thread (a per-thread hold count; nested acquires skip the second `flock`, which would otherwise deadlock because `flock` belongs to the open file description), so a route can hold it across load → mutate → `save_json`.
 - **Tests:** [`tests/test_storage.py`](tests/test_storage.py).
-- **Common mistakes:** a plain `load_json` → modify → `save_json` sequence is still racy across writers; use `update_json` for read-modify-write. A corrupt store silently loads as empty — and a subsequent save overwrites it.
+- **Common mistakes:** a plain `load_json` → modify → `save_json` sequence is still racy across writers; use `update_json`, or hold `json_store_lock(path)` around the whole sequence (server.py `_holds_store_lock` / `_locked_store_operation`). Don't hold a store lock across slow remote work (SSH) — use `_long_store_operation`'s run-then-merge pattern. A corrupt store silently loads as empty — and a subsequent save overwrites it.
 
 ### [`py/fortress/system.py`](py/fortress/system.py)
 
@@ -263,14 +264,15 @@ PTY-backed host and container shell sessions with resource limits and owner bind
 
 SSH-managed (non-VM) host registry: models `HostCreateRequest`, `HostUpdateRequest`, `HostProvisionRequest`, `HostProbeRequest`, `HostSSHConfig`; `create/update/delete_host`, `provision_host`, `probe_host`, `list_saved_states`, `sanitize_host_record` (masks SSH password).
 
-- **Depends on:** [`py/fortress/remote.py`](py/fortress/remote.py). **Tests:** SSH validation in [`tests/test_remote_tls.py`](tests/test_remote_tls.py); lifecycle untested (gap).
+- **Depends on:** [`py/fortress/remote.py`](py/fortress/remote.py). **Tests:** [`tests/test_hosts_vms.py`](tests/test_hosts_vms.py) (CRUD, probe/provision, routes, concurrent creates); SSH validation in [`tests/test_remote_tls.py`](tests/test_remote_tls.py).
 
 ### [`py/fortress/vms.py`](py/fortress/vms.py)
 
 VM registry plus QEMU and VirtualBox lifecycle: models `VMCreateRequest`…`VMProbeRequest`; `create_vm`, `update_vm`, `delete_vm` (`purge`, `force`), `start_vm`, `stop_vm`, `vm_status`, snapshot create/restore/delete/list, `provision_vm`, `probe_vm`; provider internals `_start_qemu_vm`, `_build_qemu_network`, `_create_virtualbox_vm`, etc. Default disk dir `/var/lib/fortress/vms`.
 
-- **Depends on:** [`py/fortress/remote.py`](py/fortress/remote.py). **Tests:** SSH validation in [`tests/test_remote_tls.py`](tests/test_remote_tls.py); providers untested (gap).
-- **Security gap:** `qemu_binary` and `extra_args` are passed to `run_command` unvalidated, so `vm_manage` currently implies arbitrary command execution as the API user (ROADMAP Path 11 `Next:`). Treat `vm_manage` as root-equivalent until that is fixed.
+- **Input hardening:** `validate_vm_record` runs on create, on update (against a candidate copy, so a rejected update leaves the record untouched), and again in `_start_qemu_vm`, so legacy records cannot bypass it. `qemu_binary` must be a bare name in `QEMU_BINARY_ALLOWLIST` (or unset = auto), resolved by `resolve_qemu_executable` via `PATH` plus the fixed `QEMU_KVM_FALLBACK_PATHS` for `qemu-kvm` (AlmaLinux/RHEL); `extra_args` must match `QEMU_EXTRA_ARG_RULES` (option → `fullmatch` regex, `None` = valueless flag; `-M` aliases `-machine`; QEMU only; max `MAX_EXTRA_ARGS`); `bridge_name` matches `BRIDGE_NAME_PATTERN` (blocks `,helper=`); `vm_dir`/`disk_path` must be absolute, comma-free, and strictly inside `get_vm_root()` (`FORTRESS_VM_ROOT`, default `DEFAULT_VM_DIR`, read per call); `iso_path` must be an absolute `.iso`; resource ints are bounded. `delete_vm(purge=True)` refuses paths outside the root before stopping/removing anything.
+- **Depends on:** [`py/fortress/remote.py`](py/fortress/remote.py). **Tests:** [`tests/test_hosts_vms.py`](tests/test_hosts_vms.py) (allowlists, injection cases, QEMU/VirtualBox argv, purge confinement, routes); SSH validation in [`tests/test_remote_tls.py`](tests/test_remote_tls.py).
+- **Common mistakes:** never add a QEMU option to `QEMU_EXTRA_ARG_RULES` that can name a host path, socket, helper program, or monitor; any new record field that reaches an argv needs a validator in `validate_vm_record`. Use `fullmatch`, not `match` (`$` accepts a trailing newline).
 
 ### [`py/fortress/remote.py`](py/fortress/remote.py)
 
@@ -464,7 +466,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 ### SSH hosts and test VMs — Shipped
 
 - **Behavior:** registries with provision/probe/saved states; VMs add QEMU/VirtualBox start/stop/status/snapshots.
-- **Owners:** [`py/fortress/hosts.py`](py/fortress/hosts.py), [`py/fortress/vms.py`](py/fortress/vms.py), [`py/fortress/remote.py`](py/fortress/remote.py), [`scripts/provision/`](scripts/provision/). **Gaps:** no focused tests.
+- **Owners:** [`py/fortress/hosts.py`](py/fortress/hosts.py), [`py/fortress/vms.py`](py/fortress/vms.py), [`py/fortress/remote.py`](py/fortress/remote.py), [`scripts/provision/`](scripts/provision/). **Tests:** [`tests/test_hosts_vms.py`](tests/test_hosts_vms.py). **Gaps:** no test against a real QEMU/VirtualBox; SSH passwords still use `sshpass`.
 
 ### Lizard UI — Shipped (several sub-apps Experimental/scaffold)
 
@@ -604,7 +606,8 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - JSON storage atomicity/locking → [`tests/test_storage.py`](tests/test_storage.py)
 - Route registry ↔ `api-v1.yaml` parity and `$ref` resolution → [`tests/test_api_spec.py`](tests/test_api_spec.py)
 - Monitoring helpers, alerts, anomaly detection, history persistence → [`tests/test_monitoring.py`](tests/test_monitoring.py)
-- **Known test gaps:** `fortress.hosts`/`fortress.vms` lifecycle (only SSH validation is covered); container lifecycle/exec/connectivity routes; no test runs against a real LXD daemon.
+- Hosts/VMs lifecycle, VM input allowlists, re-entrant store lock, host/VM/recipe route locking → [`tests/test_hosts_vms.py`](tests/test_hosts_vms.py)
+- **Known test gaps:** container lifecycle/exec/connectivity routes; site deploy/backup/rollback routes; no test runs against a real LXD daemon.
 
 ## Data, Security, Privacy, and Compatibility Boundaries
 
@@ -632,8 +635,8 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 
 - **Restore/backup memory:** Fernet encrypt/decrypt holds the whole archive in memory (cap uploads with `FORTRESS_RESTORE_MAX_BYTES`); a streamable format would need a new versioned backup format.
 - **Auth:** tokens stored unhashed; expired tokens are rejected but never swept from the store.
-- **VM privilege:** `vm_manage` is effectively root (unvalidated `qemu_binary` / `extra_args`).
-- **Concurrency:** api users, routes, recipe health history, and monitoring history now persist via `update_json`; sites, recipes, hosts, and VMs still do unlocked `load_json` → `save_json` (atomic, but last writer wins). Terminal sessions and UI sessions are in-process memory.
+- **VM privilege:** `qemu_binary`/`extra_args`/`bridge_name`/paths are now allowlisted, but `vm_manage` still runs QEMU/VirtualBox as the API user and can attach any `.iso` path to a guest; grant it to trusted operators only.
+- **Concurrency:** every JSON store write is now serialized: api users, routes, recipe health history, and monitoring history via `update_json`; recipes and site create/update/delete via `_holds_store_lock`; hosts and VMs via `_locked_store_operation` (SSH provision/probe via `_long_store_operation`). Site deploy/rollback host work is not serialized per site. Terminal sessions and UI sessions are in-process memory.
 - **Visual baselines:** `app_home_visual_regression` and `css_dark_surface_token_regression` hashes are environment-sensitive (they fail on macOS Chromium at this revision without code changes).
 - **Dependencies:** `requirements.txt` is unpinned (a fresh AlmaLinux 10 install pulled FastAPI 0.162 / Starlette 1.10 vs 0.128 / 0.49 on the dev venv — newer FastAPI no longer flattens included routers into `app.routes`, so enumerate routes via `app.openapi()`); code uses Pydantic v1-style `.dict()`.
 - **No CI** and no real-LXD integration test lane.
@@ -643,7 +646,7 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 Detailed sequencing lives in [`ROADMAP.md`](ROADMAP.md). Highest-leverage next steps:
 
 1. Close the remaining Known Gaps above (tracked in ROADMAP Path 11).
-2. Path 11: constrain VM `qemu_binary`/`extra_args` so `vm_manage` is not root-equivalent.
+2. Path 11: pin `requirements.txt` and add a CI lane running Python + UI tests.
 3. Path 7 / production checklist: scheduled certbot renewals with failure alerts; automatic upstream refresh on container IP change.
 4. Path 10.5: register remaining JSON stores (firewall state) in schemas/migrations.
 

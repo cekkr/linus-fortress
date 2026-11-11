@@ -10,6 +10,8 @@ import subprocess
 import hashlib
 import json
 import base64
+import copy
+import functools
 import binascii
 import uuid
 from contextvars import ContextVar
@@ -126,7 +128,7 @@ from fortress.monitoring import (
     gather_resource_snapshot,
     record_resource_snapshot,
 )
-from fortress.storage import load_json, load_json_dict, save_json, update_json
+from fortress.storage import json_store_lock, load_json, load_json_dict, save_json, update_json
 from fortress.vms import (
     VMCreateRequest,
     VMUpdateRequest,
@@ -492,6 +494,18 @@ def update_routes(mutate) -> Dict[str, Dict[str, Any]]:
         mutate(current)  # in-place; return value ignored so dict.pop() results can't replace the store
         return current
     return update_json(ROUTING_DB, {}, _apply, label="routing")
+
+def _holds_store_lock(path_getter):
+    """Run a sync route under ``json_store_lock(path_getter())`` so its load -> mutate -> save sequence
+    cannot interleave with another writer (the lock is re-entrant, so inner ``save_json`` calls are fine).
+    ``path_getter`` is evaluated per call because tests rewire the module path globals after import."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with json_store_lock(path_getter()):
+                return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 def load_routes() -> Dict[str, Dict[str, Any]]:
     return load_json_dict(
@@ -1939,8 +1953,54 @@ def system_update_reload(
 
 # --- VM MANAGEMENT ---
 
+def _audit_store_error(endpoint: str, target: Optional[str], exc: HTTPException) -> None:
+    audit_api(endpoint, target=target, details={"error": str(exc.detail)[:500], "status_code": exc.status_code}, status="error")
+
+
+def _locked_store_operation(path: str, load, save, endpoint: str, target: Optional[str], operation, persist: bool = True):
+    """Run ``operation(store)`` under the store lock (load -> mutate -> save) so concurrent requests
+    cannot lose each other's updates. Nothing is persisted when the operation raises; failures are audited."""
+    try:
+        with json_store_lock(path):
+            store = load(path)
+            result = operation(store)
+            if persist:
+                save(path, store)
+        return result
+    except HTTPException as exc:
+        _audit_store_error(endpoint, target, exc)
+        raise
+
+
+def _long_store_operation(path: str, load, save, endpoint: str, name: str, operation, not_found: str):
+    """For slow remote work (SSH provision/probe): run without holding the store lock, then merge only the
+    fields the operation changed back into the current record under the lock (a record deleted meanwhile
+    stays deleted)."""
+    try:
+        store = load(path)
+        if name not in store:
+            raise HTTPException(status_code=404, detail=not_found)
+        before = copy.deepcopy(store[name])
+        working = {name: store[name]}
+        result = operation(working)
+        changed = {key: value for key, value in working[name].items() if before.get(key) != value}
+    except HTTPException as exc:
+        _audit_store_error(endpoint, name, exc)
+        raise
+
+    def _merge(current: Dict[str, Dict[str, Any]]) -> None:
+        if name in current and changed:
+            current[name].update(changed)
+
+    _locked_store_operation(path, load, save, endpoint, name, _merge)
+    return result
+
+
 def _load_vm_store() -> Dict[str, Dict[str, Any]]:
     return load_vms(VMS_DB)
+
+def _vm_store_op(endpoint: str, target: Optional[str], operation, persist: bool = True):
+    return _locked_store_operation(VMS_DB, load_vms, save_vms, endpoint, target, operation, persist=persist)
 
 @app.get("/vms")
 def list_vms(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
@@ -1964,107 +2024,88 @@ def get_vm(name: str, x_api_key: Optional[str] = Header(default=None), x_user_to
 @app.post("/vms")
 def create_vm_record(payload: VMCreateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_create", "vm_manage", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    record = create_vm(payload, vms)
-    save_vms(VMS_DB, vms)
+    record = _vm_store_op("vms_create", payload.name, lambda vms: create_vm(payload, vms))
     audit_api("vms_create", target=payload.name, details={"provider": payload.provider})
     return {"message": f"VM {payload.name} created", "vm": sanitize_vm_record(record)}
 
 @app.put("/vms/{name}")
 def update_vm_record(name: str, payload: VMUpdateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_update", "vm_manage", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    record = update_vm(name, payload, vms)
-    save_vms(VMS_DB, vms)
+    record = _vm_store_op("vms_update", name, lambda vms: update_vm(name, payload, vms))
     audit_api("vms_update", target=name, details={"fields": sorted(payload.dict(exclude_unset=True).keys())})
     return {"message": f"VM {name} updated", "vm": sanitize_vm_record(record)}
 
 @app.delete("/vms/{name}")
 def delete_vm_record(name: str, purge: bool = False, force: bool = False, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_delete", "vm_manage", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    record = delete_vm(name, vms, purge=purge, force=force)
-    save_vms(VMS_DB, vms)
+    record = _vm_store_op("vms_delete", name, lambda vms: delete_vm(name, vms, purge=purge, force=force))
     audit_api("vms_delete", target=name, details={"purge": purge, "force": force})
     return {"message": f"VM {name} removed", "vm": sanitize_vm_record(record)}
 
 @app.post("/vms/{name}/start")
 def start_vm_instance(name: str, payload: VMStartRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_start", "vm_manage", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    record = start_vm_record(name, payload, vms)
-    save_vms(VMS_DB, vms)
+    record = _vm_store_op("vms_start", name, lambda vms: start_vm_record(name, payload, vms))
     audit_api("vms_start", target=name, details={"headless": payload.headless, "use_iso": payload.use_iso})
     return {"message": f"VM {name} started", "vm": sanitize_vm_record(record)}
 
 @app.post("/vms/{name}/stop")
 def stop_vm_instance(name: str, payload: VMStopRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_stop", "vm_manage", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    record = stop_vm_record(name, payload, vms)
-    save_vms(VMS_DB, vms)
+    record = _vm_store_op("vms_stop", name, lambda vms: stop_vm_record(name, payload, vms))
     audit_api("vms_stop", target=name, details={"force": payload.force})
     return {"message": f"VM {name} stopped", "vm": sanitize_vm_record(record)}
 
 @app.get("/vms/{name}/status")
 def get_vm_status(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_status", "vm_read", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    status = vm_status(name, vms)
-    save_vms(VMS_DB, vms)
+    status = _vm_store_op("vms_status", name, lambda vms: vm_status(name, vms))
     audit_api("vms_status", target=name, details={"state": status.get("state")})
     return status
 
 @app.get("/vms/{name}/snapshots")
 def get_vm_snapshots(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_snapshots_list", "vm_read", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    snapshots = list_snapshots(name, vms)
+    try:
+        snapshots = list_snapshots(name, _load_vm_store())
+    except HTTPException as exc:
+        _audit_store_error("vms_snapshots_list", name, exc)
+        raise
     audit_api("vms_snapshots_list", target=name, details={"count": len(snapshots)})
     return {"snapshots": snapshots}
 
 @app.post("/vms/{name}/snapshots")
 def create_vm_snapshot(name: str, payload: VMSnapshotRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_snapshots_create", "vm_manage", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    snapshot = create_snapshot(name, payload, vms)
-    save_vms(VMS_DB, vms)
+    snapshot = _vm_store_op("vms_snapshots_create", name, lambda vms: create_snapshot(name, payload, vms))
     audit_api("vms_snapshots_create", target=name, details={"snapshot": payload.name})
     return {"message": f"Snapshot {payload.name} created", "snapshot": snapshot}
 
 @app.post("/vms/{name}/snapshots/{snapshot_name}/restore")
 def restore_vm_snapshot(name: str, snapshot_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_snapshots_restore", "vm_manage", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    restored = restore_snapshot(name, snapshot_name, vms)
-    save_vms(VMS_DB, vms)
+    restored = _vm_store_op("vms_snapshots_restore", name, lambda vms: restore_snapshot(name, snapshot_name, vms))
     audit_api("vms_snapshots_restore", target=name, details={"snapshot": snapshot_name})
     return {"message": f"Snapshot {snapshot_name} restored", "restore": restored}
 
 @app.delete("/vms/{name}/snapshots/{snapshot_name}")
 def delete_vm_snapshot(name: str, snapshot_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_snapshots_delete", "vm_manage", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    result = delete_snapshot(name, snapshot_name, vms)
-    save_vms(VMS_DB, vms)
+    result = _vm_store_op("vms_snapshots_delete", name, lambda vms: delete_snapshot(name, snapshot_name, vms))
     audit_api("vms_snapshots_delete", target=name, details={"snapshot": snapshot_name})
     return {"message": f"Snapshot {snapshot_name} deleted", "result": result}
 
 @app.post("/vms/{name}/provision")
 def provision_vm_instance(name: str, payload: VMProvisionRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_provision", "vm_manage", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    result = provision_vm(name, payload, vms)
-    save_vms(VMS_DB, vms)
+    result = _long_store_operation(VMS_DB, load_vms, save_vms, "vms_provision", name, lambda vms: provision_vm(name, payload, vms), "VM not found")
     audit_api("vms_provision", target=name, details={"profile": payload.profile})
     return {"message": "Provisioning complete", "result": result}
 
 @app.post("/vms/{name}/probe")
 def probe_vm_instance(name: str, payload: VMProbeRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_probe", "vm_read", x_api_key, x_user_token)
-    vms = _load_vm_store()
-    result = probe_vm(name, payload, vms)
-    save_vms(VMS_DB, vms)
+    result = _long_store_operation(VMS_DB, load_vms, save_vms, "vms_probe", name, lambda vms: probe_vm(name, payload, vms), "VM not found")
     audit_api("vms_probe", target=name, details={"saved_as": payload.save_as})
     return {"probe": result}
 
@@ -2085,6 +2126,10 @@ def list_vm_states(name: str, x_api_key: Optional[str] = Header(default=None), x
 
 def _load_host_store() -> Dict[str, Dict[str, Any]]:
     return load_hosts(HOSTS_DB)
+
+
+def _host_store_op(endpoint: str, target: Optional[str], operation):
+    return _locked_store_operation(HOSTS_DB, load_hosts, save_hosts, endpoint, target, operation)
 
 
 @app.get("/hosts")
@@ -2111,9 +2156,7 @@ def get_host(name: str, x_api_key: Optional[str] = Header(default=None), x_user_
 @app.post("/hosts")
 def create_host_record(payload: HostCreateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("hosts_create", "host_manage", x_api_key, x_user_token)
-    hosts = _load_host_store()
-    record = create_host(payload, hosts)
-    save_hosts(HOSTS_DB, hosts)
+    record = _host_store_op("hosts_create", payload.name, lambda hosts: create_host(payload, hosts))
     audit_api("hosts_create", target=payload.name)
     return {"message": f"Host {payload.name} created", "host": sanitize_host_record(record)}
 
@@ -2121,9 +2164,7 @@ def create_host_record(payload: HostCreateRequest, x_api_key: Optional[str] = He
 @app.put("/hosts/{name}")
 def update_host_record(name: str, payload: HostUpdateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("hosts_update", "host_manage", x_api_key, x_user_token)
-    hosts = _load_host_store()
-    record = update_host(name, payload, hosts)
-    save_hosts(HOSTS_DB, hosts)
+    record = _host_store_op("hosts_update", name, lambda hosts: update_host(name, payload, hosts))
     audit_api("hosts_update", target=name, details={"fields": sorted(payload.dict(exclude_unset=True).keys())})
     return {"message": f"Host {name} updated", "host": sanitize_host_record(record)}
 
@@ -2131,9 +2172,7 @@ def update_host_record(name: str, payload: HostUpdateRequest, x_api_key: Optiona
 @app.delete("/hosts/{name}")
 def delete_host_record(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("hosts_delete", "host_manage", x_api_key, x_user_token)
-    hosts = _load_host_store()
-    record = delete_host(name, hosts)
-    save_hosts(HOSTS_DB, hosts)
+    record = _host_store_op("hosts_delete", name, lambda hosts: delete_host(name, hosts))
     audit_api("hosts_delete", target=name)
     return {"message": f"Host {name} removed", "host": sanitize_host_record(record)}
 
@@ -2141,9 +2180,7 @@ def delete_host_record(name: str, x_api_key: Optional[str] = Header(default=None
 @app.post("/hosts/{name}/provision")
 def provision_host_instance(name: str, payload: HostProvisionRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("hosts_provision", "host_manage", x_api_key, x_user_token)
-    hosts = _load_host_store()
-    result = provision_host(name, payload, hosts)
-    save_hosts(HOSTS_DB, hosts)
+    result = _long_store_operation(HOSTS_DB, load_hosts, save_hosts, "hosts_provision", name, lambda hosts: provision_host(name, payload, hosts), "Host not found")
     audit_api("hosts_provision", target=name, details={"profile": payload.profile})
     return {"message": "Provisioning complete", "result": result}
 
@@ -2151,9 +2188,7 @@ def provision_host_instance(name: str, payload: HostProvisionRequest, x_api_key:
 @app.post("/hosts/{name}/probe")
 def probe_host_instance(name: str, payload: HostProbeRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("hosts_probe", "host_read", x_api_key, x_user_token)
-    hosts = _load_host_store()
-    result = probe_host(name, payload, hosts)
-    save_hosts(HOSTS_DB, hosts)
+    result = _long_store_operation(HOSTS_DB, load_hosts, save_hosts, "hosts_probe", name, lambda hosts: probe_host(name, payload, hosts), "Host not found")
     audit_api("hosts_probe", target=name, details={"saved_as": payload.save_as})
     return {"probe": result}
 
@@ -2174,22 +2209,24 @@ def list_host_states(name: str, x_api_key: Optional[str] = Header(default=None),
 # --- RECIPE AUTOMATION ---
 
 def _load_recipe_store() -> Dict[str, Dict[str, Any]]:
-    recipes = load_recipes(RECIPES_DB)
-    normalized: Dict[str, Dict[str, Any]] = {}
-    changed = False
-    for name, record in recipes.items():
-        normalized_record = normalize_recipe_record(
-            name,
-            record,
-            init_history_action="metadata_initialized",
-            init_history_note="Recipe metadata was backfilled",
-        )
-        normalized[name] = normalized_record
-        if normalized_record != record:
-            changed = True
-    if changed:
-        save_recipes(RECIPES_DB, normalized)
-    return normalized
+    # Locked so a metadata backfill save cannot overwrite a concurrent recipe write.
+    with json_store_lock(RECIPES_DB):
+        recipes = load_recipes(RECIPES_DB)
+        normalized: Dict[str, Dict[str, Any]] = {}
+        changed = False
+        for name, record in recipes.items():
+            normalized_record = normalize_recipe_record(
+                name,
+                record,
+                init_history_action="metadata_initialized",
+                init_history_note="Recipe metadata was backfilled",
+            )
+            normalized[name] = normalized_record
+            if normalized_record != record:
+                changed = True
+        if changed:
+            save_recipes(RECIPES_DB, normalized)
+        return normalized
 
 def _ensure_recipe_dependencies(recipes: Dict[str, Dict[str, Any]], dependencies: List[str], recipe_name: str):
     for dep in dependencies:
@@ -2632,6 +2669,7 @@ def get_recipe(name: str, x_api_key: Optional[str] = Header(default=None), x_use
     return {"recipe": recipe}
 
 @app.post("/recipes")
+@_holds_store_lock(lambda: RECIPES_DB)
 def create_recipe(recipe: RecipeDefinition, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_create", "recipes_manage", x_api_key, x_user_token)
     try:
@@ -2666,6 +2704,7 @@ def create_recipe(recipe: RecipeDefinition, x_api_key: Optional[str] = Header(de
     return {"message": f"Recipe {recipe.name} created", "recipe": recipe_record}
 
 @app.post("/recipes/seed")
+@_holds_store_lock(lambda: RECIPES_DB)
 def seed_recipes(payload: RecipeSeedRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_seed", "recipes_manage", x_api_key, x_user_token)
     bundle = payload.bundle.lower().strip()
@@ -2729,6 +2768,7 @@ def export_recipes(payload: RecipeExportRequest, x_api_key: Optional[str] = Head
     return {"bundle": bundle, "count": bundle.get("count", len(exported_names))}
 
 @app.post("/recipes/import")
+@_holds_store_lock(lambda: RECIPES_DB)
 def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_import", "recipes_manage", x_api_key, x_user_token)
     recipes = _load_recipe_store()
@@ -2790,6 +2830,7 @@ def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Head
     }
 
 @app.put("/recipes/{name}")
+@_holds_store_lock(lambda: RECIPES_DB)
 def update_recipe(name: str, payload: RecipeUpdate, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_update", "recipes_manage", x_api_key, x_user_token)
     recipes = _load_recipe_store()
@@ -2832,6 +2873,7 @@ def update_recipe(name: str, payload: RecipeUpdate, x_api_key: Optional[str] = H
     return {"message": message, "recipe": recipes[name]}
 
 @app.delete("/recipes/{name}")
+@_holds_store_lock(lambda: RECIPES_DB)
 def delete_recipe(name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_delete", "recipes_manage", x_api_key, x_user_token)
     recipes = _load_recipe_store()
@@ -3582,6 +3624,7 @@ def list_sites(x_api_key: Optional[str] = Header(default=None), x_user_token: Op
     return {"sites": response}
 
 @app.post("/sites")
+@_holds_store_lock(lambda: SITES_DB)
 def create_site(payload: SiteCreateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("sites_create", "sites_manage", x_api_key, x_user_token, containers=payload.container_name)
     sites = _load_site_store()
@@ -3707,6 +3750,7 @@ def list_site_backups(site_id: str, x_api_key: Optional[str] = Header(default=No
     return {"backups": backups}
 
 @app.put("/sites/{site_id}")
+@_holds_store_lock(lambda: SITES_DB)
 def update_site(site_id: str, payload: SiteUpdateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     auth_context = authorize("sites_update", "sites_manage", x_api_key, x_user_token)
     sites = _load_site_store()
@@ -3745,6 +3789,7 @@ def update_site(site_id: str, payload: SiteUpdateRequest, x_api_key: Optional[st
     return response
 
 @app.delete("/sites/{site_id}")
+@_holds_store_lock(lambda: SITES_DB)
 def delete_site(site_id: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     auth_context = authorize("sites_delete", "sites_manage", x_api_key, x_user_token)
     sites = _load_site_store()

@@ -3884,24 +3884,31 @@ components:
           default: 20
         disk_path:
           type: string
+          description: Absolute path inside FORTRESS_VM_ROOT; no commas.
         iso_path:
           type: string
+          description: Absolute path to an existing .iso file; no commas.
         os_type:
           type: string
         vm_dir:
           type: string
+          description: Absolute path inside FORTRESS_VM_ROOT (default /var/lib/fortress/vms); no commas.
         qemu_binary:
           type: string
+          description: Bare binary name from the allowlist (qemu-system-x86_64, -aarch64, -i386, -arm, -riscv64, -ppc64, -s390x, or qemu-kvm, which also resolves to /usr/libexec/qemu-kvm on RHEL/AlmaLinux); unset auto-selects qemu-system-x86_64 then qemu-kvm; paths are rejected with 400.
         network_mode:
           type: string
           enum: [user, bridge]
           default: user
         bridge_name:
           type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$"
         ssh_forward_port:
           type: integer
         extra_args:
           type: array
+          maxItems: 32
+          description: QEMU-only allowlisted options (-cpu, -machine/-M, -accel, -vga, -rtc, -boot, -k, -overcommit, -device with a fixed driver list, -watchdog-action, -no-reboot, -no-shutdown, -nodefaults, -snapshot); anything else is rejected with 400.
           items:
             type: string
         ssh:
@@ -3926,23 +3933,30 @@ components:
           type: integer
         disk_path:
           type: string
+          description: Absolute path inside FORTRESS_VM_ROOT; no commas.
         iso_path:
           type: string
+          description: Absolute path to an existing .iso file; no commas.
         os_type:
           type: string
         vm_dir:
           type: string
+          description: Absolute path inside FORTRESS_VM_ROOT (default /var/lib/fortress/vms); no commas.
         qemu_binary:
           type: string
+          description: Bare binary name from the allowlist (qemu-system-x86_64, -aarch64, -i386, -arm, -riscv64, -ppc64, -s390x, or qemu-kvm, which also resolves to /usr/libexec/qemu-kvm on RHEL/AlmaLinux); unset auto-selects qemu-system-x86_64 then qemu-kvm; paths are rejected with 400.
         network_mode:
           type: string
           enum: [user, bridge]
         bridge_name:
           type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$"
         ssh_forward_port:
           type: integer
         extra_args:
           type: array
+          maxItems: 32
+          description: QEMU-only allowlisted options (-cpu, -machine/-M, -accel, -vga, -rtc, -boot, -k, -overcommit, -device with a fixed driver list, -watchdog-action, -no-reboot, -no-shutdown, -nodefaults, -snapshot); anything else is rejected with 400.
           items:
             type: string
         ssh:
@@ -4031,16 +4045,20 @@ components:
           type: integer
         disk_path:
           type: string
+          description: Absolute path inside FORTRESS_VM_ROOT; no commas.
         iso_path:
           type: string
+          description: Absolute path to an existing .iso file; no commas.
         os_type:
           type: string
         vm_dir:
           type: string
+          description: Absolute path inside FORTRESS_VM_ROOT (default /var/lib/fortress/vms); no commas.
         network_mode:
           type: string
         bridge_name:
           type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$"
         ssh_forward_port:
           type: integer
         ssh:

@@ -67,20 +67,46 @@ def _thread_lock(path: str) -> threading.RLock:
         return lock
 
 
+_HELD = threading.local()
+
+
+def _held_counts() -> Dict[str, int]:
+    counts = getattr(_HELD, "counts", None)
+    if counts is None:
+        counts = {}
+        _HELD.counts = counts
+    return counts
+
+
 @contextlib.contextmanager
 def json_store_lock(path: str) -> Iterator[None]:
     """Exclusive lock for a JSON store across threads and processes.
 
-    Uses an in-process RLock (re-entrant, so ``update_json`` can call
-    ``save_json``) plus an ``flock`` on a hidden sidecar ``.<name>.lock`` file.
+    Uses an in-process RLock plus an ``flock`` on a hidden sidecar ``.<name>.lock`` file.
+    Re-entrant within a thread: a nested acquire (e.g. ``save_json`` inside a route that already
+    holds the lock for a load -> mutate -> save sequence) does not take a second ``flock``, which
+    would otherwise deadlock because ``flock`` locks belong to the open file description.
     """
     ensure_parent_dir(path)
+    key = os.path.abspath(path)
     thread_lock = _thread_lock(path)
     with thread_lock:
+        counts = _held_counts()
+        if counts.get(key):
+            counts[key] += 1
+            try:
+                yield
+            finally:
+                counts[key] -= 1
+            return
         fd = os.open(_lock_path(path), os.O_RDWR | os.O_CREAT, DEFAULT_STORE_MODE)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
+            counts[key] = 1
+            try:
+                yield
+            finally:
+                counts.pop(key, None)
         finally:
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
