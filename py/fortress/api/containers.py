@@ -1,4 +1,5 @@
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Literal
 
@@ -171,6 +172,17 @@ def build_container_router(
 ) -> APIRouter:
     router = APIRouter()
     logger = logging.getLogger(__name__)
+
+    @contextmanager
+    def audit_mutation(action: str, target: str, details: Optional[Dict[str, Any]] = None):
+        try:
+            yield
+        except Exception as exc:
+            failure = {"status_code": exc.status_code} if isinstance(exc, HTTPException) else {"error_type": type(exc).__name__}
+            audit_api(action, target=target, details={**(details or {}), **failure}, status="error")
+            raise
+        else:
+            audit_api(action, target=target, details=details)
 
     def _load_image_store() -> Any:
         return load_json(popular_images_db, {"popular": []}, label="popular images")
@@ -830,8 +842,8 @@ def build_container_router(
         x_user_token: Optional[str] = Header(default=None),
     ):
         authorize("containers_start", "manage_containers", x_api_key, x_user_token, containers=payload.container_name)
-        container_ops.start_container(payload.container_name)
-        audit_api("containers_start", target=payload.container_name)
+        with audit_mutation("containers_start", payload.container_name):
+            container_ops.start_container(payload.container_name)
         return {"message": f"Container {payload.container_name} started"}
 
     @router.post("/containers/stop")
@@ -841,8 +853,8 @@ def build_container_router(
         x_user_token: Optional[str] = Header(default=None),
     ):
         authorize("containers_stop", "manage_containers", x_api_key, x_user_token, containers=payload.container_name)
-        container_ops.stop_container(payload.container_name, force=payload.force)
-        audit_api("containers_stop", target=payload.container_name, details={"force": payload.force})
+        with audit_mutation("containers_stop", payload.container_name, {"force": payload.force}):
+            container_ops.stop_container(payload.container_name, force=payload.force)
         return {"message": f"Container {payload.container_name} stopped"}
 
     @router.post("/containers/restart")
@@ -852,8 +864,8 @@ def build_container_router(
         x_user_token: Optional[str] = Header(default=None),
     ):
         authorize("containers_restart", "manage_containers", x_api_key, x_user_token, containers=payload.container_name)
-        container_ops.restart_container(payload.container_name, force=payload.force)
-        audit_api("containers_restart", target=payload.container_name, details={"force": payload.force})
+        with audit_mutation("containers_restart", payload.container_name, {"force": payload.force}):
+            container_ops.restart_container(payload.container_name, force=payload.force)
         return {"message": f"Container {payload.container_name} restarted"}
 
     @router.get("/containers/{name}/snapshots")
@@ -874,12 +886,8 @@ def build_container_router(
         x_user_token: Optional[str] = Header(default=None),
     ):
         authorize("containers_snapshot_create", "manage_containers", x_api_key, x_user_token, containers=payload.container_name)
-        container_ops.create_snapshot(payload.container_name, payload.snapshot_name, stateful=payload.stateful)
-        audit_api(
-            "containers_snapshot_create",
-            target=payload.container_name,
-            details={"snapshot": payload.snapshot_name, "stateful": payload.stateful},
-        )
+        with audit_mutation("containers_snapshot_create", payload.container_name, {"snapshot": payload.snapshot_name, "stateful": payload.stateful}):
+            container_ops.create_snapshot(payload.container_name, payload.snapshot_name, stateful=payload.stateful)
         return {"message": f"Snapshot {payload.snapshot_name} created for {payload.container_name}"}
 
     @router.post("/containers/snapshots/restore")
@@ -889,12 +897,8 @@ def build_container_router(
         x_user_token: Optional[str] = Header(default=None),
     ):
         authorize("containers_snapshot_restore", "manage_containers", x_api_key, x_user_token, containers=payload.container_name)
-        container_ops.restore_snapshot(payload.container_name, payload.snapshot_name, stateful=payload.stateful)
-        audit_api(
-            "containers_snapshot_restore",
-            target=payload.container_name,
-            details={"snapshot": payload.snapshot_name, "stateful": payload.stateful},
-        )
+        with audit_mutation("containers_snapshot_restore", payload.container_name, {"snapshot": payload.snapshot_name, "stateful": payload.stateful}):
+            container_ops.restore_snapshot(payload.container_name, payload.snapshot_name, stateful=payload.stateful)
         return {"message": f"Snapshot {payload.snapshot_name} restored for {payload.container_name}"}
 
     @router.delete("/containers/{name}/snapshots/{snapshot_name}")
@@ -905,8 +909,8 @@ def build_container_router(
         x_user_token: Optional[str] = Header(default=None),
     ):
         authorize("containers_snapshot_delete", "manage_containers", x_api_key, x_user_token, containers=name)
-        container_ops.delete_snapshot(name, snapshot_name)
-        audit_api("containers_snapshot_delete", target=name, details={"snapshot": snapshot_name})
+        with audit_mutation("containers_snapshot_delete", name, {"snapshot": snapshot_name}):
+            container_ops.delete_snapshot(name, snapshot_name)
         return {"message": f"Snapshot {snapshot_name} deleted for {name}"}
 
     @router.post("/containers/exec")
@@ -916,18 +920,15 @@ def build_container_router(
         x_user_token: Optional[str] = Header(default=None),
     ):
         authorize("containers_exec", "manage_containers", x_api_key, x_user_token, containers=payload.container_name)
-        output = container_ops.exec_in_container_advanced(
-            payload.container_name,
-            payload.command,
-            user=payload.user,
-            workdir=payload.workdir,
-            environment=payload.environment,
-        )
-        audit_api(
-            "containers_exec",
-            target=payload.container_name,
-            details=sanitize_payload(payload.dict(exclude={"command"}, exclude_none=True)),
-        )
+        details = sanitize_payload(payload.dict(exclude={"command", "environment"}, exclude_none=True))
+        with audit_mutation("containers_exec", payload.container_name, details):
+            output = container_ops.exec_in_container_advanced(
+                payload.container_name,
+                payload.command,
+                user=payload.user,
+                workdir=payload.workdir,
+                environment=payload.environment,
+            )
         return {"output": output}
 
     @router.get("/containers/{name}/logs")

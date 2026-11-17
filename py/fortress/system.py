@@ -17,5 +17,5 @@ def run_command(cmd_list: List[str]) -> str:
         )
         return result.stdout.strip()
     except subprocess.CalledProcessError as exc:
-        logging.error("Command failed: %s. Error: %s", exc.cmd, exc.stderr)
+        logging.error("%s exited with status %s", cmd_list[0], exc.returncode)
         raise HTTPException(status_code=500, detail=f"System Error: {exc.stderr}")

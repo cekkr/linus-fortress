@@ -395,8 +395,10 @@ Body:
 #### `GET /sites/{site_id}` (permission `sites_read`)
 - Retrieves full site details plus `tls_status` (certificate presence, expiry, renewal indicators).
 
+Site deploy, backup, rollback, update, delete, and service restart requests for the same site run one at a time across API workers. The API stores the operation locks in `/var/lib/fortress/sites.json.locks/`. Deploy and backup operations for different sites can run concurrently and use separate staging directories inside their containers.
+
 #### `PUT /sites/{site_id}` / `DELETE /sites/{site_id}` (permission `sites_manage`)
-- Retrieve, update, or remove a website definition.
+- Updates or removes a website definition.
 - Updating `runtime.php_ini_overrides` rewrites the site ini override file and restarts PHP-FPM.
 - Updating `runtime.fpm_pool` applies validated pool tuning (`pm`, `pm.max_children`, spare server controls, timeout directives, extra overrides) and restarts PHP-FPM.
 
@@ -417,9 +419,10 @@ Body:
 
 #### `POST /sites/{site_id}/backup` (permission `sites_manage`)
 - Creates a site-level backup (files plus optional database).
+- Returns a unique `backup_id`. The optional label must be printable and omit path separators.
 
 #### `POST /sites/{site_id}/rollback` (permission `sites_manage`)
-- Restores a site from a prior backup id.
+- Restores a backup listed for the site by `GET /sites/{site_id}/backups`. A missing archive or mismatched backup metadata returns `404`. A malformed identifier returns `400`.
 
 #### `GET /sites/{site_id}/logs` (permission `sites_read`)
 - Query params: `service` (`apache|nginx|php-fpm|app`), `lines` (default `200`), optional `since` timestamp.
@@ -475,6 +478,15 @@ Body (example):
 
 #### `DELETE /container/{name}` (permission `manage_containers`, scoped)
 - Path parameter `name` is required; shuts down and deletes the container (`lxc delete --force`).
+
+#### `POST /containers/start`, `/containers/stop`, and `/containers/restart` (permission `manage_containers`, scoped)
+- Takes `container_name` and optional `force` for stop and restart. Each operation uses the corresponding LXD command and records success or failure.
+
+#### `GET /containers/{name}/snapshots` (permission `manage_containers`, scoped)
+- Returns `snapshots` as an array of snapshot names.
+
+#### `POST /containers/exec` (permission `manage_containers`, scoped)
+- Runs a command argument list inside the container and returns its output. Audit records omit environment variables and raw failure output.
 
 ### VM Testing (QEMU/VirtualBox)
 

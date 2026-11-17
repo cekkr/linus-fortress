@@ -14,6 +14,7 @@ import copy
 import functools
 import binascii
 import uuid
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Literal, Union, Any, Tuple
@@ -98,6 +99,7 @@ from fortress.sites import (
     sanitize_site_record,
     save_sites,
     update_site_record,
+    validate_site_name,
 )
 from fortress.system import run_command
 from fortress.routing import (
@@ -3030,6 +3032,54 @@ def _resolve_site_record(sites: Dict[str, Dict[str, Any]], site_id: str) -> Dict
     return record
 
 
+@contextmanager
+def _site_mutation(action: str, auth_context: Dict[str, Any], site_id: str, *, write_store: bool = False, new_id: Optional[str] = None):
+    try:
+        # Check scope before allocating a lock, then recheck against the locked record.
+        record = _resolve_site_record(_load_site_store(), site_id)
+        enforce_container_scope(auth_context, record["container_name"])
+        if new_id is not None:
+            validate_site_name(new_id)
+        with ExitStack() as locks:
+            # Always acquire site locks first, in the same order for both sides of a rename.
+            for name in sorted({site_id, new_id or site_id}):
+                key = hashlib.sha256(name.encode()).hexdigest()
+                locks.enter_context(json_store_lock(os.path.join(f"{SITES_DB}.locks", key)))
+            if write_store:
+                locks.enter_context(json_store_lock(SITES_DB))
+            sites = _load_site_store()
+            record = _resolve_site_record(sites, site_id)
+            enforce_container_scope(auth_context, record["container_name"])
+            yield sites, record
+    except Exception as exc:
+        # System error text can contain command arguments or database credentials.
+        details = {"status_code": exc.status_code} if isinstance(exc, HTTPException) else {"error_type": type(exc).__name__}
+        audit_api(action, target=site_id, details=details, status="error")
+        raise
+
+
+@contextmanager
+def _site_staging_dir(container_name: str):
+    path = f"/tmp/fortress-site-{uuid.uuid4().hex}"
+    exec_in_container(container_name, ["mkdir", "-m", "700", "--", path])
+    try:
+        yield path
+    finally:
+        try:
+            exec_in_container(container_name, ["rm", "-rf", "--", path])
+        except Exception:
+            logging.warning("Could not clean up site staging directory in container %s", container_name)
+
+
+def _site_backup_paths(backup_id: str) -> Tuple[str, str]:
+    if not backup_id or not backup_id.isprintable() or "/" in backup_id or "\\" in backup_id:
+        raise HTTPException(status_code=400, detail="Invalid site backup identifier")
+    return (
+        os.path.join(SITE_BACKUP_DIR, f"{backup_id}.tar.gz"),
+        os.path.join(SITE_BACKUP_DIR, f"{backup_id}.json"),
+    )
+
+
 def _parse_certificate_expiry(raw_value: str) -> Optional[datetime]:
     text = str(raw_value or "").strip()
     if text.startswith("notAfter="):
@@ -3545,27 +3595,25 @@ def _run_db_command(container_name: str, sql: str, database: Optional[str] = Non
     command = f"{pwd_prefix}mysql -u {shlex.quote(user)}{db_flag} -e {shlex.quote(sql)}"
     exec_in_container(container_name, ["sh", "-c", command])
 
-def _backup_site_files(container_name: str, docroot: str, backup_path: str, dump_path: Optional[str]) -> None:
-    docroot_q = shlex.quote(docroot)
-    archive_path = "/tmp/fortress-site-backup.tar.gz"
+def _backup_site_files(container_name: str, docroot: str, archive_path: str, backup_path: str, dump_path: Optional[str]) -> None:
+    cmd = ["tar", "-czf", archive_path, "-C", docroot, "."]
     if dump_path:
-        dump_name = os.path.basename(dump_path)
-        cmd = f"tar -czf {archive_path} -C {docroot_q} . -C /tmp {shlex.quote(dump_name)}"
-    else:
-        cmd = f"tar -czf {archive_path} -C {docroot_q} ."
-    exec_in_container(container_name, ["sh", "-c", cmd])
+        dump_dir, dump_name = os.path.split(dump_path)
+        cmd.extend(["-C", dump_dir, "--", dump_name])
+    exec_in_container(container_name, cmd)
     run_command(["lxc", "file", "pull", f"{container_name}{archive_path}", backup_path])
-    exec_in_container(container_name, ["rm", "-f", archive_path])
 
-def _push_site_archive(container_name: str, archive_path: str) -> str:
-    target_path = "/tmp/fortress-site-restore.tar.gz"
-    run_command(["lxc", "file", "push", archive_path, f"{container_name}{target_path}"])
-    return target_path
-
-def _extract_site_archive(container_name: str, archive_path: str, docroot: str, strip_components: int = 0) -> None:
+def _extract_site_archive(
+    container_name: str, archive_path: str, docroot: str, strip_components: int = 0, *, dump_name: Optional[str] = None
+) -> None:
     docroot_q = shlex.quote(docroot)
-    strip_flag = f"--strip-components={strip_components}" if strip_components else ""
-    cmd = f"mkdir -p {docroot_q} && rm -rf {docroot_q}/* && tar -xzf {shlex.quote(archive_path)} -C {docroot_q} {strip_flag}"
+    extract_args = ["tar", "-xzf", archive_path, "-C", docroot]
+    if strip_components:
+        extract_args.append(f"--strip-components={strip_components}")
+    if dump_name:
+        extract_args.extend(["--anchored", "--no-wildcards", f"--exclude={dump_name}"])
+    extract_cmd = " ".join(shlex.quote(arg) for arg in extract_args)
+    cmd = f"mkdir -p {docroot_q} && rm -rf {docroot_q}/* && {extract_cmd}"
     exec_in_container(container_name, ["sh", "-c", cmd])
 
 def _restore_site_db(container_name: str, database: Dict[str, Any], dump_path: str) -> None:
@@ -3589,7 +3637,7 @@ def _restore_site_db(container_name: str, database: Dict[str, Any], dump_path: s
     import_user = database.get("username") or "root"
     import_password = database.get("password") if database.get("password") else root_password
     pwd_prefix = f"MYSQL_PWD={shlex.quote(import_password)} " if import_password else ""
-    cmd = f"{pwd_prefix}mysql -u {shlex.quote(import_user)} {shlex.quote(database['name'])} < {dump_path}"
+    cmd = f"{pwd_prefix}mysql -u {shlex.quote(import_user)} {shlex.quote(database['name'])} < {shlex.quote(dump_path)}"
     exec_in_container(container_name, ["sh", "-c", cmd])
 
 def _restart_site_services(container_name: str, runtime: Dict[str, Any], services: Optional[List[str]]) -> Dict[str, Any]:
@@ -3731,7 +3779,7 @@ def list_site_backups(site_id: str, x_api_key: Optional[str] = Header(default=No
                 meta = load_json_dict(meta_path, label="Site backup metadata")
             except Exception:
                 continue
-            if meta.get("site_id") != site_id:
+            if meta.get("site_id") != site_id or meta.get("container_name", record["container_name"]) != record["container_name"]:
                 continue
             backup_id = meta.get("backup_id") or entry[:-5]
             archive_path = os.path.join(SITE_BACKUP_DIR, f"{backup_id}.tar.gz")
@@ -3750,150 +3798,153 @@ def list_site_backups(site_id: str, x_api_key: Optional[str] = Header(default=No
     return {"backups": backups}
 
 @app.put("/sites/{site_id}")
-@_holds_store_lock(lambda: SITES_DB)
 def update_site(site_id: str, payload: SiteUpdateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     auth_context = authorize("sites_update", "sites_manage", x_api_key, x_user_token)
-    sites = _load_site_store()
-    record = _resolve_site_record(sites, site_id)
-    enforce_container_scope(auth_context, record["container_name"])
-    previous_domain = record.get("primary_domain")
-    record = update_site_record(site_id, payload, sites)
-    runtime_changes: Dict[str, Any] = {}
-    restart_targets: set[str] = set()
-    if payload.docroot:
-        runtime = record.get("runtime") or {}
-        user, group = _resolve_runtime_identity(record["container_name"], runtime)
-        _ensure_docroot(record["container_name"], record["docroot"], user, group)
-    if payload.runtime is not None:
-        runtime = record.get("runtime") or {}
-        runtime_payload = payload.runtime.dict(exclude_unset=True)
-        if "php_ini_overrides" in runtime_payload:
-            ini_result = _apply_php_ini_overrides(record["container_name"], record["name"], runtime)
-            runtime_changes["php_ini"] = ini_result
-            if ini_result.get("applied") or ini_result.get("removed"):
-                restart_targets.add("php-fpm")
-        if "fpm_pool" in runtime_payload:
-            fpm_result = _apply_php_fpm_pool_tuning(record["container_name"], record["name"], runtime)
-            runtime_changes["fpm_pool"] = fpm_result
-            if fpm_result.get("applied") or fpm_result.get("removed"):
-                restart_targets.add("php-fpm")
-    if restart_targets:
-        runtime_changes["restart"] = _restart_site_services(record["container_name"], record.get("runtime") or {}, sorted(restart_targets))
-    if payload.primary_domain or payload.domains or payload.routing or payload.tls:
-        _apply_site_routing(record, previous_domain=previous_domain)
-    save_sites(SITES_DB, sites)
-    audit_api("sites_update", target=record["name"], details={"fields": sorted(payload.dict(exclude_unset=True).keys())})
-    response = {"message": "Site updated", "site": sanitize_site_record(record)}
-    if runtime_changes:
-        response["runtime"] = runtime_changes
-    return response
+    with _site_mutation("sites_update", auth_context, site_id, write_store=True, new_id=payload.name) as (sites, record):
+        previous_domain = record.get("primary_domain")
+        record = update_site_record(site_id, payload, sites)
+        runtime_changes: Dict[str, Any] = {}
+        restart_targets: set[str] = set()
+        if payload.docroot:
+            runtime = record.get("runtime") or {}
+            user, group = _resolve_runtime_identity(record["container_name"], runtime)
+            _ensure_docroot(record["container_name"], record["docroot"], user, group)
+        if payload.runtime is not None:
+            runtime = record.get("runtime") or {}
+            runtime_payload = payload.runtime.dict(exclude_unset=True)
+            if "php_ini_overrides" in runtime_payload:
+                ini_result = _apply_php_ini_overrides(record["container_name"], record["name"], runtime)
+                runtime_changes["php_ini"] = ini_result
+                if ini_result.get("applied") or ini_result.get("removed"):
+                    restart_targets.add("php-fpm")
+            if "fpm_pool" in runtime_payload:
+                fpm_result = _apply_php_fpm_pool_tuning(record["container_name"], record["name"], runtime)
+                runtime_changes["fpm_pool"] = fpm_result
+                if fpm_result.get("applied") or fpm_result.get("removed"):
+                    restart_targets.add("php-fpm")
+        if restart_targets:
+            runtime_changes["restart"] = _restart_site_services(record["container_name"], record.get("runtime") or {}, sorted(restart_targets))
+        if payload.primary_domain or payload.domains or payload.routing or payload.tls:
+            _apply_site_routing(record, previous_domain=previous_domain)
+        save_sites(SITES_DB, sites)
+        audit_api("sites_update", target=record["name"], details={"fields": sorted(payload.dict(exclude_unset=True).keys())})
+        response = {"message": "Site updated", "site": sanitize_site_record(record)}
+        if runtime_changes:
+            response["runtime"] = runtime_changes
+        return response
 
 @app.delete("/sites/{site_id}")
-@_holds_store_lock(lambda: SITES_DB)
 def delete_site(site_id: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     auth_context = authorize("sites_delete", "sites_manage", x_api_key, x_user_token)
-    sites = _load_site_store()
-    record = _resolve_site_record(sites, site_id)
-    enforce_container_scope(auth_context, record["container_name"])
-    delete_site_record(site_id, sites)
-    save_sites(SITES_DB, sites)
-    _remove_nginx_route(record["primary_domain"])
-    update_routes(lambda current: current.pop(record["primary_domain"], None))
-    audit_api("sites_delete", target=site_id, details={"domain": record.get("primary_domain")})
-    return {"message": "Site removed", "site": sanitize_site_record(record)}
+    with _site_mutation("sites_delete", auth_context, site_id, write_store=True) as (sites, record):
+        delete_site_record(site_id, sites)
+        _remove_nginx_route(record["primary_domain"])
+        update_routes(lambda current: current.pop(record["primary_domain"], None))
+        save_sites(SITES_DB, sites)
+        audit_api("sites_delete", target=site_id, details={"domain": record.get("primary_domain")})
+        return {"message": "Site removed", "site": sanitize_site_record(record)}
 
 @app.post("/sites/{site_id}/deploy")
 def deploy_site(site_id: str, payload: SiteDeployRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     auth_context = authorize("sites_deploy", "sites_manage", x_api_key, x_user_token)
-    sites = _load_site_store()
-    record = _resolve_site_record(sites, site_id)
-    enforce_container_scope(auth_context, record["container_name"])
-    docroot = record["docroot"]
-    if payload.source_type == "git":
-        tmp_dir = f"/tmp/fortress-{site_id}-src"
-        ref = payload.ref or "main"
-        clone_cmd = f"rm -rf {tmp_dir} && git clone {shlex.quote(payload.source)} {tmp_dir} && git -C {tmp_dir} checkout {shlex.quote(ref)}"
-        exec_in_container(record["container_name"], ["sh", "-c", clone_cmd])
-        src_path = tmp_dir
-        if payload.subdir:
-            src_path = f"{tmp_dir}/{payload.subdir}"
-        deploy_cmd = f"mkdir -p {shlex.quote(docroot)} && rm -rf {shlex.quote(docroot)}/* && cp -a {shlex.quote(src_path)}/. {shlex.quote(docroot)}/"
-        exec_in_container(record["container_name"], ["sh", "-c", deploy_cmd])
-        exec_in_container(record["container_name"], ["sh", "-c", f"rm -rf {tmp_dir}"])
-    elif payload.source_type == "archive":
-        archive_path = "/tmp/fortress-archive.tar.gz"
-        if payload.source.startswith("http://") or payload.source.startswith("https://"):
-            exec_in_container(record["container_name"], ["sh", "-c", f"curl -fsSL {shlex.quote(payload.source)} -o {archive_path}"])
+    with _site_mutation("sites_deploy", auth_context, site_id) as (_, record):
+        container_name = record["container_name"]
+        docroot = record["docroot"]
+        if payload.source_type == "git":
+            with _site_staging_dir(container_name) as staging:
+                checkout = f"{staging}/source"
+                exec_in_container(container_name, ["git", "clone", "--", payload.source, checkout])
+                exec_in_container(container_name, ["git", "-C", checkout, "checkout", payload.ref or "main"])
+                src_path = f"{checkout}/{payload.subdir}" if payload.subdir else checkout
+                deploy_cmd = f"mkdir -p {shlex.quote(docroot)} && rm -rf {shlex.quote(docroot)}/* && cp -a {shlex.quote(src_path)}/. {shlex.quote(docroot)}/"
+                exec_in_container(container_name, ["sh", "-c", deploy_cmd])
+        elif payload.source_type == "archive":
+            with _site_staging_dir(container_name) as staging:
+                archive_path = f"{staging}/source.tar.gz"
+                if payload.source.startswith(("http://", "https://")):
+                    exec_in_container(container_name, ["curl", "-fsSL", "-o", archive_path, "--", payload.source])
+                else:
+                    run_command(["lxc", "file", "push", payload.source, f"{container_name}{archive_path}"])
+                _extract_site_archive(container_name, archive_path, docroot, payload.strip_components)
+        elif payload.source_type == "local":
+            exec_in_container(container_name, ["sh", "-c", f"mkdir -p {shlex.quote(docroot)} && rm -rf {shlex.quote(docroot)}/*"])
+            run_command(["lxc", "file", "push", "-r", payload.source, f"{container_name}{docroot}"])
         else:
-            run_command(["lxc", "file", "push", payload.source, f"{record['container_name']}{archive_path}"])
-        _extract_site_archive(record["container_name"], archive_path, docroot, payload.strip_components)
-        exec_in_container(record["container_name"], ["rm", "-f", archive_path])
-    elif payload.source_type == "local":
-        exec_in_container(record["container_name"], ["sh", "-c", f"mkdir -p {shlex.quote(docroot)} && rm -rf {shlex.quote(docroot)}/*"])
-        run_command(["lxc", "file", "push", "-r", payload.source, f"{record['container_name']}{docroot}"])
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported source_type")
-    for command in payload.post_deploy_commands:
-        exec_in_container(record["container_name"], ["sh", "-c", command])
-    restart_result = {}
-    if payload.restart_services:
-        restart_result = _restart_site_services(record["container_name"], record.get("runtime") or {}, None)
-    audit_api("sites_deploy", target=site_id, details={"source_type": payload.source_type, "restart": payload.restart_services})
-    return {"message": "Site deployed", "restart": restart_result}
+            raise HTTPException(status_code=400, detail="Unsupported source_type")
+        for command in payload.post_deploy_commands:
+            exec_in_container(container_name, ["sh", "-c", command])
+        restart_result = {}
+        if payload.restart_services:
+            restart_result = _restart_site_services(container_name, record.get("runtime") or {}, None)
+        audit_api("sites_deploy", target=site_id, details={"source_type": payload.source_type, "restart": payload.restart_services})
+        return {"message": "Site deployed", "restart": restart_result}
 
 @app.post("/sites/{site_id}/backup")
 def backup_site(site_id: str, payload: SiteBackupRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     auth_context = authorize("sites_backup", "sites_manage", x_api_key, x_user_token)
-    sites = _load_site_store()
-    record = _resolve_site_record(sites, site_id)
-    enforce_container_scope(auth_context, record["container_name"])
-    backup_id = build_site_backup_id(site_id, payload.label)
-    os.makedirs(SITE_BACKUP_DIR, exist_ok=True)
-    backup_path = os.path.join(SITE_BACKUP_DIR, f"{backup_id}.tar.gz")
-    dump_path = None
-    database = record.get("database") or {}
-    if payload.include_database and database.get("name") and database.get("username"):
-        dump_name = f"{backup_id}.sql"
-        dump_path = f"/tmp/{dump_name}"
-        pwd_prefix = f"MYSQL_PWD={shlex.quote(database['password'])} " if database.get("password") else ""
-        dump_cmd = f"{pwd_prefix}mysqldump -u {shlex.quote(database['username'])} {shlex.quote(database['name'])} > {dump_path}"
-        exec_in_container(record["container_name"], ["sh", "-c", dump_cmd])
-    _backup_site_files(record["container_name"], record["docroot"], backup_path, dump_path)
-    if dump_path:
-        exec_in_container(record["container_name"], ["rm", "-f", dump_path])
-    meta_path = os.path.join(SITE_BACKUP_DIR, f"{backup_id}.json")
-    save_json(meta_path, {"backup_id": backup_id, "site_id": site_id, "include_database": bool(dump_path), "dump_path": dump_path, "created_at": datetime.utcnow().isoformat()})
-    audit_api("sites_backup", target=site_id, details={"backup_id": backup_id, "include_db": bool(dump_path)})
-    return {"message": "Backup created", "backup_id": backup_id, "path": backup_path}
+    with _site_mutation("sites_backup", auth_context, site_id) as (_, record):
+        container_name = record["container_name"]
+        backup_id = f"{build_site_backup_id(site_id, payload.label)}-{uuid.uuid4().hex}"
+        backup_path, meta_path = _site_backup_paths(backup_id)
+        os.makedirs(SITE_BACKUP_DIR, exist_ok=True)
+        with (
+            tempfile.TemporaryDirectory(dir=SITE_BACKUP_DIR, prefix=".site-backup-") as partial_dir,
+            _site_staging_dir(container_name) as staging,
+        ):
+            dump_path = None
+            database = record.get("database") or {}
+            if payload.include_database and database.get("name") and database.get("username"):
+                dump_path = f"{staging}/{backup_id}.sql"
+                pwd_prefix = f"MYSQL_PWD={shlex.quote(database['password'])} " if database.get("password") else ""
+                dump_cmd = f"{pwd_prefix}mysqldump -u {shlex.quote(database['username'])} {shlex.quote(database['name'])} > {shlex.quote(dump_path)}"
+                exec_in_container(container_name, ["sh", "-c", dump_cmd])
+            partial_path = os.path.join(partial_dir, "archive.tar.gz")
+            _backup_site_files(container_name, record["docroot"], f"{staging}/archive.tar.gz", partial_path, dump_path)
+            os.chmod(partial_path, 0o600)
+            os.replace(partial_path, backup_path)
+            try:
+                save_json(meta_path, {
+                    "backup_id": backup_id,
+                    "site_id": site_id,
+                    "container_name": container_name,
+                    "include_database": bool(dump_path),
+                    "dump_path": dump_path,
+                    "created_at": datetime.utcnow().isoformat(),
+                })
+            except Exception:
+                os.unlink(backup_path)
+                raise
+        audit_api("sites_backup", target=site_id, details={"backup_id": backup_id, "include_db": bool(dump_path)})
+        return {"message": "Backup created", "backup_id": backup_id, "path": backup_path}
 
 @app.post("/sites/{site_id}/rollback")
 def rollback_site(site_id: str, payload: SiteRollbackRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     auth_context = authorize("sites_rollback", "sites_manage", x_api_key, x_user_token)
-    sites = _load_site_store()
-    record = _resolve_site_record(sites, site_id)
-    enforce_container_scope(auth_context, record["container_name"])
-    backup_path = os.path.join(SITE_BACKUP_DIR, f"{payload.backup_id}.tar.gz")
-    if not os.path.exists(backup_path):
-        raise HTTPException(status_code=404, detail="Backup not found")
-    archive_path = _push_site_archive(record["container_name"], backup_path)
-    _extract_site_archive(record["container_name"], archive_path, record["docroot"])
-    meta_path = os.path.join(SITE_BACKUP_DIR, f"{payload.backup_id}.json")
-    if os.path.exists(meta_path):
+    with _site_mutation("sites_rollback", auth_context, site_id) as (_, record):
+        container_name = record["container_name"]
+        backup_path, meta_path = _site_backup_paths(payload.backup_id)
         meta = load_json_dict(meta_path, label="Site backup metadata")
-        if meta.get("include_database") and record.get("database"):
-            dump_path = f"/tmp/{payload.backup_id}.sql"
-            exec_in_container(
-                record["container_name"],
-                ["sh", "-c", f"tar -xzf {shlex.quote(archive_path)} -C /tmp {shlex.quote(payload.backup_id)}.sql || true"],
-            )
-            _restore_site_db(record["container_name"], record["database"], dump_path)
-            exec_in_container(record["container_name"], ["rm", "-f", dump_path])
-    exec_in_container(record["container_name"], ["rm", "-f", archive_path])
-    restart_result = {}
-    if payload.restart_services:
-        restart_result = _restart_site_services(record["container_name"], record.get("runtime") or {}, None)
-    audit_api("sites_rollback", target=site_id, details={"backup_id": payload.backup_id})
-    return {"message": "Rollback complete", "restart": restart_result}
+        if (
+            meta.get("site_id") != site_id
+            or meta.get("container_name", container_name) != container_name
+            or not os.path.isfile(backup_path)
+        ):
+            raise HTTPException(status_code=404, detail="Backup not found")
+        dump_name = f"{payload.backup_id}.sql" if meta.get("include_database") else None
+        database = record.get("database")
+        with _site_staging_dir(container_name) as staging:
+            archive_path = f"{staging}/archive.tar.gz"
+            run_command(["lxc", "file", "push", backup_path, f"{container_name}{archive_path}"])
+            if dump_name and database:
+                exec_in_container(container_name, ["tar", "-xzf", archive_path, "-C", staging, "--", dump_name])
+            _extract_site_archive(container_name, archive_path, record["docroot"], dump_name=dump_name)
+            if dump_name and database:
+                _restore_site_db(container_name, database, f"{staging}/{dump_name}")
+        restart_result = {}
+        if payload.restart_services:
+            restart_result = _restart_site_services(container_name, record.get("runtime") or {}, None)
+        audit_api("sites_rollback", target=site_id, details={"backup_id": payload.backup_id})
+        return {"message": "Rollback complete", "restart": restart_result}
 
 @app.get("/sites/{site_id}/logs")
 def site_logs(
@@ -3963,12 +4014,10 @@ def restart_site_services(
     x_user_token: Optional[str] = Header(default=None),
 ):
     auth_context = authorize("sites_restart", "sites_manage", x_api_key, x_user_token)
-    sites = _load_site_store()
-    record = _resolve_site_record(sites, site_id)
-    enforce_container_scope(auth_context, record["container_name"])
-    result = _restart_site_services(record["container_name"], record.get("runtime") or {}, payload.services)
-    audit_api("sites_restart", target=site_id, details={"restarted": result.get("restarted"), "failed": result.get("failed")})
-    return {"message": "Services restarted", **result}
+    with _site_mutation("sites_restart", auth_context, site_id) as (_, record):
+        result = _restart_site_services(record["container_name"], record.get("runtime") or {}, payload.services)
+        audit_api("sites_restart", target=site_id, details={"restarted": result.get("restarted"), "failed": result.get("failed")})
+        return {"message": "Services restarted", **result}
 
 # --- MIGRATIONS ---
 

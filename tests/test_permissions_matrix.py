@@ -1,9 +1,12 @@
+import hashlib
 import importlib.util
 import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -587,6 +590,120 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
             self._expect_denied(
                 lambda: self.module.list_sites(x_api_key=None, x_user_token="token-none")
             )
+
+    def _seed_site_operations(self):
+        self._write_users({
+            "token-sites": {"username": "operator", "permissions": ["sites_manage"], "allowed_containers": ["alpha"]},
+        })
+        self._write_json(self.module.SITES_DB, {
+            "app": {"name": "app", "container_name": "alpha", "docroot": "/srv/app"},
+            "other": {"name": "other", "container_name": "alpha", "docroot": "/srv/other"},
+            "outside": {"name": "outside", "container_name": "beta", "docroot": "/srv/outside"},
+        })
+        return {"x_api_key": None, "x_user_token": "token-sites"}
+
+    def test_same_site_backup_waits_for_deploy_while_another_site_proceeds(self) -> None:
+        auth = self._seed_site_operations()
+        deploy_started = threading.Event()
+        finish_deploy = threading.Event()
+        backup_requested_lock = threading.Event()
+        app_lock = os.path.join(f"{self.module.SITES_DB}.locks", hashlib.sha256(b"app").hexdigest())
+        real_lock = self.module.json_store_lock
+
+        def observe_lock(path):
+            if path == app_lock and deploy_started.is_set():
+                backup_requested_lock.set()
+            return real_lock(path)
+
+        def pause_deploy(*args):
+            deploy_started.set()
+            if not finish_deploy.wait(10):
+                raise TimeoutError("test did not release deploy")
+
+        def fake_lxc(command):
+            if command[:3] == ["lxc", "file", "pull"]:
+                Path(command[-1]).write_bytes(b"test archive")
+
+        deploy = self.module.SiteDeployRequest(source_type="archive", source="/demo.tar.gz", restart_services=False)
+        backup = self.module.SiteBackupRequest(include_database=False)
+        with (
+            mock.patch.object(self.module, "json_store_lock", side_effect=observe_lock),
+            mock.patch.object(self.module, "exec_in_container") as container,
+            mock.patch.object(self.module, "_extract_site_archive", side_effect=pause_deploy),
+            mock.patch.object(self.module, "run_command", side_effect=fake_lxc) as run,
+            ThreadPoolExecutor(max_workers=3) as pool,
+        ):
+            deployment = pool.submit(self.module.deploy_site, "app", deploy, **auth)
+            try:
+                self.assertTrue(deploy_started.wait(10))
+                same_site = pool.submit(self.module.backup_site, "app", backup, **auth)
+                self.assertTrue(backup_requested_lock.wait(10))
+                other_site = pool.submit(self.module.backup_site, "other", backup, **auth)
+                other_result = other_site.result(timeout=10)
+                self.assertFalse(same_site.done())
+                self.assertTrue(Path(other_result["path"]).is_file())
+                self.assertEqual([call.args[0][2] for call in run.call_args_list], ["push", "pull"])
+            finally:
+                finish_deploy.set()
+            self.assertEqual(deployment.result(timeout=10)["message"], "Site deployed")
+            same_result = same_site.result(timeout=10)
+            self.assertTrue(Path(same_result["path"]).is_file())
+
+        staging_dirs = [call.args[1][-1] for call in container.call_args_list if call.args[1][0] == "mkdir"]
+        removed_dirs = [call.args[1][-1] for call in container.call_args_list if call.args[1][0] == "rm"]
+        self.assertEqual(len(set(staging_dirs)), 3)
+        self.assertCountEqual(removed_dirs, staging_dirs)
+
+    def test_site_backup_publication_and_rollback_ownership(self) -> None:
+        auth = self._seed_site_operations()
+        backup = self.module.SiteBackupRequest(include_database=False, label="release 1")
+        backup_dir = Path(self.module.SITE_BACKUP_DIR)
+
+        def fake_lxc(command):
+            if command[:3] == ["lxc", "file", "pull"]:
+                Path(command[-1]).write_bytes(b"test archive")
+
+        with (
+            mock.patch.object(self.module, "exec_in_container") as container,
+            mock.patch.object(self.module, "run_command", side_effect=fake_lxc),
+            mock.patch.object(self.module, "_extract_site_archive") as extract,
+        ):
+            first = self.module.backup_site("app", backup, **auth)
+            second = self.module.backup_site("app", backup, **auth)
+            self.assertNotEqual(first["backup_id"], second["backup_id"])
+            self.assertEqual(Path(first["path"]).stat().st_mode & 0o777, 0o600)
+
+            rollback = self.module.SiteRollbackRequest(backup_id=first["backup_id"], restart_services=False)
+            with self.assertRaises(HTTPException) as caught:
+                self.module.rollback_site("other", rollback, **auth)
+            self.assertEqual(caught.exception.status_code, 404)
+            self._expect_denied(lambda: self.module.rollback_site("outside", rollback, **auth))
+            extract.assert_not_called()
+
+            self.module.rollback_site("app", rollback, **auth)
+            self.assertEqual(extract.call_args.args[2], "/srv/app")
+            self.assertEqual(container.call_args.args[1][:3], ["rm", "-rf", "--"])
+
+            files = set(backup_dir.glob("*.tar.gz"))
+            with (
+                mock.patch.object(self.module, "save_json", side_effect=OSError("placeholder-secret")),
+                mock.patch.object(self.module, "audit_api") as audit,
+                self.assertRaises(OSError),
+            ):
+                self.module.backup_site("app", backup, **auth)
+            audit.assert_called_once_with("sites_backup", target="app", details={"error_type": "OSError"}, status="error")
+            self.assertEqual(set(backup_dir.glob("*.tar.gz")), files)
+            self.assertEqual(list(backup_dir.glob(".site-backup-*")), [])
+
+    def test_site_delete_keeps_record_when_nginx_removal_fails(self) -> None:
+        auth = self._seed_site_operations()
+        sites = self.module._load_site_store()
+        sites["app"]["primary_domain"] = "app.example.test"
+        self._write_json(self.module.SITES_DB, sites)
+        with mock.patch.object(self.module, "_remove_nginx_route", side_effect=HTTPException(500, "reload failed")):
+            with self.assertRaises(HTTPException):
+                self.module.delete_site("app", **auth)
+        self.assertEqual(self.module._load_site_store()["app"]["primary_domain"], "app.example.test")
 
     def test_permission_matrix_terminal_create_permissions(self) -> None:
         self._write_users(

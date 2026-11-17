@@ -224,7 +224,9 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Next: Consider hashing stored delegated tokens (needs a migration + `PUT/DELETE /api-users/{token}` redesign).
 - Done: Moved `/api-users` writes, route persistence (routing add/remove, site routing/delete), and recipe health history appends onto locked `update_json` helpers.
 - Done: Serialized the remaining read-modify-write stores: `json_store_lock` is re-entrant per thread; recipes and site create/update/delete hold the store lock (`_holds_store_lock`), hosts/VMs use `_locked_store_operation` (with the error-path audits they were missing), and SSH provision/probe run unlocked then merge changed fields.
-- Next: Serialize site deploy/backup/rollback per site (host-side work is not locked today).
+- Done: Serialize site deploy, backup, rollback, update, delete, and restart per site across API workers. Use isolated staging directories, publish unique owner-only backup archives, and verify site ownership before rollback.
+- Done: Passed the full Python suite on AlmaLinux 10.2 x86_64 under QEMU (Python 3.12.13). A three-worker smoke test verified same-site serialization, independent site progress, backup ownership, and a GNU tar round trip with stubbed LXD transport.
+- Next: Restore the previous document root when a deploy or rollback fails after modifying site files.
 - Done: Fixed schema registry gaps that made migrations park live fields under `_legacy` (api_users `terminal_host`/`terminal_container`, recipes `version`/`history`/timestamps, VM lifecycle fields); schemas bumped to v2, `_promote_legacy_fields` restores already-parked fields, and `SchemaFieldCoverageTests` guards new fields.
 - Done: Validate SSH host/username/port/key_path (ssh option-injection → host command execution), add `--` before the ssh destination, and validate env names and provision profile names in `fortress.remote`.
 - Done: Constrained VM inputs so `vm_manage` no longer implies command execution: `qemu_binary` allowlist (bare names), `extra_args` option/value allowlist, `bridge_name` pattern (no `,helper=`), `vm_dir`/`disk_path` confined to `FORTRESS_VM_ROOT` (purge refuses paths outside it), `.iso`-only `iso_path`, bounded resources; re-validated before start so legacy records can't bypass it.
@@ -239,4 +241,4 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Next: Pin `requirements.txt` versions (fresh installs already resolve FastAPI 0.162 / Starlette 1.10, which changed router internals) and add a CI lane running Python and UI tests.
 - Done: Focused tests for `fortress.tls` and `fortress.remote` (`tests/test_remote_tls.py`) and `fortress.monitoring` (`tests/test_monitoring.py`); monitoring history appends moved onto locked `update_json` (concurrent samples were being dropped).
 - Done: Focused tests for `fortress.hosts`/`fortress.vms` lifecycle and VM hardening (`tests/test_hosts_vms.py`).
-- Next: Add focused tests for container lifecycle/exec/connectivity routes.
+- Done: Add focused HTTP tests for scoped container lifecycle, snapshots, logs, exec, and connectivity, with coverage of audit redaction and port-exposure rollback. Use LXD's restart command and snapshot API for those operations.

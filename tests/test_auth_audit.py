@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -9,6 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "p
 
 from fortress.auth import enforce_container_scope, enforce_container_scopes
 from fortress.containers import configure_audit, exec_in_container
+from fortress.system import run_command
 
 
 class ContainerScopeTests(unittest.TestCase):
@@ -74,7 +76,7 @@ class AuditLoggingTests(unittest.TestCase):
 
         configure_audit(capture)
 
-        error = HTTPException(status_code=500, detail="boom")
+        error = HTTPException(status_code=500, detail="failure included secret=123")
         with mock.patch("fortress.containers.run_command", side_effect=error):
             with self.assertRaises(HTTPException):
                 exec_in_container("demo", ["echo", "secret=123"])
@@ -83,7 +85,20 @@ class AuditLoggingTests(unittest.TestCase):
         self.assertEqual(events[0]["category"], "container_exec")
         self.assertEqual(events[0]["status"], "error")
         self.assertEqual(events[0]["target"], "demo")
-        self.assertIn("error", events[0]["details"])
+        self.assertEqual(events[0]["details"]["status_code"], 500)
+        self.assertNotIn("secret=123", str(events[0]["details"]))
+
+    def test_command_failure_logs_exit_status_without_arguments_or_stderr(self) -> None:
+        command = ["lxc", "exec", "demo", "--env", "APP_TOKEN=placeholder-secret", "--", "false"]
+        failure = subprocess.CalledProcessError(1, command, stderr="stderr with placeholder-secret")
+        with (
+            mock.patch("fortress.system.subprocess.run", side_effect=failure),
+            self.assertLogs(level="ERROR") as recorded,
+            self.assertRaises(HTTPException) as caught,
+        ):
+            run_command(command)
+        self.assertEqual(caught.exception.status_code, 500)
+        self.assertEqual(recorded.output, ["ERROR:root:lxc exited with status 1"])
 
 
 if __name__ == "__main__":

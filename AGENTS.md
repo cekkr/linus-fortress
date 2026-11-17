@@ -99,7 +99,7 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 | `/var/lib/fortress/recipes.json` | `fortress.recipes` | with version + history |
 | `/var/lib/fortress/recipe_health_history.json` | server.py | capped by `FORTRESS_RECIPE_HEALTH_HISTORY_MAX` |
 | `/var/lib/fortress/routes.json` | server.py routing | + nginx files in `/etc/nginx/sites-{available,enabled}` |
-| `/var/lib/fortress/sites.json`, `site_backups/` | `fortress.sites` + server.py | |
+| `/var/lib/fortress/sites.json`, `sites.json.locks/`, `site_backups/` | `fortress.sites` + server.py | Per-site mutation locks and owner-only backup archives with ownership metadata |
 | `/var/lib/fortress/hosts.json`, `vms.json`, `vms/` | `fortress.hosts`, `fortress.vms` | SSH passwords stored; redacted on output |
 | `/var/lib/fortress/monitoring_history.json` | `fortress.monitoring` | ring buffer (`history_limit`) |
 | `/var/lib/fortress/container_images.json` | container router | popular image presets |
@@ -131,7 +131,7 @@ The FastAPI application and the owner of most routes, configuration constants, a
   - Sites: `_resolve_site_tls_status`, `_apply_php_ini_overrides`, `_normalize_fpm_pool_tuning`, `_apply_php_fpm_pool_tuning`, `_apply_site_routing`, `_backup_site_files`, `_restore_site_db`, `_restart_site_services`.
   - Backups: `get_fernet_key`, `perform_encrypted_backup` (background task; `.partial` + rename, `0600`), `CONTAINER_NAME_PATTERN`, `BACKUP_FILENAME_PATTERN` (`<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc`, used to scope list/download), `_ensure_backup_dir`, `restore_container` (per-request staging dir, `RESTORE_MAX_BYTES`).
   - `/status` scoping: `_filter_status_containers`.
-  - Store locking: `_holds_store_lock(path_getter)` (decorator for recipe and site writers), `_locked_store_operation` (hosts/VMs: locked load → mutate → save, error-path audit, nothing saved on failure), `_long_store_operation` (SSH provision/probe: run unlocked, merge changed fields under the lock).
+  - Store locking: `_holds_store_lock(path_getter)` (decorator for recipe writers and site creation), `_site_mutation` (per-site locks for deploy, backup, rollback, update, delete, and restart), `_locked_store_operation` (hosts/VMs: locked load → mutate → save, error-path audit, nothing saved on failure), `_long_store_operation` (SSH provision/probe: run unlocked, merge changed fields under the lock).
 - **Called by / depends on:** started by [`run-server.sh`](run-server.sh) / [`restart.sh`](restart.sh) as `.venv/bin/python py/server.py` (the script dir `py/` is on `sys.path`, which is how `import fortress` resolves). Imports every module in [`py/fortress/`](py/fortress/).
 - **Tests:** [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py) loads this file with `importlib` into a temp sandbox; [`tests/test_container_images.py`](tests/test_container_images.py) for popular-image endpoints.
 - **Common mistakes:** path constants are read at import, so tests reassign `module.API_USERS_DB` etc. after loading — helpers MUST read the module global at call time (don't capture paths in default args). Use `.dict()` on models consistently (Pydantic v1-style API is used throughout). Don't forget the error-path `audit_api(..., status="error")`.
@@ -192,7 +192,7 @@ JSON helpers: `load_json` (default on missing/corrupt), `load_json_dict` (resets
 
 ### [`py/fortress/system.py`](py/fortress/system.py)
 
-`run_command(cmd_list)` — `subprocess.run(check=True)` without a shell; raises `HTTPException(500, "System Error: <stderr>")` on failure. The shared way to run host commands.
+`run_command(cmd_list)` uses `subprocess.run(check=True)` without a shell. On failure it raises `HTTPException(500, "System Error: <stderr>")` and logs only the executable and exit status.
 
 ### [`py/fortress/routing.py`](py/fortress/routing.py)
 
@@ -426,7 +426,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 - **Behavior:** create/delete/start/stop/restart, snapshots, exec, logs, service probes, user/group management, external port access, container↔container TCP links, shared mounts, bulk `/containers/expose`.
 - **Flow and owners:** [`py/fortress/api/containers.py`](py/fortress/api/containers.py) → [`py/fortress/containers.py`](py/fortress/containers.py) → `lxc`.
-- **Tests and gaps:** image/create paths tested; lifecycle/exec/connectivity routes untested.
+- **Tests:** image/create coverage and [`tests/test_container_routes.py`](tests/test_container_routes.py) for lifecycle, snapshot names, logs, exec audit redaction, two-endpoint scope checks, and port-exposure rollback.
 
 ### Domain routing and TLS — Shipped
 
@@ -444,7 +444,8 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 - **Behavior:** site records bound to a container/docroot/runtime/DB/TLS/routing; deploy from archive, backup/rollback (files + DB dump), logs, health, service restart, php.ini overrides, PHP-FPM pool tuning, TLS status.
 - **Flow and owners:** site routes + helpers in [`py/server.py`](py/server.py) → models in [`py/fortress/sites.py`](py/fortress/sites.py) → `lxc exec`, routing helpers.
-- **Tests and gaps:** [`tests/test_sites.py`](tests/test_sites.py), matrix; no TLS renewal failure history.
+- **Concurrency:** Site mutations lock the site across API threads and processes. Update and delete acquire site locks before the JSON store lock. Check container scope again after acquiring the locks. Each deploy, backup, and rollback that stages files uses a distinct container directory. Site rollback checks backup ownership before touching the container.
+- **Tests and gaps:** [`tests/test_sites.py`](tests/test_sites.py) and [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py) cover site records, permissions, serialization, and backup rollback ownership. TLS renewal failure history is pending.
 
 ### Firewall and anti-DDoS — Shipped
 
@@ -614,7 +615,8 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - Routing configs and conflicts → [`tests/test_routing.py`](tests/test_routing.py)
 - Firewall parsing and conn-limit ordering → [`tests/test_firewall.py`](tests/test_firewall.py)
 - Migrations, schema field coverage, `_legacy` promotion → [`tests/test_migrations.py`](tests/test_migrations.py)
-- Site models → [`tests/test_sites.py`](tests/test_sites.py)
+- Container lifecycle, snapshots, exec, scope and connectivity → [`tests/test_container_routes.py`](tests/test_container_routes.py)
+- Site models and site mutation serialization → [`tests/test_sites.py`](tests/test_sites.py), [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py)
 - Terminal helpers → [`tests/test_terminal.py`](tests/test_terminal.py)
 - CLI crypto, terminal, and api-users expiry commands → [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py), [`tests/test_cli_terminal.py`](tests/test_cli_terminal.py), [`tests/test_cli_api_users.py`](tests/test_cli_api_users.py)
 - UI admin gate, proxying, rendering, visuals → [`ui/tests/`](ui/tests/)
@@ -624,7 +626,7 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - Route registry ↔ `api-v1.yaml` parity and `$ref` resolution → [`tests/test_api_spec.py`](tests/test_api_spec.py)
 - Monitoring helpers, alerts, anomaly detection, history persistence → [`tests/test_monitoring.py`](tests/test_monitoring.py)
 - Hosts/VMs lifecycle, VM input allowlists, re-entrant store lock, host/VM/recipe route locking → [`tests/test_hosts_vms.py`](tests/test_hosts_vms.py)
-- **Known test gaps:** container lifecycle/exec/connectivity routes; site deploy/backup/rollback routes; no test runs against a real LXD daemon.
+- **Known test gap:** The automated suite does not run against a real LXD daemon.
 
 ## Data, Security, Privacy, and Compatibility Boundaries
 
@@ -653,7 +655,7 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - **Restore/backup memory:** Fernet encrypt/decrypt holds the whole archive in memory (cap uploads with `FORTRESS_RESTORE_MAX_BYTES`); a streamable format would need a new versioned backup format.
 - **Auth:** tokens stored unhashed; expired tokens are rejected but never swept from the store.
 - **VM privilege:** `qemu_binary`/`extra_args`/`bridge_name`/paths are now allowlisted, but `vm_manage` still runs QEMU/VirtualBox as the API user and can attach any `.iso` path to a guest; grant it to trusted operators only.
-- **Concurrency:** every JSON store write is now serialized: api users, routes, recipe health history, and monitoring history via `update_json`; recipes and site create/update/delete via `_holds_store_lock`; hosts and VMs via `_locked_store_operation` (SSH provision/probe via `_long_store_operation`). Site deploy/rollback host work is not serialized per site. Terminal sessions and UI sessions are in-process memory.
+- **Concurrency:** API users, routes, recipe health history, and monitoring history use `update_json`. Recipes and site creation use `_holds_store_lock`. Site deploy, backup, rollback, update, delete, and restart use `_site_mutation`. Hosts and VMs use `_locked_store_operation` and merge provision/probe results through `_long_store_operation`. Terminal sessions and UI sessions are in-process memory.
 - **Visual baselines:** `app_home_visual_regression` and `css_dark_surface_token_regression` hashes are environment-sensitive (they fail on macOS Chromium at this revision without code changes).
 - **Dependencies:** `requirements.txt` is unpinned (a fresh AlmaLinux 10 install pulled FastAPI 0.162 / Starlette 1.10 vs 0.128 / 0.49 on the dev venv — newer FastAPI no longer flattens included routers into `app.routes`, so enumerate routes via `app.openapi()`); code uses Pydantic v1-style `.dict()`.
 - **No CI** and no real-LXD integration test lane.

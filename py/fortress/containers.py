@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 
 import requests
 from fastapi import HTTPException
@@ -134,7 +135,7 @@ def exec_in_container(container_name: str, command: List[str]) -> str:
         return result
     except HTTPException as exc:
         error_details = dict(details)
-        error_details["error"] = exc.detail
+        error_details["status_code"] = exc.status_code
         _audit(
             "container_exec",
             f"exec:{details['command']}",
@@ -309,28 +310,24 @@ def stop_container(name: str, force: bool = False) -> None:
 
 
 def restart_container(name: str, force: bool = False) -> None:
-    try:
-        stop_container(name, force=force)
-    finally:
-        start_container(name)
+    cmd = ["lxc", "restart", name]
+    if force:
+        cmd.append("--force")
+    run_command(cmd)
 
 
 def list_snapshots(name: str) -> List[str]:
-    info_json = run_command(["lxc", "info", name, "--format", "json"])
+    path = f"/1.0/instances/{quote(name, safe='')}/snapshots?recursion=1"
     try:
-        info = json.loads(info_json)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to parse snapshot list: {exc}")
-    snapshots = info.get("Snapshots") or info.get("snapshots") or []
-    names: List[str] = []
-    for snap in snapshots:
-        if isinstance(snap, dict):
-            snap_name = snap.get("name") or snap.get("Name")
-            if snap_name:
-                names.append(snap_name)
-        elif isinstance(snap, str):
-            names.append(snap)
-    return names
+        snapshots = json.loads(run_command(["lxc", "query", path]))
+        if not isinstance(snapshots, list):
+            raise ValueError("expected a list")
+        names = [snapshot["name"] for snapshot in snapshots]
+        if any(not isinstance(name, str) or not name for name in names):
+            raise ValueError("invalid snapshot name")
+        return names
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=500, detail="Failed to parse LXD snapshot list") from exc
 
 
 def create_snapshot(name: str, snapshot_name: str, stateful: bool = False) -> None:
@@ -382,7 +379,7 @@ def exec_in_container_advanced(
         return result
     except HTTPException as exc:
         error_details = dict(details)
-        error_details["error"] = exc.detail
+        error_details["status_code"] = exc.status_code
         _audit(
             "container_exec",
             f"exec:{details['command']}",
