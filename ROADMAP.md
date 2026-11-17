@@ -68,10 +68,10 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
 - Done: Add keyboard + touch navigation for wizard step transitions (← / → outside form fields, horizontal swipe on the wizard viewport); gestures never submit the final step.
 - Done: Add an inline wizard step summary/history strip with breadcrumb quick-jump so users can navigate back to Home/sections and prior wizard steps without losing context.
-- Done: Persist wizard progress markers per active flow (sessionStorage, sensitive fields dropped, 12 h expiry, upgrade preflight restarts at step 0) with a Resume/Discard banner after page refresh.
+- Done: Persist wizard progress markers per active flow (sessionStorage, sensitive fields dropped, 12 h expiry) with a Resume/Discard banner after page refresh.
 - Done: Add drag/drop (and ↑/↓ button) ordering for the fast-actions menu in Settings.
 - Next: Add named profiles for fast-actions menu preferences (save/switch sets of actions).
-- Next: Let the system-upgrade wizard resume past preflight by re-running the dry-run automatically.
+- Done: Rerun the dry-run preflight when resuming System Upgrade past Scope. Restore saved Execute progress at Backups with fresh confirmation, and allow a retry from Scope after preflight failure.
 - Next: Add a background cache refresh + health indicator for public LXD simplestream lookups and keep Ubuntu/Debian version-to-codename mappings current as new releases ship.
 - Done: Rework app navigation cards into an app-store model where icon click opens directly and title/description toggles an animated more-info panel with deep actions + Open CTA.
 - Done: Align app deck UX closer to legacy Lizard: fixed-height rectangular app buttons, row-level dark-fiber more-info expansion, and active-button bottom-extension animation without resizing sibling cards.
@@ -88,8 +88,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add `npm run screenshots` (`ui/scripts/capture-screenshots.mjs` + read-only demo API) that captures key Lizard UI screens into `docs/screenshots/`, plus a README Screenshots section.
 - Done: Fix phone-width horizontal overflow (single grid column is now `minmax(0, 1fr)`) and inactive sites being counted/rendered as active.
 - Next: Add a screenshot-freshness check (re-run `npm run screenshots` in CI and flag large diffs) once CI exists.
-- Next: Escape wizard input `value` attributes (several wizards interpolate raw state into `value="..."`) and add a Puppeteer case for quotes in names.
-- Next: Add breakpoint-specific Puppeteer bridge seam checks (desktop/tablet/mobile widths) to prevent future unibody alignment regressions.
+- Done: Escape wizard input values, option labels, textarea contents, and summary text. Puppeteer verifies quoted names and literal markup, and recipe parameter blocks are excluded from saved progress.
+- Done: Check app-card bridge and tab alignment with Puppeteer at desktop, tablet, and phone widths.
 - Next: Continue expanding app-home dashboards with richer per-item actions (route/site/VM quick controls), container sub-app homes, and visual regression coverage for stage rendering.
 - Next: Add a CI lane with a real LXD daemon fixture (including Fedora remotes output variants) to validate image availability discovery end-to-end beyond mocked unit tests.
 - Done: Add xterm.js Terminal app (host + recursive container sub-app) backed by server-side `/terminal/sessions*` APIs with delegated-token scope checks and OS-user mapping policies.

@@ -660,12 +660,10 @@ function moveFastAction(actions, id, targetIndex) {
 }
 
 // Wizard progress persistence (sessionStorage, per tab). Only non-sensitive form fields
-// are stored: anything that looks like a password/secret/token/env block is dropped, and
-// flows whose later steps depend on server state (system upgrade preflight) resume at step 0.
+// are stored: password/secret/token/env fields and recipe parameter blocks are dropped.
 const WIZARD_PROGRESS_STORAGE_KEY = "lizard.wizard-progress.v1";
 const WIZARD_PROGRESS_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const WIZARD_PROGRESS_SENSITIVE_KEY = /(pass|secret|token|credential|private|environment|^env)/i;
-const WIZARD_PROGRESS_RESTART_MODES = new Set(["system-upgrade"]);
 const WIZARD_MODE_GROUPS = {
   "create-container": "form",
   routing: "routing",
@@ -704,7 +702,7 @@ function pickPersistableWizardFields(mode, group) {
   const allowedKeys = mode === "system-upgrade" ? WIZARD_UPGRADE_PERSIST_KEYS : Object.keys(source);
   const picked = {};
   for (const key of allowedKeys) {
-    if (WIZARD_PROGRESS_SENSITIVE_KEY.test(key)) {
+    if (WIZARD_PROGRESS_SENSITIVE_KEY.test(key) || (mode === "recipe-apply" && key === "parameters")) {
       continue;
     }
     const value = source[key];
@@ -778,9 +776,8 @@ function normalizeWizardProgressSnapshot(raw, now = Date.now()) {
     const parsed = Number.parseInt(String(value), 10);
     return Number.isFinite(parsed) ? Math.max(0, Math.min(total - 1, parsed)) : 0;
   };
-  const restart = WIZARD_PROGRESS_RESTART_MODES.has(mode);
-  const step = restart ? 0 : clamp(raw.step);
-  const maxStep = restart ? 0 : Math.max(step, clamp(raw.maxStep));
+  const step = clamp(raw.step);
+  const maxStep = Math.max(step, clamp(raw.maxStep));
   return {
     mode,
     step,
@@ -815,7 +812,7 @@ function loadPendingWizardResume() {
   }
 }
 
-function resumePendingWizard() {
+async function resumePendingWizard() {
   const snapshot = state.ui.pendingWizardResume;
   if (!snapshot) {
     return false;
@@ -843,12 +840,19 @@ function resumePendingWizard() {
   if (snapshot.container) {
     state.wizard.context.container = snapshot.container;
   }
-  state.wizard.maxStep = snapshot.maxStep;
-  state.wizard.step = snapshot.step;
-  state.wizard.prevStep = snapshot.step;
+  if (snapshot.mode !== "system-upgrade") {
+    state.wizard.maxStep = snapshot.maxStep;
+    state.wizard.step = snapshot.step;
+    state.wizard.prevStep = snapshot.step;
+  }
   renderWizard();
   renderFastActions();
-  logEvent("success", `Resumed ${wizardModeLabel(snapshot.mode)} at step ${snapshot.step + 1}`);
+  if (snapshot.mode === "system-upgrade" && snapshot.step > 0) {
+    // Execute always requires a fresh backup confirmation after resume.
+    await runSystemUpgradePreflight(Math.min(snapshot.step, 2));
+  } else {
+    logEvent("success", `Resumed ${wizardModeLabel(snapshot.mode)} at step ${snapshot.step + 1}`);
+  }
   return true;
 }
 
@@ -1386,7 +1390,8 @@ function setWizardStep(nextStep) {
   const bounded = Math.max(0, Math.min(total - 1, target));
   state.wizard.prevStep = state.wizard.step;
   state.wizard.step = bounded;
-  state.wizard.maxStep = Math.max(state.wizard.maxStep || 0, bounded);
+  state.wizard.maxStep =
+    state.wizard.mode === "system-upgrade" && bounded === 0 ? 0 : Math.max(state.wizard.maxStep || 0, bounded);
 }
 
 function closeWizardState() {
@@ -3946,7 +3951,7 @@ function renderWizard() {
           const availability = item.available === false ? `<span class="pill danger">unavailable</span>` : "";
           const sourcePill = source ? `<span class="pill">${escapeHtml(source)}</span>` : "";
           const removeButton = removable
-            ? `<button class="tag-remove" data-wizard-action="remove-image" data-image-name="${item.name}" title="Remove preset">×</button>`
+            ? `<button class="tag-remove" data-wizard-action="remove-image" data-image-name="${escapeHtml(item.name)}" title="Remove preset">×</button>`
             : "";
           return `
           <div class="tag">
@@ -3991,7 +3996,7 @@ function renderWizard() {
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-name">Container name</label>
-          <input id="wiz-name" name="name" data-wizard-group="form" value="${wizard.form.name}" placeholder="web-01" />
+          <input id="wiz-name" name="name" data-wizard-group="form" value="${escapeHtml(wizard.form.name)}" placeholder="web-01" />
         </div>
         <div class="wizard-field">
           <label for="wiz-distro">Image</label>
@@ -4009,8 +4014,8 @@ function renderWizard() {
         <div class="wizard-field">
           <label>Add image preset</label>
           <div class="wizard-inline">
-            <input id="wiz-image-alias" name="alias" data-wizard-group="imagePreset" value="${wizard.imagePreset.alias}" placeholder="images:almalinux/9/cloud" />
-            <input id="wiz-image-label" name="label" data-wizard-group="imagePreset" value="${wizard.imagePreset.label}" placeholder="Label (optional)" />
+            <input id="wiz-image-alias" name="alias" data-wizard-group="imagePreset" value="${escapeHtml(wizard.imagePreset.alias)}" placeholder="images:almalinux/9/cloud" />
+            <input id="wiz-image-label" name="label" data-wizard-group="imagePreset" value="${escapeHtml(wizard.imagePreset.label)}" placeholder="Label (optional)" />
             <button class="action ghost" data-wizard-action="add-image" type="button">Add</button>
           </div>
           ${
@@ -4024,15 +4029,15 @@ function renderWizard() {
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-cpu">CPU limit</label>
-          <input id="wiz-cpu" name="cpu_limit" data-wizard-group="form" value="${wizard.form.cpu_limit}" placeholder="2" />
+          <input id="wiz-cpu" name="cpu_limit" data-wizard-group="form" value="${escapeHtml(wizard.form.cpu_limit)}" placeholder="2" />
         </div>
         <div class="wizard-field">
           <label for="wiz-ram">RAM limit</label>
-          <input id="wiz-ram" name="ram_limit" data-wizard-group="form" value="${wizard.form.ram_limit}" placeholder="1GB" />
+          <input id="wiz-ram" name="ram_limit" data-wizard-group="form" value="${escapeHtml(wizard.form.ram_limit)}" placeholder="1GB" />
         </div>
         <div class="wizard-field">
           <label for="wiz-disk">Disk limit</label>
-          <input id="wiz-disk" name="disk_limit" data-wizard-group="form" value="${wizard.form.disk_limit}" placeholder="10GB" />
+          <input id="wiz-disk" name="disk_limit" data-wizard-group="form" value="${escapeHtml(wizard.form.disk_limit)}" placeholder="10GB" />
         </div>
       `;
     } else {
@@ -4042,23 +4047,23 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Name</strong>
-            <span>${wizard.form.name || "(missing)"}</span>
+            <span>${escapeHtml(wizard.form.name || "(missing)")}</span>
           </div>
           <div>
             <strong>Image</strong>
-            <span>${wizard.form.distro}</span>
+            <span>${escapeHtml(wizard.form.distro)}</span>
           </div>
           <div>
             <strong>CPU</strong>
-            <span>${wizard.form.cpu_limit}</span>
+            <span>${escapeHtml(wizard.form.cpu_limit)}</span>
           </div>
           <div>
             <strong>RAM</strong>
-            <span>${wizard.form.ram_limit}</span>
+            <span>${escapeHtml(wizard.form.ram_limit)}</span>
           </div>
           <div>
             <strong>Disk</strong>
-            <span>${wizard.form.disk_limit}</span>
+            <span>${escapeHtml(wizard.form.disk_limit)}</span>
           </div>
         </div>
       `;
@@ -4070,7 +4075,7 @@ function renderWizard() {
     const containerOptions = state.containers
       .map(
         (container) =>
-          `<option value="${container.name}" ${container.name === containerName ? "selected" : ""}>${container.name}</option>`
+          `<option value="${escapeHtml(container.name)}" ${container.name === containerName ? "selected" : ""}>${escapeHtml(container.name)}</option>`
       )
       .join("");
     const containerSelect = containerOptions
@@ -4091,27 +4096,27 @@ function renderWizard() {
     steps = ["Domain", "TLS", "Confirm"];
     if (wizard.step === 0) {
       bodyMarkup = `
-        <div>Route traffic for ${containerName || "a container"}.</div>
+        <div>Route traffic for ${escapeHtml(containerName || "a container")}.</div>
         ${containerSelect}
         <div class="wizard-field">
           <label for="wiz-domain">Domain</label>
-          <input id="wiz-domain" name="domain" data-wizard-group="routing" value="${routing.domain}" placeholder="app.example.com" />
+          <input id="wiz-domain" name="domain" data-wizard-group="routing" value="${escapeHtml(routing.domain)}" placeholder="app.example.com" />
         </div>
         <div class="wizard-field">
           <label for="wiz-container-port">Container port</label>
-          <input id="wiz-container-port" name="container_port" data-wizard-group="routing" value="${routing.container_port}" placeholder="80" />
+          <input id="wiz-container-port" name="container_port" data-wizard-group="routing" value="${escapeHtml(routing.container_port)}" placeholder="80" />
         </div>
         <div class="wizard-field">
           <label for="wiz-container-iface">Container interface</label>
-          <input id="wiz-container-iface" name="container_interface" data-wizard-group="routing" value="${routing.container_interface}" placeholder="eth0" />
+          <input id="wiz-container-iface" name="container_interface" data-wizard-group="routing" value="${escapeHtml(routing.container_interface)}" placeholder="eth0" />
         </div>
         <div class="wizard-field">
           <label for="wiz-listen-address">Listen address</label>
-          <input id="wiz-listen-address" name="listen_address" data-wizard-group="routing" value="${routing.listen_address}" placeholder="0.0.0.0" />
+          <input id="wiz-listen-address" name="listen_address" data-wizard-group="routing" value="${escapeHtml(routing.listen_address)}" placeholder="0.0.0.0" />
         </div>
         <div class="wizard-field">
           <label for="wiz-listen-port">Listen port</label>
-          <input id="wiz-listen-port" name="listen_port" data-wizard-group="routing" value="${routing.listen_port}" placeholder="80" />
+          <input id="wiz-listen-port" name="listen_port" data-wizard-group="routing" value="${escapeHtml(routing.listen_port)}" placeholder="80" />
         </div>
       `;
     } else if (wizard.step === 1) {
@@ -4132,19 +4137,19 @@ function renderWizard() {
         </div>
         <div class="wizard-field" ${manualHidden}>
           <label for="wiz-cert-path">Cert path</label>
-          <input id="wiz-cert-path" name="cert_path" data-wizard-group="routing" value="${routing.cert_path}" placeholder="/etc/letsencrypt/live/app/fullchain.pem" ${tlsDisabled} />
+          <input id="wiz-cert-path" name="cert_path" data-wizard-group="routing" value="${escapeHtml(routing.cert_path)}" placeholder="/etc/letsencrypt/live/app/fullchain.pem" ${tlsDisabled} />
         </div>
         <div class="wizard-field" ${manualHidden}>
           <label for="wiz-key-path">Key path</label>
-          <input id="wiz-key-path" name="key_path" data-wizard-group="routing" value="${routing.key_path}" placeholder="/etc/letsencrypt/live/app/privkey.pem" ${tlsDisabled} />
+          <input id="wiz-key-path" name="key_path" data-wizard-group="routing" value="${escapeHtml(routing.key_path)}" placeholder="/etc/letsencrypt/live/app/privkey.pem" ${tlsDisabled} />
         </div>
         <div class="wizard-field" ${manualHidden}>
           <label for="wiz-chain-path">Chain path (optional)</label>
-          <input id="wiz-chain-path" name="chain_path" data-wizard-group="routing" value="${routing.chain_path}" placeholder="/etc/letsencrypt/live/app/chain.pem" ${tlsDisabled} />
+          <input id="wiz-chain-path" name="chain_path" data-wizard-group="routing" value="${escapeHtml(routing.chain_path)}" placeholder="/etc/letsencrypt/live/app/chain.pem" ${tlsDisabled} />
         </div>
         <div class="wizard-field" ${letsencryptHidden}>
           <label for="wiz-tls-email">Let's Encrypt email</label>
-          <input id="wiz-tls-email" name="tls_email" data-wizard-group="routing" value="${routing.tls_email}" placeholder="admin@example.com" ${tlsDisabled} />
+          <input id="wiz-tls-email" name="tls_email" data-wizard-group="routing" value="${escapeHtml(routing.tls_email)}" placeholder="admin@example.com" ${tlsDisabled} />
         </div>
         <div class="wizard-field" ${letsencryptHidden}>
           <label for="wiz-tls-staging">Use Let's Encrypt staging</label>
@@ -4152,7 +4157,7 @@ function renderWizard() {
         </div>
         <div class="wizard-field">
           <label for="wiz-tls-port">TLS listen port</label>
-          <input id="wiz-tls-port" name="tls_port" data-wizard-group="routing" value="${routing.tls_port}" placeholder="443" ${tlsDisabled} />
+          <input id="wiz-tls-port" name="tls_port" data-wizard-group="routing" value="${escapeHtml(routing.tls_port)}" placeholder="443" ${tlsDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-redirect">Redirect HTTP to HTTPS</label>
@@ -4166,27 +4171,27 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Container</strong>
-            <span>${containerName || "(missing)"}</span>
+            <span>${escapeHtml(containerName || "(missing)")}</span>
           </div>
           <div>
             <strong>Domain</strong>
-            <span>${routing.domain || "(missing)"}</span>
+            <span>${escapeHtml(routing.domain || "(missing)")}</span>
           </div>
           <div>
             <strong>Container Port</strong>
-            <span>${routing.container_port}</span>
+            <span>${escapeHtml(routing.container_port)}</span>
           </div>
           <div>
             <strong>Listen</strong>
-            <span>${routing.listen_address}:${routing.listen_port}</span>
+            <span>${escapeHtml(routing.listen_address)}:${escapeHtml(routing.listen_port)}</span>
           </div>
           <div>
             <strong>TLS</strong>
-            <span>${routing.tls_mode || "disabled"}</span>
+            <span>${escapeHtml(routing.tls_mode || "disabled")}</span>
           </div>
           <div>
             <strong>TLS Port</strong>
-            <span>${routing.tls_port}</span>
+            <span>${escapeHtml(routing.tls_port)}</span>
           </div>
         </div>
       `;
@@ -4199,7 +4204,7 @@ function renderWizard() {
       `<option value="" ${pkg.target ? "" : "selected"}>Host (this server)</option>`,
       ...state.containers.map(
         (container) =>
-          `<option value="${container.name}" ${pkg.target === container.name ? "selected" : ""}>${container.name}</option>`
+          `<option value="${escapeHtml(container.name)}" ${pkg.target === container.name ? "selected" : ""}>${escapeHtml(container.name)}</option>`
       ),
     ].join("");
     if (wizard.step === 0) {
@@ -4209,7 +4214,7 @@ function renderWizard() {
           : `
         <div class="wizard-field">
           <label for="wiz-packages">Packages (space or comma separated)</label>
-          <input id="wiz-packages" name="packages" data-wizard-group="packages" value="${pkg.packages}" placeholder="htop curl" />
+          <input id="wiz-packages" name="packages" data-wizard-group="packages" value="${escapeHtml(pkg.packages)}" placeholder="htop curl" />
         </div>
       `;
       const updateField =
@@ -4247,19 +4252,19 @@ function renderWizard() {
       const targetLabel = pkg.target ? `container ${pkg.target}` : "host";
       const packagesLabel = pkg.mode === "update" ? "(all packages)" : pkg.packages || "(none)";
       bodyMarkup = `
-        <div>Confirm package ${pkg.mode}.</div>
+        <div>Confirm package ${escapeHtml(pkg.mode)}.</div>
         <div class="preview-meta">
           <div>
             <strong>Mode</strong>
-            <span>${pkg.mode}</span>
+            <span>${escapeHtml(pkg.mode)}</span>
           </div>
           <div>
             <strong>Target</strong>
-            <span>${targetLabel}</span>
+            <span>${escapeHtml(targetLabel)}</span>
           </div>
           <div>
             <strong>Packages</strong>
-            <span>${packagesLabel}</span>
+            <span>${escapeHtml(packagesLabel)}</span>
           </div>
           ${
             pkg.mode === "install"
@@ -4306,25 +4311,26 @@ function renderWizard() {
         : null;
     steps = ["Scope", "Preflight", "Backups", "Execute"];
     if (wizard.step === 0) {
+      const optionsDisabled = wizard.busy ? "disabled" : "";
       bodyMarkup = `
         <div>Plan a controlled host upgrade with dry-run preflight.</div>
         <div class="wizard-field">
           <label for="wiz-upgrade-packages">Update system packages</label>
           <input id="wiz-upgrade-packages" type="checkbox" name="update_packages" data-wizard-group="upgrade" ${
             upgrade.update_packages ? "checked" : ""
-          } />
+          } ${optionsDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-upgrade-full">Full upgrade (dist-upgrade)</label>
           <input id="wiz-upgrade-full" type="checkbox" name="full_upgrade" data-wizard-group="upgrade" ${
             upgrade.full_upgrade ? "checked" : ""
-          } ${upgrade.update_packages ? "" : "disabled"} />
+          } ${upgrade.update_packages ? optionsDisabled : "disabled"} />
         </div>
         <div class="wizard-field">
           <label for="wiz-upgrade-migrations">Apply schema migrations</label>
           <input id="wiz-upgrade-migrations" type="checkbox" name="apply_migrations" data-wizard-group="upgrade" ${
             upgrade.apply_migrations ? "checked" : ""
-          } />
+          } ${optionsDisabled} />
         </div>
       `;
     } else if (wizard.step === 1) {
@@ -4333,7 +4339,7 @@ function renderWizard() {
           <div class="preview-meta">
             <div><strong>Packages</strong><span>${upgrade.update_packages ? "enabled" : "skipped"}</span></div>
             <div><strong>Migrations</strong><span>${upgrade.apply_migrations ? "enabled" : "skipped"}</span></div>
-            <div><strong>Migration changes</strong><span>${migrationPlan.length}</span></div>
+            <div><strong>Migration changes</strong><span>${escapeHtml(migrationPlan.length)}</span></div>
             <div><strong>Pending stores</strong><span>${pendingStores === null ? "n/a" : pendingStores}</span></div>
           </div>
           ${
@@ -4406,14 +4412,14 @@ function renderWizard() {
     steps = ["Credentials", "Confirm"];
     if (wizard.step === 0) {
       bodyMarkup = `
-        <div>Install Tiny File Manager on ${containerName}.</div>
+        <div>Install Tiny File Manager on ${escapeHtml(containerName)}.</div>
         <div class="wizard-field">
           <label for="wiz-fm-user">Admin username</label>
-          <input id="wiz-fm-user" name="username" data-wizard-group="filemanager" value="${filemanager.username}" placeholder="admin" />
+          <input id="wiz-fm-user" name="username" data-wizard-group="filemanager" value="${escapeHtml(filemanager.username)}" placeholder="admin" />
         </div>
         <div class="wizard-field">
           <label for="wiz-fm-pass">Admin password</label>
-          <input id="wiz-fm-pass" type="password" name="password" data-wizard-group="filemanager" value="${filemanager.password}" placeholder="change-me" />
+          <input id="wiz-fm-pass" type="password" name="password" data-wizard-group="filemanager" value="${escapeHtml(filemanager.password)}" placeholder="change-me" />
         </div>
       `;
     } else {
@@ -4423,15 +4429,15 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Container</strong>
-            <span>${containerName}</span>
+            <span>${escapeHtml(containerName)}</span>
           </div>
           <div>
             <strong>Username</strong>
-            <span>${filemanager.username || "(missing)"}</span>
+            <span>${escapeHtml(filemanager.username || "(missing)")}</span>
           </div>
           <div>
             <strong>Install Path</strong>
-            <span>${filemanager.install_path}</span>
+            <span>${escapeHtml(filemanager.install_path)}</span>
           </div>
         </div>
       `;
@@ -4439,12 +4445,12 @@ function renderWizard() {
   } else if (wizard.mode === "recipe-apply") {
     const recipe = wizard.recipe;
     const recipeOptions = state.recipes
-      .map((item) => `<option value="${item.name}" ${item.name === recipe.name ? "selected" : ""}>${item.name}</option>`)
+      .map((item) => `<option value="${escapeHtml(item.name)}" ${item.name === recipe.name ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
       .join("");
     const targetOptions = [
       `<option value="" ${recipe.target ? "" : "selected"}>Host (this server)</option>`,
       ...state.containers.map(
-        (container) => `<option value="${container.name}" ${recipe.target === container.name ? "selected" : ""}>${container.name}</option>`
+        (container) => `<option value="${escapeHtml(container.name)}" ${recipe.target === container.name ? "selected" : ""}>${escapeHtml(container.name)}</option>`
       ),
     ].join("");
     steps = ["Target", "Parameters", "Confirm"];
@@ -4491,7 +4497,7 @@ function renderWizard() {
         <div>Optional parameters (key=value per line or JSON object).</div>
         <div class="wizard-field">
           <label for="wiz-recipe-params">Parameters</label>
-          <textarea id="wiz-recipe-params" name="parameters" data-wizard-group="recipe" rows="4" placeholder="db_user=app_user&#10;db_password=secret">${recipe.parameters}</textarea>
+          <textarea id="wiz-recipe-params" name="parameters" data-wizard-group="recipe" rows="4" placeholder="db_user=app_user&#10;db_password=secret">${escapeHtml(recipe.parameters)}</textarea>
         </div>
       `;
     } else {
@@ -4502,11 +4508,11 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Recipe</strong>
-            <span>${recipe.name || "(missing)"}</span>
+            <span>${escapeHtml(recipe.name || "(missing)")}</span>
           </div>
           <div>
             <strong>Target</strong>
-            <span>${recipe.target ? `container ${recipe.target}` : "host"}</span>
+            <span>${recipe.target ? `container ${escapeHtml(recipe.target)}` : "host"}</span>
           </div>
           <div>
             <strong>Include deps</strong>
@@ -4531,11 +4537,11 @@ function renderWizard() {
       const containerOptions = state.containers
         .map(
           (container) =>
-            `<option value="${container.name}" ${container.name === containerName ? "selected" : ""}>${container.name}</option>`
+          `<option value="${escapeHtml(container.name)}" ${container.name === containerName ? "selected" : ""}>${escapeHtml(container.name)}</option>`
         )
         .join("");
       bodyMarkup = `
-        <div>Expose a host port to ${containerName || "a container"}.</div>
+        <div>Expose a host port to ${escapeHtml(containerName || "a container")}.</div>
         <div class="wizard-field">
           <label for="wiz-net-container">Container</label>
           <select id="wiz-net-container" name="container_name" data-wizard-group="network">
@@ -4551,23 +4557,23 @@ function renderWizard() {
         </div>
         <div class="wizard-field">
           <label for="wiz-net-container-port">Container port</label>
-          <input id="wiz-net-container-port" name="container_port" data-wizard-group="network" value="${net.container_port}" placeholder="80" />
+          <input id="wiz-net-container-port" name="container_port" data-wizard-group="network" value="${escapeHtml(net.container_port)}" placeholder="80" />
         </div>
         <div class="wizard-field">
           <label for="wiz-net-host-port">Host port</label>
-          <input id="wiz-net-host-port" name="host_port" data-wizard-group="network" value="${net.host_port}" placeholder="8080" />
+          <input id="wiz-net-host-port" name="host_port" data-wizard-group="network" value="${escapeHtml(net.host_port)}" placeholder="8080" />
         </div>
         <div class="wizard-field">
           <label for="wiz-net-bind">Bind address</label>
-          <input id="wiz-net-bind" name="bind_address" data-wizard-group="network" value="${net.bind_address}" placeholder="0.0.0.0" />
+          <input id="wiz-net-bind" name="bind_address" data-wizard-group="network" value="${escapeHtml(net.bind_address)}" placeholder="0.0.0.0" />
         </div>
         <div class="wizard-field">
           <label for="wiz-net-target-iface">Container interface</label>
-          <input id="wiz-net-target-iface" name="target_interface" data-wizard-group="network" value="${net.target_interface}" placeholder="eth0" />
+          <input id="wiz-net-target-iface" name="target_interface" data-wizard-group="network" value="${escapeHtml(net.target_interface)}" placeholder="eth0" />
         </div>
         <div class="wizard-field">
           <label for="wiz-net-target-addr">Container address (optional)</label>
-          <input id="wiz-net-target-addr" name="target_address" data-wizard-group="network" value="${net.target_address}" placeholder="" />
+          <input id="wiz-net-target-addr" name="target_address" data-wizard-group="network" value="${escapeHtml(net.target_address)}" placeholder="" />
         </div>
         <div class="wizard-field">
           <label for="wiz-net-fw">Open firewall</label>
@@ -4582,15 +4588,15 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Container</strong>
-            <span>${containerName || "(missing)"}</span>
+            <span>${escapeHtml(containerName || "(missing)")}</span>
           </div>
           <div>
             <strong>Mapping</strong>
-            <span>${net.bind_address}:${hostPort || "(host port)"} → ${net.target_interface || "eth0"}:${net.container_port || "(container port)"}</span>
+            <span>${escapeHtml(net.bind_address)}:${escapeHtml(hostPort || "(host port)")} → ${escapeHtml(net.target_interface || "eth0")}:${escapeHtml(net.container_port || "(container port)")}</span>
           </div>
           <div>
             <strong>Protocol</strong>
-            <span>${net.protocol}</span>
+            <span>${escapeHtml(net.protocol)}</span>
           </div>
           <div>
             <strong>Open firewall</strong>
@@ -4614,7 +4620,7 @@ function renderWizard() {
         </div>
         <div class="wizard-field">
           <label for="wiz-fw-port">Port</label>
-          <input id="wiz-fw-port" name="port" data-wizard-group="firewall" value="${fw.port}" placeholder="443" />
+          <input id="wiz-fw-port" name="port" data-wizard-group="firewall" value="${escapeHtml(fw.port)}" placeholder="443" />
         </div>
         <div class="wizard-field">
           <label for="wiz-fw-protocol">Protocol</label>
@@ -4625,7 +4631,7 @@ function renderWizard() {
         </div>
         <div class="wizard-field">
           <label for="wiz-fw-source">Source (CIDR, optional)</label>
-          <input id="wiz-fw-source" name="source" data-wizard-group="firewall" value="${fw.source}" placeholder="0.0.0.0/0" />
+          <input id="wiz-fw-source" name="source" data-wizard-group="firewall" value="${escapeHtml(fw.source)}" placeholder="0.0.0.0/0" />
         </div>
       `;
     } else {
@@ -4635,19 +4641,19 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Action</strong>
-            <span>${fw.mode}</span>
+            <span>${escapeHtml(fw.mode)}</span>
           </div>
           <div>
             <strong>Port</strong>
-            <span>${fw.port}</span>
+            <span>${escapeHtml(fw.port)}</span>
           </div>
           <div>
             <strong>Protocol</strong>
-            <span>${fw.protocol}</span>
+            <span>${escapeHtml(fw.protocol)}</span>
           </div>
           <div>
             <strong>Source</strong>
-            <span>${fw.source || "any"}</span>
+            <span>${escapeHtml(fw.source || "any")}</span>
           </div>
         </div>
       `;
@@ -4657,10 +4663,10 @@ function renderWizard() {
     steps = ["Snapshot", "Confirm"];
     if (wizard.step === 0) {
       bodyMarkup = `
-        <div>Create a snapshot for ${vmName || "VM"}.</div>
+        <div>Create a snapshot for ${escapeHtml(vmName || "VM")}.</div>
         <div class="wizard-field">
           <label for="wiz-vm-snap-name">Snapshot name</label>
-          <input id="wiz-vm-snap-name" name="name" data-wizard-group="vmSnapshot" value="${wizard.vmSnapshot.name}" placeholder="checkpoint-1" />
+          <input id="wiz-vm-snap-name" name="name" data-wizard-group="vmSnapshot" value="${escapeHtml(wizard.vmSnapshot.name)}" placeholder="checkpoint-1" />
         </div>
       `;
     } else {
@@ -4670,11 +4676,11 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>VM</strong>
-            <span>${vmName || "(missing)"}</span>
+            <span>${escapeHtml(vmName || "(missing)")}</span>
           </div>
           <div>
             <strong>Name</strong>
-            <span>${wizard.vmSnapshot.name || "(missing)"}</span>
+            <span>${escapeHtml(wizard.vmSnapshot.name || "(missing)")}</span>
           </div>
         </div>
       `;
@@ -4684,10 +4690,10 @@ function renderWizard() {
     steps = ["Snapshot", "Confirm"];
     if (wizard.step === 0) {
       bodyMarkup = `
-        <div>Create a snapshot for ${containerName || "container"}.</div>
+        <div>Create a snapshot for ${escapeHtml(containerName || "container")}.</div>
         <div class="wizard-field">
           <label for="wiz-ct-snap-name">Snapshot name</label>
-          <input id="wiz-ct-snap-name" name="name" data-wizard-group="containerSnapshot" value="${wizard.containerSnapshot.name}" placeholder="snap-1" />
+          <input id="wiz-ct-snap-name" name="name" data-wizard-group="containerSnapshot" value="${escapeHtml(wizard.containerSnapshot.name)}" placeholder="snap-1" />
         </div>
         <div class="wizard-field">
           <label for="wiz-ct-snap-stateful">Stateful</label>
@@ -4701,11 +4707,11 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Container</strong>
-            <span>${containerName || "(missing)"}</span>
+            <span>${escapeHtml(containerName || "(missing)")}</span>
           </div>
           <div>
             <strong>Name</strong>
-            <span>${wizard.containerSnapshot.name || "(missing)"}</span>
+            <span>${escapeHtml(wizard.containerSnapshot.name || "(missing)")}</span>
           </div>
           <div>
             <strong>Stateful</strong>
@@ -4719,22 +4725,22 @@ function renderWizard() {
     steps = ["Command", "Confirm"];
     if (wizard.step === 0) {
       bodyMarkup = `
-        <div>Run a command inside ${containerName || "container"}.</div>
+        <div>Run a command inside ${escapeHtml(containerName || "container")}.</div>
         <div class="wizard-field">
           <label for="wiz-exec-cmd">Command (space separated)</label>
-          <input id="wiz-exec-cmd" name="command" data-wizard-group="exec" value="${wizard.exec.command}" placeholder="ls -la /" />
+          <input id="wiz-exec-cmd" name="command" data-wizard-group="exec" value="${escapeHtml(wizard.exec.command)}" placeholder="ls -la /" />
         </div>
         <div class="wizard-field">
           <label for="wiz-exec-user">User (optional)</label>
-          <input id="wiz-exec-user" name="user" data-wizard-group="exec" value="${wizard.exec.user}" placeholder="root" />
+          <input id="wiz-exec-user" name="user" data-wizard-group="exec" value="${escapeHtml(wizard.exec.user)}" placeholder="root" />
         </div>
         <div class="wizard-field">
           <label for="wiz-exec-cwd">Workdir (optional)</label>
-          <input id="wiz-exec-cwd" name="workdir" data-wizard-group="exec" value="${wizard.exec.workdir}" placeholder="/var/www/html" />
+          <input id="wiz-exec-cwd" name="workdir" data-wizard-group="exec" value="${escapeHtml(wizard.exec.workdir)}" placeholder="/var/www/html" />
         </div>
         <div class="wizard-field">
           <label for="wiz-exec-env">Environment (key=value per line)</label>
-          <textarea id="wiz-exec-env" name="environment" data-wizard-group="exec" rows="3" placeholder="APP_ENV=prod&#10;DEBUG=0">${wizard.exec.environment}</textarea>
+          <textarea id="wiz-exec-env" name="environment" data-wizard-group="exec" rows="3" placeholder="APP_ENV=prod&#10;DEBUG=0">${escapeHtml(wizard.exec.environment)}</textarea>
         </div>
       `;
     } else {
@@ -4744,19 +4750,19 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Container</strong>
-            <span>${containerName || "(missing)"}</span>
+            <span>${escapeHtml(containerName || "(missing)")}</span>
           </div>
           <div>
             <strong>Command</strong>
-            <span>${wizard.exec.command || "(missing)"}</span>
+            <span>${escapeHtml(wizard.exec.command || "(missing)")}</span>
           </div>
           <div>
             <strong>User</strong>
-            <span>${wizard.exec.user || "default"}</span>
+            <span>${escapeHtml(wizard.exec.user || "default")}</span>
           </div>
           <div>
             <strong>Workdir</strong>
-            <span>${wizard.exec.workdir || "default"}</span>
+            <span>${escapeHtml(wizard.exec.workdir || "default")}</span>
           </div>
         </div>
       `;
@@ -4765,7 +4771,7 @@ function renderWizard() {
     const containersOptions = state.containers
       .map(
         (c) =>
-          `<option value="${c.name}" ${c.name === state.wizard.siteCreate.container_name ? "selected" : ""}>${c.name}</option>`
+          `<option value="${escapeHtml(c.name)}" ${c.name === state.wizard.siteCreate.container_name ? "selected" : ""}>${escapeHtml(c.name)}</option>`
       )
       .join("");
     steps = ["Domains", "Container", "Confirm"];
@@ -4773,15 +4779,15 @@ function renderWizard() {
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-site-name">Site name</label>
-          <input id="wiz-site-name" name="name" data-wizard-group="siteCreate" value="${wizard.siteCreate.name}" placeholder="app-site" />
+          <input id="wiz-site-name" name="name" data-wizard-group="siteCreate" value="${escapeHtml(wizard.siteCreate.name)}" placeholder="app-site" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-primary">Primary domain</label>
-          <input id="wiz-site-primary" name="primary_domain" data-wizard-group="siteCreate" value="${wizard.siteCreate.primary_domain}" placeholder="app.example.com" />
+          <input id="wiz-site-primary" name="primary_domain" data-wizard-group="siteCreate" value="${escapeHtml(wizard.siteCreate.primary_domain)}" placeholder="app.example.com" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-domains">Additional domains (comma separated)</label>
-          <input id="wiz-site-domains" name="domains" data-wizard-group="siteCreate" value="${wizard.siteCreate.domains}" placeholder="www.app.example.com" />
+          <input id="wiz-site-domains" name="domains" data-wizard-group="siteCreate" value="${escapeHtml(wizard.siteCreate.domains)}" placeholder="www.app.example.com" />
         </div>
       `;
     } else if (wizard.step === 1) {
@@ -4792,11 +4798,11 @@ function renderWizard() {
         </div>
         <div class="wizard-field">
           <label for="wiz-site-docroot">Docroot</label>
-          <input id="wiz-site-docroot" name="docroot" data-wizard-group="siteCreate" value="${wizard.siteCreate.docroot}" placeholder="/var/www/html" />
+          <input id="wiz-site-docroot" name="docroot" data-wizard-group="siteCreate" value="${escapeHtml(wizard.siteCreate.docroot)}" placeholder="/var/www/html" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-php">PHP version (optional)</label>
-          <input id="wiz-site-php" name="php_version" data-wizard-group="siteCreate" value="${wizard.siteCreate.php_version}" placeholder="8.2" />
+          <input id="wiz-site-php" name="php_version" data-wizard-group="siteCreate" value="${escapeHtml(wizard.siteCreate.php_version)}" placeholder="8.2" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-db">Create database</label>
@@ -4816,10 +4822,10 @@ function renderWizard() {
       bodyMarkup = `
         <div>Confirm site.</div>
         <div class="preview-meta">
-          <div><strong>Name</strong><span>${wizard.siteCreate.name || "(missing)"}</span></div>
-          <div><strong>Domain</strong><span>${wizard.siteCreate.primary_domain || "(missing)"}</span></div>
-          <div><strong>Container</strong><span>${wizard.siteCreate.container_name || "(missing)"}</span></div>
-          <div><strong>Docroot</strong><span>${wizard.siteCreate.docroot}</span></div>
+          <div><strong>Name</strong><span>${escapeHtml(wizard.siteCreate.name || "(missing)")}</span></div>
+          <div><strong>Domain</strong><span>${escapeHtml(wizard.siteCreate.primary_domain || "(missing)")}</span></div>
+          <div><strong>Container</strong><span>${escapeHtml(wizard.siteCreate.container_name || "(missing)")}</span></div>
+          <div><strong>Docroot</strong><span>${escapeHtml(wizard.siteCreate.docroot)}</span></div>
         </div>
       `;
     }
@@ -4828,7 +4834,7 @@ function renderWizard() {
     steps = ["Source", "Options", "Confirm"];
     if (wizard.step === 0) {
       bodyMarkup = `
-        <div>Deploy assets to site ${siteId || ""}.</div>
+        <div>Deploy assets to site ${escapeHtml(siteId || "")}.</div>
         <div class="wizard-field">
           <label for="wiz-deploy-type">Source type</label>
           <select id="wiz-deploy-type" name="source_type" data-wizard-group="siteDeploy">
@@ -4839,26 +4845,26 @@ function renderWizard() {
         </div>
         <div class="wizard-field">
           <label for="wiz-deploy-source">Source</label>
-          <input id="wiz-deploy-source" name="source" data-wizard-group="siteDeploy" value="${wizard.siteDeploy.source}" placeholder="https://github.com/org/repo.git or /path/file.tar.gz" />
+          <input id="wiz-deploy-source" name="source" data-wizard-group="siteDeploy" value="${escapeHtml(wizard.siteDeploy.source)}" placeholder="https://github.com/org/repo.git or /path/file.tar.gz" />
         </div>
         <div class="wizard-field">
           <label for="wiz-deploy-ref">Ref (branch/tag)</label>
-          <input id="wiz-deploy-ref" name="ref" data-wizard-group="siteDeploy" value="${wizard.siteDeploy.ref}" placeholder="main" />
+          <input id="wiz-deploy-ref" name="ref" data-wizard-group="siteDeploy" value="${escapeHtml(wizard.siteDeploy.ref)}" placeholder="main" />
         </div>
       `;
     } else if (wizard.step === 1) {
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-deploy-subdir">Subdir (optional)</label>
-          <input id="wiz-deploy-subdir" name="subdir" data-wizard-group="siteDeploy" value="${wizard.siteDeploy.subdir}" placeholder="web" />
+          <input id="wiz-deploy-subdir" name="subdir" data-wizard-group="siteDeploy" value="${escapeHtml(wizard.siteDeploy.subdir)}" placeholder="web" />
         </div>
         <div class="wizard-field">
           <label for="wiz-deploy-strip">Strip components (archives)</label>
-          <input id="wiz-deploy-strip" name="strip_components" data-wizard-group="siteDeploy" value="${wizard.siteDeploy.strip_components}" placeholder="0" />
+          <input id="wiz-deploy-strip" name="strip_components" data-wizard-group="siteDeploy" value="${escapeHtml(wizard.siteDeploy.strip_components)}" placeholder="0" />
         </div>
         <div class="wizard-field">
           <label for="wiz-deploy-commands">Post-deploy commands (one per line)</label>
-          <textarea id="wiz-deploy-commands" name="post_deploy_commands" data-wizard-group="siteDeploy" rows="3" placeholder="composer install">${wizard.siteDeploy.post_deploy_commands}</textarea>
+          <textarea id="wiz-deploy-commands" name="post_deploy_commands" data-wizard-group="siteDeploy" rows="3" placeholder="composer install">${escapeHtml(wizard.siteDeploy.post_deploy_commands)}</textarea>
         </div>
         <div class="wizard-field">
           <label for="wiz-deploy-restart">Restart services after deploy</label>
@@ -4870,11 +4876,11 @@ function renderWizard() {
     } else {
       nextLabel = wizard.busy ? "Deploying..." : "Deploy";
       bodyMarkup = `
-        <div>Confirm deploy to ${siteId || "(missing)"}.</div>
+        <div>Confirm deploy to ${escapeHtml(siteId || "(missing)")}.</div>
         <div class="preview-meta">
-          <div><strong>Source</strong><span>${wizard.siteDeploy.source}</span></div>
-          <div><strong>Type</strong><span>${wizard.siteDeploy.source_type}</span></div>
-          <div><strong>Ref</strong><span>${wizard.siteDeploy.ref || "default"}</span></div>
+          <div><strong>Source</strong><span>${escapeHtml(wizard.siteDeploy.source)}</span></div>
+          <div><strong>Type</strong><span>${escapeHtml(wizard.siteDeploy.source_type)}</span></div>
+          <div><strong>Ref</strong><span>${escapeHtml(wizard.siteDeploy.ref || "default")}</span></div>
         </div>
       `;
     }
@@ -4885,11 +4891,11 @@ function renderWizard() {
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-site-backup-id">Site</label>
-          <input id="wiz-site-backup-id" name="site_id" data-wizard-group="siteBackup" value="${siteId}" />
+          <input id="wiz-site-backup-id" name="site_id" data-wizard-group="siteBackup" value="${escapeHtml(siteId)}" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-backup-label">Label</label>
-          <input id="wiz-site-backup-label" name="label" data-wizard-group="siteBackup" value="${wizard.siteBackup.label}" placeholder="pre-release" />
+          <input id="wiz-site-backup-label" name="label" data-wizard-group="siteBackup" value="${escapeHtml(wizard.siteBackup.label)}" placeholder="pre-release" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-backup-db">Include database</label>
@@ -4901,9 +4907,9 @@ function renderWizard() {
     } else {
       nextLabel = wizard.busy ? "Backing up..." : "Backup";
       bodyMarkup = `
-        <div>Backup site ${siteId || "(missing)"}.</div>
+        <div>Backup site ${escapeHtml(siteId || "(missing)")}.</div>
         <div class="preview-meta">
-          <div><strong>Label</strong><span>${wizard.siteBackup.label || "none"}</span></div>
+          <div><strong>Label</strong><span>${escapeHtml(wizard.siteBackup.label || "none")}</span></div>
           <div><strong>Include DB</strong><span>${wizard.siteBackup.include_database ? "yes" : "no"}</span></div>
         </div>
       `;
@@ -4915,11 +4921,11 @@ function renderWizard() {
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-site-rollback-id">Site</label>
-          <input id="wiz-site-rollback-id" name="site_id" data-wizard-group="siteRollback" value="${siteId}" />
+          <input id="wiz-site-rollback-id" name="site_id" data-wizard-group="siteRollback" value="${escapeHtml(siteId)}" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-backup-id">Backup ID</label>
-          <input id="wiz-site-backup-id" name="backup_id" data-wizard-group="siteRollback" value="${wizard.siteRollback.backup_id}" placeholder="backup-uuid" />
+          <input id="wiz-site-backup-id" name="backup_id" data-wizard-group="siteRollback" value="${escapeHtml(wizard.siteRollback.backup_id)}" placeholder="backup-uuid" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-rollback-restart">Restart services</label>
@@ -4931,9 +4937,9 @@ function renderWizard() {
     } else {
       nextLabel = wizard.busy ? "Rolling back..." : "Rollback";
       bodyMarkup = `
-        <div>Rollback site ${siteId || "(missing)"}.</div>
+        <div>Rollback site ${escapeHtml(siteId || "(missing)")}.</div>
         <div class="preview-meta">
-          <div><strong>Backup</strong><span>${wizard.siteRollback.backup_id || "(missing)"}</span></div>
+          <div><strong>Backup</strong><span>${escapeHtml(wizard.siteRollback.backup_id || "(missing)")}</span></div>
           <div><strong>Restart</strong><span>${wizard.siteRollback.restart_services ? "yes" : "no"}</span></div>
         </div>
       `;
@@ -4946,11 +4952,11 @@ function renderWizard() {
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-site-services-id">Site</label>
-          <input id="wiz-site-services-id" name="site_id" data-wizard-group="siteServices" value="${siteId}" />
+          <input id="wiz-site-services-id" name="site_id" data-wizard-group="siteServices" value="${escapeHtml(siteId)}" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-services-list">Services (comma separated, optional)</label>
-          <input id="wiz-site-services-list" name="services" data-wizard-group="siteServices" value="${wizard.siteServices.services}" placeholder="php-fpm,nginx" />
+          <input id="wiz-site-services-list" name="services" data-wizard-group="siteServices" value="${escapeHtml(wizard.siteServices.services)}" placeholder="php-fpm,nginx" />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-runtime-update">Update PHP-FPM pool tuning</label>
@@ -4960,7 +4966,7 @@ function renderWizard() {
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-pool">FPM pool name</label>
-          <input id="wiz-site-fpm-pool" name="fpm_pool_name" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_pool_name}" placeholder="www" ${tuningDisabled} />
+          <input id="wiz-site-fpm-pool" name="fpm_pool_name" data-wizard-group="siteServices" value="${escapeHtml(wizard.siteServices.fpm_pool_name)}" placeholder="www" ${tuningDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-pm">PM mode</label>
@@ -4972,35 +4978,35 @@ function renderWizard() {
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-max-children">pm.max_children</label>
-          <input id="wiz-site-fpm-max-children" name="fpm_max_children" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_max_children}" placeholder="40" ${tuningDisabled} />
+          <input id="wiz-site-fpm-max-children" name="fpm_max_children" data-wizard-group="siteServices" value="${escapeHtml(wizard.siteServices.fpm_max_children)}" placeholder="40" ${tuningDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-start-servers">pm.start_servers</label>
-          <input id="wiz-site-fpm-start-servers" name="fpm_start_servers" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_start_servers}" placeholder="8" ${tuningDisabled} />
+          <input id="wiz-site-fpm-start-servers" name="fpm_start_servers" data-wizard-group="siteServices" value="${escapeHtml(wizard.siteServices.fpm_start_servers)}" placeholder="8" ${tuningDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-min-spare">pm.min_spare_servers</label>
-          <input id="wiz-site-fpm-min-spare" name="fpm_min_spare_servers" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_min_spare_servers}" placeholder="4" ${tuningDisabled} />
+          <input id="wiz-site-fpm-min-spare" name="fpm_min_spare_servers" data-wizard-group="siteServices" value="${escapeHtml(wizard.siteServices.fpm_min_spare_servers)}" placeholder="4" ${tuningDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-max-spare">pm.max_spare_servers</label>
-          <input id="wiz-site-fpm-max-spare" name="fpm_max_spare_servers" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_max_spare_servers}" placeholder="12" ${tuningDisabled} />
+          <input id="wiz-site-fpm-max-spare" name="fpm_max_spare_servers" data-wizard-group="siteServices" value="${escapeHtml(wizard.siteServices.fpm_max_spare_servers)}" placeholder="12" ${tuningDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-max-requests">pm.max_requests</label>
-          <input id="wiz-site-fpm-max-requests" name="fpm_max_requests" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_max_requests}" placeholder="1000" ${tuningDisabled} />
+          <input id="wiz-site-fpm-max-requests" name="fpm_max_requests" data-wizard-group="siteServices" value="${escapeHtml(wizard.siteServices.fpm_max_requests)}" placeholder="1000" ${tuningDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-idle-timeout">pm.process_idle_timeout</label>
-          <input id="wiz-site-fpm-idle-timeout" name="fpm_process_idle_timeout" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_process_idle_timeout}" placeholder="10s" ${tuningDisabled} />
+          <input id="wiz-site-fpm-idle-timeout" name="fpm_process_idle_timeout" data-wizard-group="siteServices" value="${escapeHtml(wizard.siteServices.fpm_process_idle_timeout)}" placeholder="10s" ${tuningDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-terminate-timeout">request_terminate_timeout</label>
-          <input id="wiz-site-fpm-terminate-timeout" name="fpm_request_terminate_timeout" data-wizard-group="siteServices" value="${wizard.siteServices.fpm_request_terminate_timeout}" placeholder="60s" ${tuningDisabled} />
+          <input id="wiz-site-fpm-terminate-timeout" name="fpm_request_terminate_timeout" data-wizard-group="siteServices" value="${escapeHtml(wizard.siteServices.fpm_request_terminate_timeout)}" placeholder="60s" ${tuningDisabled} />
         </div>
         <div class="wizard-field">
           <label for="wiz-site-fpm-overrides">Additional overrides (key=value per line)</label>
-          <textarea id="wiz-site-fpm-overrides" name="fpm_overrides" data-wizard-group="siteServices" rows="3" placeholder="pm.status_path=/fpm-status" ${tuningDisabled}>${wizard.siteServices.fpm_overrides}</textarea>
+          <textarea id="wiz-site-fpm-overrides" name="fpm_overrides" data-wizard-group="siteServices" rows="3" placeholder="pm.status_path=/fpm-status" ${tuningDisabled}>${escapeHtml(wizard.siteServices.fpm_overrides)}</textarea>
         </div>
         <div class="wizard-field">
           <label for="wiz-site-services-restart">Restart services after update</label>
@@ -5018,11 +5024,11 @@ function renderWizard() {
         ? "Apply"
         : "Restart";
       bodyMarkup = `
-        <div>Apply service/runtime changes for ${siteId || "(missing)"}.</div>
+        <div>Apply service/runtime changes for ${escapeHtml(siteId || "(missing)")}.</div>
         <div class="preview-meta">
-          <div><strong>Services</strong><span>${wizard.siteServices.services || "default (web + php-fpm)"}</span></div>
+          <div><strong>Services</strong><span>${escapeHtml(wizard.siteServices.services || "default (web + php-fpm)")}</span></div>
           <div><strong>Runtime tuning</strong><span>${wizard.siteServices.update_runtime ? "enabled" : "off"}</span></div>
-          <div><strong>Pool</strong><span>${wizard.siteServices.fpm_pool_name || "www"}</span></div>
+          <div><strong>Pool</strong><span>${escapeHtml(wizard.siteServices.fpm_pool_name || "www")}</span></div>
           <div><strong>Restart</strong><span>${wizard.siteServices.restart_services ? "yes" : "no"}</span></div>
         </div>
       `;
@@ -5034,38 +5040,38 @@ function renderWizard() {
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-host-name">Host name</label>
-          <input id="wiz-host-name" name="name" data-wizard-group="host" value="${host.name}" placeholder="edge-01" />
+          <input id="wiz-host-name" name="name" data-wizard-group="host" value="${escapeHtml(host.name)}" placeholder="edge-01" />
         </div>
         <div class="wizard-field">
           <label for="wiz-host-os">OS type (optional)</label>
-          <input id="wiz-host-os" name="os_type" data-wizard-group="host" value="${host.os_type || ""}" placeholder="ubuntu" />
+          <input id="wiz-host-os" name="os_type" data-wizard-group="host" value="${escapeHtml(host.os_type || "")}" placeholder="ubuntu" />
         </div>
         <div class="wizard-field">
           <label for="wiz-host-notes">Notes</label>
-          <input id="wiz-host-notes" name="notes" data-wizard-group="host" value="${host.notes || ""}" placeholder="ssh user has sudo" />
+          <input id="wiz-host-notes" name="notes" data-wizard-group="host" value="${escapeHtml(host.notes || "")}" placeholder="ssh user has sudo" />
         </div>
       `;
     } else if (wizard.step === 1) {
       bodyMarkup = `
         <div class="wizard-field">
           <label for="wiz-host-address">SSH host</label>
-          <input id="wiz-host-address" name="host" data-wizard-group="host" value="${host.host}" placeholder="192.0.2.10" />
+          <input id="wiz-host-address" name="host" data-wizard-group="host" value="${escapeHtml(host.host)}" placeholder="192.0.2.10" />
         </div>
         <div class="wizard-field">
           <label for="wiz-host-user">SSH username</label>
-          <input id="wiz-host-user" name="username" data-wizard-group="host" value="${host.username}" placeholder="fortress" />
+          <input id="wiz-host-user" name="username" data-wizard-group="host" value="${escapeHtml(host.username)}" placeholder="fortress" />
         </div>
         <div class="wizard-field">
           <label for="wiz-host-port">SSH port</label>
-          <input id="wiz-host-port" name="port" data-wizard-group="host" value="${host.port}" placeholder="22" />
+          <input id="wiz-host-port" name="port" data-wizard-group="host" value="${escapeHtml(host.port)}" placeholder="22" />
         </div>
         <div class="wizard-field">
           <label for="wiz-host-key">SSH key path (optional)</label>
-          <input id="wiz-host-key" name="key_path" data-wizard-group="host" value="${host.key_path || ""}" placeholder="/home/user/.ssh/id_rsa" />
+          <input id="wiz-host-key" name="key_path" data-wizard-group="host" value="${escapeHtml(host.key_path || "")}" placeholder="/home/user/.ssh/id_rsa" />
         </div>
         <div class="wizard-field">
           <label for="wiz-host-pass">SSH password (optional)</label>
-          <input id="wiz-host-pass" type="password" name="password" data-wizard-group="host" value="${host.password || ""}" placeholder="••••••" />
+          <input id="wiz-host-pass" type="password" name="password" data-wizard-group="host" value="${escapeHtml(host.password || "")}" placeholder="••••••" />
         </div>
       `;
     } else {
@@ -5075,23 +5081,23 @@ function renderWizard() {
         <div class="preview-meta">
           <div>
             <strong>Name</strong>
-            <span>${host.name || "(missing)"}</span>
+            <span>${escapeHtml(host.name || "(missing)")}</span>
           </div>
           <div>
             <strong>OS</strong>
-            <span>${host.os_type || "unknown"}</span>
+            <span>${escapeHtml(host.os_type || "unknown")}</span>
           </div>
           <div>
             <strong>SSH</strong>
-            <span>${host.username || "(user)"}@${host.host || "(host)"}:${host.port || "22"}</span>
+            <span>${escapeHtml(host.username || "(user)")}@${escapeHtml(host.host || "(host)")}:${escapeHtml(host.port || "22")}</span>
           </div>
           <div>
             <strong>Key path</strong>
-            <span>${host.key_path || "none"}</span>
+            <span>${escapeHtml(host.key_path || "none")}</span>
           </div>
           <div>
             <strong>Notes</strong>
-            <span>${host.notes || "none"}</span>
+            <span>${escapeHtml(host.notes || "none")}</span>
           </div>
         </div>
       `;
@@ -6805,6 +6811,53 @@ async function fetchSystemUpgradePreflight(upgradeState) {
   return { preflight, migrationStatus, backups };
 }
 
+async function runSystemUpgradePreflight(nextStep = 1) {
+  const upgrade = state.wizard.upgrade;
+  const isCurrentUpgrade = () => state.wizard.mode === "system-upgrade" && state.wizard.upgrade === upgrade;
+  state.wizard.busy = true;
+  state.wizard.error = null;
+  state.wizard.maxStep = 0;
+  renderWizard();
+  try {
+    const preflightData = await fetchSystemUpgradePreflight(upgrade);
+    if (!isCurrentUpgrade()) {
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    upgrade.preflight = preflightData.preflight;
+    upgrade.migration_status = preflightData.migrationStatus;
+    upgrade.backups = preflightData.backups;
+    upgrade.preflight_at = timestamp;
+    upgrade.backup_confirmation = false;
+    state.systemUpgrade.lastPreflight = {
+      at: timestamp,
+      options: buildSystemUpgradePayload(upgrade, true),
+      preflight: preflightData.preflight,
+      migration_status: preflightData.migrationStatus,
+      backups: preflightData.backups,
+    };
+    const migrationPlan =
+      preflightData.preflight && Array.isArray(preflightData.preflight.migrations)
+        ? preflightData.preflight.migrations
+        : [];
+    logEvent(
+      "success",
+      `Upgrade preflight ready (${migrationPlan.length} migration changes, ${preflightData.backups.length} backups listed)`
+    );
+    setWizardStep(nextStep);
+    renderPreview();
+  } catch (err) {
+    if (isCurrentUpgrade()) {
+      state.wizard.error = err.message || "Upgrade preflight failed";
+    }
+  } finally {
+    if (isCurrentUpgrade()) {
+      state.wizard.busy = false;
+      renderWizard();
+    }
+  }
+}
+
 async function checkForUpdateAndReload(options = {}) {
   const payload = {
     apply_migrations: options.applyMigrations !== false,
@@ -7283,7 +7336,7 @@ async function handleAction(actionId, node, params = {}) {
   }
 
   if (actionId === "wizard-resume") {
-    if (!resumePendingWizard()) {
+    if (!(await resumePendingWizard())) {
       logEvent("error", "No saved wizard progress to resume");
     }
     return;
@@ -7914,40 +7967,7 @@ async function handleWizardAction(action, payload = {}) {
     if (state.wizard.mode === "system-upgrade") {
       const upgrade = state.wizard.upgrade;
       if (state.wizard.step === 0) {
-        state.wizard.busy = true;
-        state.wizard.error = null;
-        renderWizard();
-        try {
-          const preflightData = await fetchSystemUpgradePreflight(upgrade);
-          const timestamp = new Date().toISOString();
-          upgrade.preflight = preflightData.preflight;
-          upgrade.migration_status = preflightData.migrationStatus;
-          upgrade.backups = preflightData.backups;
-          upgrade.preflight_at = timestamp;
-          upgrade.backup_confirmation = false;
-          state.systemUpgrade.lastPreflight = {
-            at: timestamp,
-            options: buildSystemUpgradePayload(upgrade, true),
-            preflight: preflightData.preflight,
-            migration_status: preflightData.migrationStatus,
-            backups: preflightData.backups,
-          };
-          const migrationPlan =
-            preflightData.preflight && Array.isArray(preflightData.preflight.migrations)
-              ? preflightData.preflight.migrations
-              : [];
-          logEvent(
-            "success",
-            `Upgrade preflight ready (${migrationPlan.length} migration changes, ${preflightData.backups.length} backups listed)`
-          );
-          setWizardStep(1);
-          renderPreview();
-        } catch (err) {
-          state.wizard.error = err.message || "Upgrade preflight failed";
-        } finally {
-          state.wizard.busy = false;
-          renderWizard();
-        }
+        await runSystemUpgradePreflight();
         return;
       }
       if (state.wizard.step === 1) {
@@ -7955,12 +7975,14 @@ async function handleWizardAction(action, payload = {}) {
         renderWizard();
         return;
       }
+      if (!upgrade.backup_confirmation) {
+        setWizardStep(2);
+        state.wizard.error = "Backup confirmation is required before upgrade.";
+        renderWizard();
+        return;
+      }
       if (state.wizard.step === 2) {
-        if (!upgrade.backup_confirmation) {
-          state.wizard.error = "Backup confirmation is required before upgrade.";
-          renderWizard();
-          return;
-        }
+        state.wizard.error = null;
         setWizardStep(3);
         renderWizard();
         return;

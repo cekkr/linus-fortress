@@ -41,7 +41,9 @@ function jsonResponse(res, payload, status = 200) {
 }
 
 function startStubApi(port) {
-  const server = createServer((req, res) => {
+  const upgrades = [];
+  let failPreflight = false;
+  const server = createServer(async (req, res) => {
     const pathname = new URL(req.url || "/", `http://127.0.0.1:${port}`).pathname;
     if (pathname === "/status") {
       jsonResponse(res, { status: "ok", containers: [] });
@@ -61,10 +63,35 @@ function startStubApi(port) {
       jsonResponse(res, { detail: "monitoring backend unavailable", password: "should-not-leak" }, 503);
       return;
     }
+    if (pathname === "/system/upgrade" && req.method === "POST") {
+      let body = "";
+      for await (const chunk of req) {
+        body += chunk;
+      }
+      upgrades.push(JSON.parse(body));
+      if (failPreflight) {
+        jsonResponse(res, { detail: "Upgrade preflight unavailable" }, 503);
+      } else {
+        jsonResponse(res, { migrations: [] });
+      }
+      return;
+    }
+    if (pathname === "/migrations/status") {
+      jsonResponse(res, { stores: [] });
+      return;
+    }
+    if (pathname === "/backup/list") {
+      jsonResponse(res, { backups: ["web-01-backup.enc"] });
+      return;
+    }
     jsonResponse(res, { error: "not found" }, 404);
   });
   return new Promise((resolve, reject) => {
-    server.listen(port, "127.0.0.1", () => resolve(server));
+    server.listen(port, "127.0.0.1", () => resolve({
+      server,
+      upgrades,
+      setPreflightFailure: (enabled) => { failPreflight = enabled; },
+    }));
     server.on("error", reject);
   });
 }
@@ -212,11 +239,11 @@ test("wizard arrow keys + swipe navigate steps, never submit, and progress resum
       await browser.close();
     }
     harness.proc.kill("SIGTERM");
-    harness.api.close();
+    harness.api.server.close();
   }
 });
 
-test("wizard progress never persists password fields and discard removes the banner", async (t) => {
+test("wizard names and notes render as literal text and progress drops passwords", async (t) => {
   const puppeteer = await loadPuppeteer(t);
   if (!puppeteer) {
     return;
@@ -232,14 +259,32 @@ test("wizard progress never persists password fields and discard removes the ban
 
     await page.evaluate(() => window.openWizard("host-create"));
     await page.waitForSelector("#wiz-host-name", { visible: true });
-    await page.type("#wiz-host-name", "edge-01");
+    const name = 'Edge "West" & Co.';
+    const notes = "Primary <b>edge</b> host";
+    await page.type("#wiz-host-name", name);
+    await page.type("#wiz-host-notes", notes);
+    await page.click('#wizard [data-wizard-action="next"]');
+    await page.waitForSelector("#wiz-host-pass", { visible: true });
+    await page.click('#wizard [data-wizard-action="back"]');
+    await page.waitForSelector("#wiz-host-name", { visible: true });
+    assert.equal(await page.$eval("#wiz-host-name", (el) => el.value), name);
+    assert.equal(await page.$eval("#wiz-host-notes", (el) => el.value), notes);
     await page.click('#wizard [data-wizard-action="next"]');
     await page.waitForSelector("#wiz-host-pass", { visible: true });
     await page.type("#wiz-host-address", "192.0.2.10");
     await page.type("#wiz-host-pass", "placeholder-secret");
+    await page.click('#wizard [data-wizard-action="next"]');
+    assert.equal(await wizardStep(page), 3);
+    const confirmation = await page.$eval("#wizard .preview-meta", (el) => ({
+      text: el.textContent,
+      boldNotes: Boolean(el.querySelector("b")),
+    }));
+    assert.ok(confirmation.text.includes(name));
+    assert.ok(confirmation.text.includes(notes));
+    assert.equal(confirmation.boldNotes, false);
 
     const stored = await page.evaluate(() => window.sessionStorage.getItem("lizard.wizard-progress.v1") || "");
-    assert.ok(stored.includes("edge-01"), "non-sensitive fields are persisted");
+    assert.equal(JSON.parse(stored).fields.name, name);
     assert.ok(!stored.includes("placeholder-secret"), "password values must never be persisted");
     assert.ok(!/"password"/.test(stored), "password key must be dropped entirely");
 
@@ -248,12 +293,85 @@ test("wizard progress never persists password fields and discard removes the ban
     await page.click('#fast-actions [data-action-id="wizard-resume-discard"]');
     await page.waitForFunction(() => !document.querySelector("#fast-actions .wizard-resume"));
     assert.equal(await page.evaluate(() => window.sessionStorage.getItem("lizard.wizard-progress.v1")), null);
+
+    await page.evaluate(() => window.openWizard("recipe-apply"));
+    const next = '#wizard [data-wizard-action="next"]';
+    const back = '#wizard [data-wizard-action="back"]';
+    await page.click(next);
+    await page.waitForSelector("#wiz-recipe-params", { visible: true });
+    const parameters = "db_password=placeholder<&";
+    await page.type("#wiz-recipe-params", parameters);
+    await page.click(next);
+    await page.click(back);
+    assert.equal(await page.$eval("#wiz-recipe-params", (el) => el.value), parameters);
+    const recipeProgress = await page.evaluate(() => JSON.parse(sessionStorage.getItem("lizard.wizard-progress.v1")));
+    assert.equal(recipeProgress.fields.parameters, undefined);
   } finally {
     if (browser) {
       await browser.close();
     }
     harness.proc.kill("SIGTERM");
-    harness.api.close();
+    harness.api.server.close();
+  }
+});
+
+test("resuming an upgrade reruns preflight and requires fresh backup confirmation", async (t) => {
+  const puppeteer = await loadPuppeteer(t);
+  if (!puppeteer) {
+    return;
+  }
+  const harness = await launchHarness();
+  let browser;
+  try {
+    browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1500, height: 980 });
+    await page.goto(`http://127.0.0.1:${harness.uiPort}`, { waitUntil: "networkidle0" });
+    await login(page);
+    await page.evaluate(() => window.openWizard("system-upgrade"));
+
+    const next = '#wizard [data-wizard-action="next"]';
+    const resume = '#fast-actions [data-action-id="wizard-resume"]';
+    await page.click("#wiz-upgrade-full");
+    await page.click(next);
+    await page.waitForFunction(() => document.querySelector("#wizard .wizard-step.active .wizard-step-label")?.textContent === "Preflight");
+    await page.click(next);
+    await page.waitForSelector("#wiz-upgrade-backup-confirm", { visible: true });
+    await page.click("#wiz-upgrade-backup-confirm");
+    await page.click(next);
+    assert.equal(await wizardStep(page), 4);
+    const savedProgress = await page.evaluate(() => sessionStorage.getItem("lizard.wizard-progress.v1"));
+    assert.equal(JSON.parse(savedProgress).fields.backup_confirmation, undefined);
+
+    await page.reload({ waitUntil: "networkidle0" });
+    await page.waitForSelector(resume, { visible: true });
+    assert.equal(harness.api.upgrades.length, 1);
+    await page.click(resume);
+    await page.waitForSelector("#wiz-upgrade-backup-confirm", { visible: true });
+    assert.equal(await wizardStep(page), 3);
+    assert.equal(await page.$eval("#wiz-upgrade-backup-confirm", (el) => el.checked), false);
+    await page.click(next);
+    await page.waitForFunction(() => document.querySelector("#wizard .event-item.error")?.textContent.includes("Backup confirmation is required"));
+    assert.equal(await wizardStep(page), 3);
+
+    harness.api.setPreflightFailure(true);
+    await page.evaluate((progress) => sessionStorage.setItem("lizard.wizard-progress.v1", progress), savedProgress);
+    await page.reload({ waitUntil: "networkidle0" });
+    await page.waitForSelector(resume, { visible: true });
+    await page.click(resume);
+    await page.waitForSelector("#wizard .event-item.error", { visible: true });
+    assert.equal(await wizardStep(page), 1);
+    assert.equal(await page.$eval(next, (el) => el.disabled), false);
+    assert.equal(await page.$eval('#wizard [data-step-index="3"]', (el) => el.disabled), true);
+
+    const expected = { dry_run: true, update_packages: true, full_upgrade: true, apply_migrations: true };
+    assert.deepEqual(harness.api.upgrades, [expected, expected, expected]);
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    harness.proc.kill("SIGTERM");
+    harness.api.server.close();
   }
 });
 
@@ -314,7 +432,7 @@ test("debug panel copies and exports redacted error payloads", async (t) => {
       await browser.close();
     }
     harness.proc.kill("SIGTERM");
-    harness.api.close();
+    harness.api.server.close();
   }
 });
 
@@ -372,6 +490,6 @@ test("fast actions reorder via arrow buttons and drag/drop, persisted in localSt
       await browser.close();
     }
     harness.proc.kill("SIGTERM");
-    harness.api.close();
+    harness.api.server.close();
   }
 });

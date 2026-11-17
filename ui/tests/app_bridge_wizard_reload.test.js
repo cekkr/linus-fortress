@@ -418,6 +418,23 @@ test("bridge opens before info panel, stays aligned, and startup image refresh i
         `sibling ${beforeItem.id} height changed during collapse`
       );
     }
+
+    for (const [layout, width] of [["tablet", 900], ["phone", 390]]) {
+      await t.test(`bridge seam stays aligned at ${layout} width`, async () => {
+        await page.setViewport({ width, height: 960 });
+        await page.reload({ waitUntil: "networkidle0" });
+        await page.waitForSelector('.app-card[data-node-id="monitoring"] .card-summary', { visible: true });
+
+        const geometry = await captureBridgeSnapshot("monitoring", true);
+        assert.ok(geometry && geometry.bridgeStart !== null && geometry.panelStart !== null);
+        assert.ok(geometry.frameWidth > 0 && geometry.tabWidth > 0);
+        assert.ok(Math.abs(geometry.frameLeft - geometry.rowLeft - geometry.connectorLeft) <= 1.2, "bridge connector should align with the card");
+        assert.ok(Math.abs(geometry.frameWidth - geometry.connectorWidth) <= 1.2, "bridge connector should match the card width");
+        assert.ok(Math.abs(geometry.bridgeBottom - geometry.rowMoreTop) <= 1.2, "bridge should meet the info panel");
+        assert.ok(Math.abs(geometry.tabLeft - geometry.frameLeft) <= 1.2, "tab should align with the card");
+        assert.ok(Math.abs(geometry.tabWidth - geometry.frameWidth) <= 1.2, "tab should match the card width");
+      });
+    }
   } finally {
     if (browser) {
       await browser.close();
