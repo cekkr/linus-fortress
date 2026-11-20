@@ -99,6 +99,8 @@ test("proxied path params are URI-encoded before reaching the Fortress API", asy
       ["GET", "/api/containers/web%20one/logs", "/containers/web%20one/logs"],
       ["DELETE", "/api/routing/%2A.example.com%23frag", "/routing/*.example.com%23frag"],
       ["GET", "/api/vms/vm%2F..%2Fadmin", "/vms/vm%2F..%2Fadmin"],
+      ["GET", "/api/backup/list?container=web%20one", "/backup/list?container=web%20one"],
+      ["POST", "/api/backup/restore/web%2Fbackup", "/backup/restore/web%2Fbackup"],
     ];
     for (const [method, uiPath, expected] of cases) {
       seen.length = 0;

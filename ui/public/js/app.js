@@ -14,6 +14,7 @@ const state = {
   vmsLoading: false,
   containerSnapshots: new Map(),
   containerSnapshotLoading: new Set(),
+  containerBackups: new Map(),
   siteDetails: new Map(),
   siteDetailsLoading: new Set(),
   siteBackups: new Map(),
@@ -397,6 +398,7 @@ const WIZARD_STEP_COUNTS = {
   firewall: 2,
   "vm-snapshot": 2,
   "container-snapshot": 2,
+  "container-restore": 2,
   exec: 2,
   "site-create": 3,
   "site-deploy": 3,
@@ -417,6 +419,7 @@ const WIZARD_MODE_LABELS = {
   firewall: "Firewall Rule",
   "vm-snapshot": "VM Snapshot",
   "container-snapshot": "Container Snapshot",
+  "container-restore": "Restore Container Backup",
   exec: "Container Exec",
   "site-create": "Create Site",
   "site-deploy": "Deploy Site",
@@ -1367,6 +1370,13 @@ function openWizard(mode, contextContainer, options = {}) {
     resetVmSnapshotWizard(options.vmName || null);
   } else if (mode === "container-snapshot") {
     resetContainerSnapshotWizard(contextContainer || null);
+  } else if (mode === "container-restore") {
+    state.wizard.context.container = contextContainer || null;
+    state.wizard.containerRestore = {
+      filename: options.filename,
+      destination: state.containerIndex.has(contextContainer) ? "" : contextContainer,
+      listContainer: options.listContainer || null,
+    };
   } else if (mode === "exec") {
     resetExecWizard(contextContainer || null);
   } else if (mode === "site-create") {
@@ -1807,14 +1817,18 @@ function renderHomeItemCards(items, emptyText, fallbackNodeId = "") {
           const itemActions = Array.isArray(item.actions) ? item.actions : [];
           const actionMarkup = itemActions
             .map((action) => {
-              if (!action || !action.id) {
+              if (!action) {
                 return "";
               }
+              if (action.href) {
+                return `<a class="action ghost backup-download" href="${escapeHtml(action.href)}" download>${escapeHtml(action.label)}</a>`;
+              }
+              if (!action.id) return "";
               const targetNodeId = action.nodeId || item.nodeId || fallbackNodeId || "";
               const paramsMarkup = serializeHomeActionDataAttrs(action.params || {});
               return `<button class="action ${escapeHtml(action.variant || "ghost")}" data-action-id="${escapeHtml(
                 action.id
-              )}" data-node-id="${escapeHtml(targetNodeId)}" ${paramsMarkup}>${escapeHtml(action.label || action.id)}</button>`;
+              )}" data-node-id="${escapeHtml(targetNodeId)}" ${paramsMarkup} ${action.disabled ? "disabled" : ""}>${escapeHtml(action.label || action.id)}</button>`;
             })
             .join("");
           return `
@@ -1853,6 +1867,37 @@ function buildAppHomeModel(node) {
   };
 
   const nodeId = defaultNode.id || "";
+  if (isBackupNode(defaultNode)) {
+    const container = defaultNode.context?.container;
+    const view = backupView(container);
+    model.kicker = container || "Containers";
+    model.title = container ? "Container Backups" : "Backups";
+    model.itemsTitle = "Stored archives";
+    model.actions = normalizeHomeActions(defaultNode, [{ id: "container-backups-refresh", label: "Refresh archives" }]);
+    model.notice = view.error ? { message: view.error, error: true } : view.notice;
+    model.emptyText = view.loading || !view.loaded
+      ? "Loading backups…"
+      : view.error ? "Archive list unavailable." : "No stored archives.";
+    model.items = view.items.map((item) => {
+      const archiveUrl = `/api/backup/download/${encodeURIComponent(item.filename)}`;
+      const params = { filename: item.filename };
+      return {
+        title: item.container,
+        detail: item.filename,
+        pills: [
+          item.timestamp,
+          formatBackupSize(item.sizeBytes),
+          view.verified.has(item.filename) ? { label: "Verified", tone: "running" } : null,
+        ],
+        actions: [
+          { label: "Download", href: archiveUrl },
+          { id: "container-backup-verify", label: view.verifying === item.filename ? "Verifying…" : "Verify", params, disabled: Boolean(view.verifying) },
+          { id: "container-backup-restore", label: "Restore", params },
+        ],
+      };
+    });
+    return model;
+  }
   if (nodeId === "containers") {
     const running = state.containers.filter((container) => normalizeStatus(container.status) === "running").length;
     const stopped = state.containers.filter((container) => normalizeStatus(container.status) === "stopped").length;
@@ -2260,7 +2305,7 @@ function renderAppHome(node) {
   const actionsMarkup = renderHomeActionButtons(model.actions, node ? node.id : state.rootId);
   const itemsMarkup = renderHomeItemCards(model.items, model.emptyText, node && node.id ? node.id : state.rootId);
   return `
-    <section class="app-home-shell">
+    <section class="app-home-shell${isBackupNode(node) ? " app-home-backups" : ""}">
       <header class="app-home-head">
         <div class="app-home-icon">${iconFor(node && node.icon)}</div>
         <div class="app-home-copy">
@@ -2271,6 +2316,7 @@ function renderAppHome(node) {
       </header>
       ${metricsMarkup}
       ${actionsMarkup ? `<div class="app-home-actions">${actionsMarkup}</div>` : ""}
+      ${model.notice ? `<div class="event-item${model.notice.error ? " error" : ""}" role="${model.notice.error ? "alert" : "status"}" data-backup-notice>${escapeHtml(model.notice.message)}</div>` : ""}
       <section class="app-home-section">
         <div class="app-home-section-title">${escapeHtml(model.itemsTitle || "Latest Signals")}</div>
         ${itemsMarkup}
@@ -3443,6 +3489,14 @@ function renderPreview() {
     renderTerminalPreview(node);
     return;
   }
+  if (isBackupNode(node)) {
+    elements.preview.innerHTML = `
+      <div class="preview-title">Archive recovery</div>
+      <div>Verify checks archive integrity. Restore imports the archive under a new or unused container name.</div>
+      ${node.context?.container ? '<div class="card-actions"><button class="action ghost" data-nav-node-id="backups">All backups</button></div>' : ""}
+    `;
+    return;
+  }
 
   if (node.id === "routing") {
     renderRoutingPreview(node);
@@ -3667,6 +3721,7 @@ function renderDebugPanel() {
         ${lastError.status ? `<span class="pill danger">HTTP ${lastError.status}</span>` : `<span class="pill danger">network</span>`}
         ${lastError.method ? `<span class="pill">${escapeHtml(lastError.method)}</span>` : ""}
         ${lastError.path ? `<span class="pill">${escapeHtml(lastError.path)}</span>` : ""}
+        ${lastError.requestId ? `<span class="pill">Request ID ${escapeHtml(lastError.requestId)}</span>` : ""}
         ${lastError.at ? `<span class="pill">${escapeHtml(lastError.at)}</span>` : ""}
       </div>
       ${
@@ -3760,6 +3815,9 @@ function validateWizardStepForAdvance(mode, stepIndex) {
   if (mode === "create-container") {
     return validateCreateContainerStep(stepIndex);
   }
+  if (mode === "container-restore") {
+    return validateContainerRestore();
+  }
   return { valid: true, message: "" };
 }
 
@@ -3811,6 +3869,9 @@ function buildOperationFacts() {
   } else if (wizard.mode === "container-snapshot") {
     facts.push(["Container", wizard.context.container || "(pending)"]);
     facts.push(["Snapshot", wizard.containerSnapshot.name || "(pending)"]);
+  } else if (wizard.mode === "container-restore") {
+    facts.push(["Archive", wizard.containerRestore.filename]);
+    facts.push(["Destination", wizard.containerRestore.destination || "(pending)"]);
   } else if (wizard.mode === "exec") {
     facts.push(["Container", wizard.context.container || "(pending)"]);
     facts.push(["Command", wizard.exec.command || "(pending)"]);
@@ -4685,6 +4746,27 @@ function renderWizard() {
         </div>
       `;
     }
+  } else if (wizard.mode === "container-restore") {
+    const restore = wizard.containerRestore;
+    steps = ["Destination", "Confirm"];
+    if (wizard.step === 0) {
+      bodyMarkup = `
+        <div class="wizard-field">
+          <label for="wiz-restore-destination">Destination container name</label>
+          <input id="wiz-restore-destination" name="destination" data-wizard-group="containerRestore"
+                 value="${escapeHtml(restore.destination)}" maxlength="63" autocomplete="off" spellcheck="false" />
+        </div>
+        <div>Use an unused container name.</div>
+      `;
+    } else {
+      nextLabel = wizard.busy ? "Restoring…" : "Restore";
+      bodyMarkup = `
+        <div>Import the archive as ${escapeHtml(restore.destination.trim())}?</div>
+        <div class="preview-meta">
+          <div><strong>Archive</strong><span>${escapeHtml(restore.filename)}</span></div>
+        </div>
+      `;
+    }
   } else if (wizard.mode === "container-snapshot") {
     const containerName = wizard.context.container || "";
     steps = ["Snapshot", "Confirm"];
@@ -5152,7 +5234,7 @@ function renderWizard() {
         </div>
       </div>
       <div class="wizard-actions">
-        <button class="action ghost" data-wizard-action="close">Close</button>
+        <button class="action ghost" data-wizard-action="close" ${wizard.busy && wizard.mode === "container-restore" ? "disabled" : ""}>Close</button>
         <button class="action ghost" data-wizard-action="back" ${backDisabled}>Back</button>
         <button class="action" data-wizard-action="next" ${nextDisabled}>${nextLabel}</button>
       </div>
@@ -5287,6 +5369,8 @@ async function hydrateNode(id) {
       await loadVms();
     } else if (nodeId === "sites") {
       await loadSites();
+    } else if (isBackupNode(node)) {
+      await loadContainerBackups(node.context?.container);
     } else if (nodeId && nodeId.startsWith("container:")) {
       const name = nodeId.split(":")[1];
       await loadContainerSnapshots(name);
@@ -6355,6 +6439,7 @@ function captureDebugError(error, context = {}) {
     status: error && Number.isFinite(error.status) ? error.status : null,
     method: context.method || (error && error.method) || null,
     path: context.path || (error && error.path) || null,
+    requestId: error?.requestId || null,
     details,
     stack: error && error.stack ? error.stack : null,
   };
@@ -6391,6 +6476,8 @@ async function apiRequest(path, options = {}) {
   const requestOptions = { ...options };
   const suppressAuthOverlay = Boolean(requestOptions.suppressAuthOverlay);
   delete requestOptions.suppressAuthOverlay;
+  const withRequestId = Boolean(requestOptions.withRequestId);
+  delete requestOptions.withRequestId;
   const method = requestOptions.method || "GET";
 
   let response;
@@ -6428,20 +6515,21 @@ async function apiRequest(path, options = {}) {
     error.details = data;
     error.path = path;
     error.method = method;
+    error.requestId = response.headers.get("x-fortress-request-id");
     captureDebugError(error, { path, method });
-    if (response.status === 401 || response.status === 403) {
+    if (response.status === 401) {
       const authMessage = apiErrorMessage(data, response.status);
       if (!suppressAuthOverlay) {
         if (authMessage.toLowerCase().includes("admin")) {
           showAdminOverlay(authMessage || "Admin session required.");
         } else {
-          showAuthOverlay("Session required. Enter a delegated token.");
+          showAuthOverlay(authMessage);
         }
       }
     }
     throw error;
   }
-  return data;
+  return withRequestId ? { ...data, requestId: response.headers.get("x-fortress-request-id") } : data;
 }
 
 function setAdminState(payload) {
@@ -6517,6 +6605,7 @@ function setAuthState(payload) {
   state.auth.mode = payload && payload.mode ? payload.mode : "none";
   state.auth.session = Boolean(payload && payload.session);
   if (!state.auth.active) {
+    state.containerBackups.clear();
     stopImageCatalogRefreshLoop();
   }
   updateAuthUI();
@@ -6545,13 +6634,13 @@ function showAuthOverlay(message) {
   state.auth.active = false;
   state.auth.mode = "none";
   state.auth.session = false;
+  state.containerBackups.clear();
+  if (state.wizard.mode === "container-restore") {
+    closeWizardState();
+    renderWizard();
+  }
   stopImageCatalogRefreshLoop();
-  if (elements.authOverlay) {
-    elements.authOverlay.hidden = !state.admin.active;
-  }
-  if (elements.logoutButton) {
-    elements.logoutButton.hidden = true;
-  }
+  updateAuthUI();
   if (elements.authMessage) {
     elements.authMessage.textContent = message || "";
   }
@@ -7266,6 +7355,94 @@ async function loadContainerSnapshots(containerName) {
   }
 }
 
+const BACKUP_ARCHIVE_NAME = /^([A-Za-z][A-Za-z0-9-]{0,62})_([0-9]{8})_([0-9]{6})(?:-[0-9a-f]{32})?\.tar\.gz\.enc$/;
+
+function isBackupNode(node) {
+  return node?.id === "backups" || Boolean(node?.id?.endsWith(":container-backups"));
+}
+
+function backupView(container) {
+  const key = container || "";
+  if (!state.containerBackups.has(key)) {
+    state.containerBackups.set(key, {
+      items: [], loaded: false, loading: false, error: null, notice: null,
+      creating: false, verifying: null, verified: new Set(),
+    });
+  }
+  return state.containerBackups.get(key);
+}
+
+function formatBackupSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return null;
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let size = bytes;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit++;
+  }
+  return `${size.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${units[unit]}`;
+}
+
+function refreshBackupHome() {
+  if (isBackupNode(getNode(state.selectedId))) {
+    refreshSelectedLeafHome();
+  }
+}
+
+async function loadContainerBackups(container) {
+  const view = backupView(container);
+  if (view.loading) return;
+  view.loading = true;
+  view.error = null;
+  refreshBackupHome();
+  try {
+    const query = container ? `?container=${encodeURIComponent(container)}` : "";
+    const payload = await apiRequest(`/api/backup/list${query}`);
+    const records = Array.isArray(payload?.items)
+      ? payload.items
+      : (Array.isArray(payload?.backups) ? payload.backups.map((filename) => ({ filename })) : []);
+    view.items = records.flatMap((record) => {
+      const filename = record?.filename;
+      const match = typeof filename === "string" ? filename.match(BACKUP_ARCHIVE_NAME) : null;
+      if (!match || (container && match[1] !== container)) return [];
+      const [, source, day, time] = match;
+      return [{
+        filename, container: source, sizeBytes: record.size_bytes, sortKey: day + time,
+        timestamp: `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6)} ${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4)}`,
+      }];
+    }).sort((a, b) => b.sortKey.localeCompare(a.sortKey) || b.filename.localeCompare(a.filename));
+  } catch (err) {
+    view.items = [];
+    view.verified.clear();
+    view.error = err.message || "Could not load backups";
+  } finally {
+    view.loaded = true;
+    view.loading = false;
+    refreshBackupHome();
+  }
+}
+
+function restoreStoredArchive(filename, fields) {
+  return apiRequest(`/api/backup/restore/${encodeURIComponent(filename)}`, {
+    method: "POST",
+    body: JSON.stringify(fields),
+    withRequestId: true,
+  });
+}
+
+function backupMessage(message, requestId) {
+  return requestId ? `${message} Request ID: ${requestId}` : message;
+}
+
+function validateContainerRestore() {
+  const destination = state.wizard.containerRestore.destination.trim();
+  if (!/^[A-Za-z][A-Za-z0-9-]{0,62}$/.test(destination)) {
+    return { valid: false, message: "Enter a name of 1–63 letters, digits, or hyphens, starting with a letter." };
+  }
+  return { valid: true };
+}
+
 async function loadHosts(options = {}) {
   state.hostsLoading = true;
   renderPreview();
@@ -7314,6 +7491,37 @@ async function deleteHost(name) {
 }
 
 async function handleAction(actionId, node, params = {}) {
+  if (isBackupNode(node) && actionId === "container-backups-refresh") {
+    await loadContainerBackups(node.context?.container);
+    return;
+  }
+
+  if (isBackupNode(node) && ["container-backup-verify", "container-backup-restore"].includes(actionId)) {
+    const view = backupView(node.context?.container);
+    const archive = view.items.find((item) => item.filename === params.filename);
+    if (!archive) return;
+    if (actionId === "container-backup-restore") {
+      openWizard("container-restore", archive.container, { filename: archive.filename, listContainer: node.context?.container });
+      return;
+    }
+    if (view.verifying) return;
+    view.verifying = archive.filename;
+    view.verified.delete(archive.filename);
+    view.notice = { message: `Verifying ${archive.filename}…` };
+    refreshBackupHome();
+    try {
+      const response = await restoreStoredArchive(archive.filename, { dry_run: true });
+      view.verified.add(archive.filename);
+      view.notice = { message: backupMessage("Archive integrity verified.", response.requestId) };
+    } catch (err) {
+      view.notice = { message: backupMessage(err.message || "Archive verification failed", err.requestId), error: true };
+    } finally {
+      view.verifying = null;
+      refreshBackupHome();
+    }
+    return;
+  }
+
   if (actionId === "refresh") {
     state.probedContainers.clear();
     await loadGraph();
@@ -7862,8 +8070,25 @@ async function handleAction(actionId, node, params = {}) {
   }
 
   if (actionId === "backup-container") {
-    const response = await apiRequest(`/api/containers/${contextContainer}/backup`, { method: "POST" });
-    logEvent("success", response.message || `Backup triggered for ${contextContainer}`);
+    const view = backupView(contextContainer);
+    if (view.creating) return;
+    view.creating = true;
+    view.notice = { message: "Submitting backup request…" };
+    refreshBackupHome();
+    try {
+      const response = await apiRequest(`/api/containers/${encodeURIComponent(contextContainer)}/backup`, {
+        method: "POST", withRequestId: true,
+      });
+      const message = backupMessage("Backup queued. Refresh archives to see the completed export.", response.requestId);
+      view.notice = { message };
+      logEvent("success", message);
+    } catch (err) {
+      view.notice = { message: backupMessage(err.message || "Backup request failed", err.requestId), error: true };
+      throw err;
+    } finally {
+      view.creating = false;
+      refreshBackupHome();
+    }
     return;
   }
 
@@ -7882,7 +8107,7 @@ async function handleAction(actionId, node, params = {}) {
 }
 
 async function handleWizardAction(action, payload = {}) {
-  if (!state.wizard.active) {
+  if (!state.wizard.active || (state.wizard.mode === "container-restore" && state.wizard.busy)) {
     return;
   }
   if (action === "add-image") {
@@ -8034,6 +8259,9 @@ async function handleWizardAction(action, payload = {}) {
       renderWizard();
       return;
     }
+    const restoreAttempt = state.wizard.mode === "container-restore" ? state.wizard.containerRestore : null;
+    const ownsWizard = () => !restoreAttempt ||
+      (state.wizard.mode === "container-restore" && state.wizard.containerRestore === restoreAttempt);
     state.wizard.busy = true;
     state.wizard.error = null;
     renderWizard();
@@ -8399,6 +8627,21 @@ async function handleWizardAction(action, payload = {}) {
         await loadSiteBackups(siteId, { silent: true });
         state.wizard.active = false;
         state.wizard.mode = null;
+      } else if (state.wizard.mode === "container-restore") {
+        const validation = validateContainerRestore();
+        if (!validation.valid) throw new Error(validation.message);
+        const restore = state.wizard.containerRestore;
+        const destination = restore.destination.trim();
+        const view = backupView(restore.listContainer);
+        const response = await restoreStoredArchive(restore.filename, { container_name: destination });
+        const message = backupMessage(response.message || `Restored ${destination}.`, response.requestId);
+        view.notice = { message };
+        logEvent("success", message);
+        await loadGraph({ skipProbe: true }).catch((err) => logEvent("error", err.message || "Could not refresh containers"));
+        if (ownsWizard()) {
+          closeWizardState();
+          refreshBackupHome();
+        }
       } else if (state.wizard.mode === "site-rollback") {
         const siteId = state.wizard.siteRollback.site_id.trim();
         const backupId = state.wizard.siteRollback.backup_id.trim();
@@ -8484,6 +8727,9 @@ async function handleWizardAction(action, payload = {}) {
             method: "POST",
             body: JSON.stringify({ services: services.length ? services : undefined }),
           });
+          if (Array.isArray(restartResponse?.failed) && restartResponse.failed.length) {
+            throw new Error(`Could not restart: ${restartResponse.failed.join(", ")}`);
+          }
         }
 
         const messages = [];
@@ -8519,10 +8765,17 @@ async function handleWizardAction(action, payload = {}) {
         state.wizard.mode = null;
       }
     } catch (err) {
-      state.wizard.error = err.message || "Wizard action failed";
+      const message = err.message || "Wizard action failed";
+      if (ownsWizard()) {
+        state.wizard.error = message;
+      } else {
+        logEvent("error", message);
+      }
     } finally {
-      state.wizard.busy = false;
-      renderWizard();
+      if (ownsWizard() || !state.wizard.active) {
+        state.wizard.busy = false;
+        renderWizard();
+      }
     }
   }
 }
@@ -8675,6 +8928,8 @@ function bindEvents() {
       state.wizard.vmSnapshot[target.name] = value;
     } else if (group === "containerSnapshot") {
       state.wizard.containerSnapshot[target.name] = target.type === "checkbox" ? target.checked : value;
+    } else if (group === "containerRestore") {
+      state.wizard.containerRestore.destination = value;
     } else if (group === "exec") {
       state.wizard.exec[target.name] = value;
     } else if (group === "siteCreate") {

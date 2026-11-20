@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { readVisualBaselines, writeVisualBaselines } from "./fixtures/visual-baselines.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VISUAL_BASELINE_FILE = path.join(__dirname, "fixtures", "app_home_visual_hashes.json");
@@ -286,19 +287,6 @@ function makeStubApi(port) {
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
-}
-
-function loadBaselines() {
-  if (!fs.existsSync(VISUAL_BASELINE_FILE)) {
-    return {};
-  }
-  try {
-    const raw = fs.readFileSync(VISUAL_BASELINE_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
 }
 
 function normalizeExpectedHashes(value) {
@@ -627,12 +615,11 @@ test("visual regression for all top-level app homes and per-item actions", async
     }
 
     if (UPDATE_VISUAL_BASELINES) {
-      fs.mkdirSync(path.dirname(VISUAL_BASELINE_FILE), { recursive: true });
-      fs.writeFileSync(VISUAL_BASELINE_FILE, `${JSON.stringify(observedHashes, null, 2)}\n`);
+      writeVisualBaselines(VISUAL_BASELINE_FILE, observedHashes);
       return;
     }
 
-    const baselines = loadBaselines();
+    const baselines = readVisualBaselines(VISUAL_BASELINE_FILE);
     for (const app of TOP_LEVEL_APPS) {
       const expectedHashes = normalizeExpectedHashes(baselines[app.id]);
       assert.ok(expectedHashes.length > 0, `Missing visual baseline for ${app.id}. Run with UPDATE_VISUAL_BASELINES=1.`);

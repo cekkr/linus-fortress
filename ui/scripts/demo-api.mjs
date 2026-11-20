@@ -236,7 +236,14 @@ export function startDemoApi(port, options = {}) {
       return jsonResponse(res, { services: { apache: true, mysql: true, ftp: true, filemanager: true } });
     }
     if (p === "/migrations/status") return jsonResponse(res, { stores: {}, pending: [] });
-    if (p === "/backup/list") return jsonResponse(res, { backups: [] });
+    if (p === "/backup/list") {
+      const items = [
+        { filename: "lamp-shop_20261111_051500-62e6df81b1f54d9e9bb3bf7455c628a2.tar.gz.enc", container: "lamp-shop", size_bytes: 142606336 },
+        { filename: "lamp-shop_20261110_051500.tar.gz.enc", container: "lamp-shop", size_bytes: 139460608 },
+        { filename: "staging-blog_20261111_063000.tar.gz.enc", container: "staging-blog", size_bytes: 28311552 },
+      ].filter((item) => !url.searchParams.has("container") || item.container === url.searchParams.get("container"));
+      return jsonResponse(res, { backups: items.map((item) => item.filename), items });
+    }
     if (p === "/api-users") return jsonResponse(res, { users: [] });
 
     if (method !== "GET") {

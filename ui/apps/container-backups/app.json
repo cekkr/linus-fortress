@@ -1,15 +1,15 @@
 {
   "id": "container-backups",
   "title": "Backups",
-  "description": "Create backup exports of this container.",
+  "description": "Export this container and recover it from stored archives.",
   "icon": "vault",
   "scope": "container",
   "order": 6,
   "actions": [
     {
       "id": "backup-container",
-      "label": "Backup",
-      "variant": "ghost"
+      "label": "Create backup",
+      "variant": "primary"
     }
   ]
 }

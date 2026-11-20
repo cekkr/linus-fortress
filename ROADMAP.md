@@ -33,6 +33,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Validate container-scope enforcement during recipe applies (`allowed_containers` checks).
 - Done: Expand integration coverage to routing/sites/firewall endpoint sequences with fixture-backed state setup.
 - Done: Delegated-token expiry (`ttl_seconds`/`expires_at` on create/update, `expired` flag in listings, CLI `api-users create --ttl` / `api-users expire`) and a 401 (missing/unknown/expired credential, with `WWW-Authenticate`) vs 403 (insufficient permission/scope) split, with a route-level status matrix in `tests/test_auth_tokens.py`.
+- Done: Lizard UI preserves the expiry reason when prompting for credentials and keeps requests denied with 403 in the operation view.
 - Next: Sweep (or flag in the WebUI) expired delegated tokens, and surface `expires_at` in the Lizard UI token/session views.
 
 ## Path 5: Recipes lifecycle management (mid term)
@@ -62,8 +63,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Move wizards from the right sidebar into a full-stage horizontal slide flow, with the sidebar reused for current-operation context.
 - Done: Add a live image catalog panel on the Containers page with remote filters and direct LXD availability refresh.
 - Done: Add a dedicated Settings app for global operations and a customizable fast-actions horizontal menu.
-- Implement step-by-step wizards for container creation, routing, recipe apply, and backup/restore.
-- Flesh out container sub-apps (Access, Network, Packages, Recipes, Backups) with live API wiring.
+- Done: Add a destination and confirmation wizard for stored container restores. The Backups app lists, verifies, downloads, and restores accessible archives even when the source container has been removed. The per-container view also queues exports and shows request IDs.
+- Flesh out container sub-apps (Access, Network, Packages, Recipes) with live API wiring.
 - Add a settings panel to manage popular LXD image presets, show remote availability, and refresh latest LTS aliases.
 - Add monitoring dashboards powered by `/monitoring/resources` with alert overlays.
 - Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.
@@ -176,6 +177,7 @@ Acceptance criteria:
 Done:
 - Add Let's Encrypt automation to site TLS workflows.
 - Support php.ini override injection during site updates.
+- Show failed service restarts in the Lizard UI wizard and preserve structured site operation error messages from Fortress.
 Progress:
 - WebUI surfaces per-site routing/TLS/runtime/database details and backup lists with rollback triggers.
 - Add TLS status/renewal state in WebUI (`tls_status` + `/sites/{site_id}/tls/status`).
@@ -241,7 +243,7 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Done: Write authenticated chunked container backups with private staging and collision-resistant filenames. Read legacy Fernet archives, support offline verification and scoped stored restores, and restrict uploaded archives to trusted recovery operators.
 - Done: Add a local restic workflow for off-host snapshots of Fortress host state and verified staged recovery, including a rebuild and isolation runbook.
 - Next: Automate off-host backup scheduling, retention and backup-age alerts, and run a clean-host recovery drill with real LXD and a stopped VM disk.
-- Next: Refresh or make environment-independent the Puppeteer visual baselines (`app_home_visual_regression`, `css_dark_surface_token_regression` fail on macOS Chromium at HEAD).
+- Done: Record separate macOS arm64 Chromium visual baselines for the app homes and dark surfaces while retaining the existing default baselines.
 - Done: Validated the Python suite, cross-process `update_json` locking, and real firewalld partial-failure revert on an AlmaLinux 10.2 x86_64 QEMU VM; fixed firewalld 2.x rich-rule parsing (attribute order) found there.
 - Done: Validated token expiry, the 401/403 split, cross-process `update_json` locking (4 uvicorn workers, 40 concurrent `/api-users` creates), the api_users v1→v2 migration with `_legacy` promotion, SSH option-injection rejection, and a real-ssh host probe on an AlmaLinux 10.2 x86_64 QEMU VM (FastAPI 0.162 / Starlette 1.10 / Pydantic 2.14 / Python 3.12).
 - Done: Validated VM hardening and store locking on an AlmaLinux 10.2 x86_64 QEMU VM (Python 3.12, FastAPI 0.162 / Starlette 1.10 / Pydantic 2.14): full suite green; via the real API under 4 uvicorn workers, injection attempts (`qemu_binary` path, `-netdev …script=`, `-monitor`, `bridge_name ,helper=`, disks outside the VM root) are rejected and audited, a VM is created with real `qemu-img` and started through auto-detected `/usr/libexec/qemu-kvm` (RHEL has no `qemu-system-*` on PATH — `qemu-kvm` support was added because of this), legacy unsafe records are refused at start/purge, and 40 concurrent `/hosts` creates all persist.

@@ -2194,6 +2194,7 @@ paths:
       description: |
         Requires `manage_backups` and container scope. Queues a v2 authenticated, chunked archive
         with a unique filename. Use the request ID in the audit register to confirm completion.
+        Lizard UI forwards the request ID with its backup acknowledgment.
       parameters:
         - in: path
           name: container_name
@@ -2259,6 +2260,7 @@ paths:
       description: |
         Requires `manage_backups` and scope for the container in the filename. Accepts current
         names with the unique suffix and legacy names without it.
+        Lizard UI streams the encrypted response as an attachment with the same upstream authorization.
       parameters:
         - in: path
           name: filename
@@ -2287,6 +2289,7 @@ paths:
         Requires `restore_container` and scope for both the archive's source and the destination
         container. Supports v2 and legacy Fernet backups. A restore imports a new instance through
         LXD after full authentication of the archive. LXD refuses to overwrite an existing instance.
+        Lizard UI uses this route for integrity checks and confirmed restores of stored archives.
       parameters:
         - in: path
           name: filename

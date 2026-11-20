@@ -14,6 +14,8 @@ Lizard UI, the optional web control deck, rendered against the demo API (placeho
 | **Guided wizards**: full-stage slides with step breadcrumbs, validation, ← / → keys and swipe navigation, and resume after a page refresh. | **Monitoring**: host and container CPU/RAM/disk, threshold alerts, and CPU history. |
 | ![Sites home with TLS, runtime, database, and backups](docs/screenshots/sites.webp) | ![Recipes home with LAMP health-check trend](docs/screenshots/recipes.webp) |
 | **PHP sites**: runtime, TLS status, database binding, and backups with rollback. | **Recipes**: versioned install recipes and LAMP health-check trends. |
+| ![Stored LXD backups with Download, Verify, and Restore actions](docs/screenshots/backups.webp) | |
+| **Container backups** with archive downloads, integrity checks, and guided restore. | |
 
 <details>
 <summary>More screens: routing, firewall, VM labs, settings, card details, admin sign-in, mobile</summary>
@@ -129,6 +131,10 @@ Wizard progress is saved per browser tab for 12 hours in `sessionStorage` (`liza
 The Debug panel keeps the last 20 captured API errors and offers **Copy latest**, **Copy all**, **Export JSON** (`lizard-debug-<timestamp>.json`, format `lizard.debug-export.v1`), and **Clear**. Exports redact password/secret/token/API-key/cookie-like keys.
 Fast actions can be reordered in Settings by dragging items or with the ↑ / ↓ buttons; the order is saved in `localStorage` (`lizard.fast-actions.v1`).
 The UI now includes an xterm.js-powered **Terminal** app for host shells and a recursive per-container **Terminal** sub-app; both use server-managed terminal sessions (`/terminal/sessions*`) so delegated token scope and OS-user mapping are enforced server-side.
+
+Open **Backups** from the control deck to find accessible archives, including archives for containers that have been deleted. A container’s **Backups** sub-app filters this list and can queue a new export. Refresh the list after the export completes. **Verify** checks integrity without importing, **Download** streams the encrypted archive, and **Restore** asks for an unused destination name and confirmation. The UI shows the Fortress request ID for queued exports and completed verification and restore operations. The same API permissions and scope checks apply through the UI.
+
+The UI shows permission denials as operation errors. If Fortress rejects an expired API token, the session prompt preserves the expiry message.
 
 ## Run Server Script
 

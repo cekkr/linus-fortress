@@ -1,4 +1,10 @@
 {
   "row_more_dark_surface": "0b2895059263d39765594b57319a31352db5ebd6b6cd7801be6911ece332b20c",
-  "wizard_dark_surface": "f38a67f11d29d4f00fe416590ad9fcb35f2bfe62bcacb846bf20e06ad2fa7773"
+  "wizard_dark_surface": "f38a67f11d29d4f00fe416590ad9fcb35f2bfe62bcacb846bf20e06ad2fa7773",
+  "platforms": {
+    "darwin-arm64": {
+      "row_more_dark_surface": "d88e94149047124b8c09d2f595c277fc1c03ecc57cf5b1013d032dfb62ee00da",
+      "wizard_dark_surface": "d14cdf218f8fecaf1adf37baaec0b57d18af71e3216363cc324e3fdd2181e88c"
+    }
+  }
 }

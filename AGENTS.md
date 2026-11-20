@@ -305,6 +305,7 @@ Lizard UI Express server: static assets, admin auth (PBKDF2-SHA256 passwords, lo
 - **Key functions and subparts:** `loadEnvFileSync` (reads `ui/.env.local` or `FORTRESS_UI_ENV_FILE`), config constants (`FORTRESS_UI_*`, `FORTRESS_API_URL`, `FORTRESS_DEBUG`), `/api` admin guard middleware + `ensureAdminAuthorized`, admin store `loadAdminStore`/`saveAdminStore`/`logAdminEvent`, `passwordPolicyErrors`, `hashPassword`/`verifyPassword`, TOTP (`generateTotpSecret`, `verifyTotp`), sessions (`createSession`, `getSessionToken`, `createAdminSession`), `parseTypedToken`, `fortressRequest` / `fortressRequestFor`, `detectApiIdentity`, app graph (`loadModules`, `buildAppGraph`, `resolveContainerStack`), `/api/*` proxy routes, SPA fallback `app.get("*")`.
 - **Tests:** [`ui/tests/`](ui/tests/) (spawns this server).
 - **Common mistakes:** every `req.params.*` interpolated into an upstream path MUST be wrapped in `encodeURIComponent` (guarded by [`ui/tests/proxy_path_encoding.test.js`](ui/tests/proxy_path_encoding.test.js)). Sessions are in-memory `Map`s; restart logs everyone out.
+- **Container backups:** `GET /api/backup/list` forwards an optional container filter. `GET /api/backup/download/:filename` streams an authenticated attachment. `POST /api/backup/restore/:filename` forwards verification (`dry_run`) or restore (`container_name`) to Fortress. The API remains responsible for permission and scope checks.
 
 ### [`ui/public/js/app.js`](ui/public/js/app.js)
 
@@ -314,6 +315,7 @@ Single-file browser app (vanilla JS): app-deck rendering, wizards, previews per 
   - Wizard navigation: `bindWizardGestures` (ArrowLeft/ArrowRight outside form fields and the xterm, horizontal swipe on `.wizard-viewport`) → `navigateWizardByGesture`, which only calls `back`/`next` between steps and never submits the final step.
   - Wizard resume: `WIZARD_PROGRESS_STORAGE_KEY` (`lizard.wizard-progress.v1` in **sessionStorage**), `WIZARD_MODE_GROUPS` (mode → wizard state group), `persistWizardProgress` (called from `renderWizard` and the wizard input handler), `normalizeWizardProgressSnapshot` (version, known mode, 12 h max age, clamped steps), `loadPendingWizardResume` at startup, `resumePendingWizard`/`discardPendingWizard` behind the fast-actions **Resume/Discard** banner. `pickPersistableWizardFields` drops keys matching `WIZARD_PROGRESS_SENSITIVE_KEY` (pass/secret/token/credential/private/environment) and drops recipe parameter blocks. `system-upgrade` persists only its option booleans and reruns dry-run preflight before restoring a saved step past Scope. A saved Execute step resumes at Backups with confirmation cleared. A failed preflight leaves the wizard at Scope.
   - Debug export: `state.debug.history` (last `DEBUG_HISTORY_LIMIT` = 20 errors), `buildDebugExport` (format `lizard.debug-export.v1`), `redactDebugValue` (`DEBUG_REDACT_KEY`), `handleDebugAction` (`data-debug-action` = `copy-latest` / `copy-all` / `export` / `clear`).
+  - Container backup views share the archive list renderer and restore wizard. The global view can find archives for deleted containers. The restore wizard stays in memory and requires an explicit confirmation before import.
 - **Tests:** Puppeteer suites in [`ui/tests/`](ui/tests/).
 - **Common mistakes:** never store tokens in `localStorage`/`sessionStorage`; only UI preferences and sanitized wizard progress go there. A new wizard mode needs a `WIZARD_MODE_GROUPS` entry to be resumable, and any new secret-bearing field name must match `WIZARD_PROGRESS_SENSITIVE_KEY` (or the mode must use an allowlist like `system-upgrade`). When a wizard step depends on server results, reload those results before restoring access to the step. Escape dynamic input values, option labels, textarea contents, and summary text with `escapeHtml`. Top-level `const state` is not `window.state`; scripts driving the page use the bare global binding. Compare statuses with `=== "active"`, not `includes("active")` (matches `inactive`). Bridge/card animation geometry is guarded by visual hashes — rerun the visual tests after CSS/layout edits.
 
@@ -323,7 +325,7 @@ Styles (dark-surface tokens, unibody card/bridge geometry, wizard slide stage) a
 
 ### [`ui/apps/`](ui/apps/)
 
-One directory per UI app, each containing only an `app.json` manifest (`id`, `title`, `description`, `icon`, `order`, optional `root`, `scope: "container"`, `template`, `actions`, `parent`). Top-level apps: `home` (root), `containers`, `routing`, `recipes`, `packages`, `firewall`, `monitoring`, `sites`, `hosts`, `vms`, `terminal`, `settings`. Container-scoped sub-apps: `container-*` (overview, handle, access, network, packages, recipes, backups, terminal, and `container-lamp*` which appear only for LAMP-tagged containers). Behavior for an app lives in `app.js`, not in the manifest. The manifest schema is undocumented beyond existing files (roadmap item).
+One directory per UI app, each containing only an `app.json` manifest (`id`, `title`, `description`, `icon`, `order`, optional `root`, `scope: "container"`, `template`, `actions`, `parent`). Top-level apps: `home` (root), `containers`, `routing`, `recipes`, `packages`, `firewall`, `monitoring`, `sites`, `hosts`, `vms`, `terminal`, `settings`, `backups`. Container-scoped sub-apps: `container-*` (overview, handle, access, network, packages, recipes, backups, terminal, and `container-lamp*` which appear only for LAMP-tagged containers). Behavior for an app lives in `app.js`, not in the manifest. The manifest schema is undocumented beyond existing files (roadmap item).
 
 ### [`ui/package.json`](ui/package.json), [`ui/package-lock.json`](ui/package-lock.json), [`ui/run.sh`](ui/run.sh)
 
@@ -409,7 +411,8 @@ Standalone Puppeteer helper library (and its design doc) that snapshots visible 
 - [`ui_token_bootstrap_overlay.test.js`](ui/tests/ui_token_bootstrap_overlay.test.js) — token entry overlay (Puppeteer).
 - [`app_home_leaf_render.test.js`](ui/tests/app_home_leaf_render.test.js), [`preview_meta_inheritance.test.js`](ui/tests/preview_meta_inheritance.test.js) — stage/app-home rendering (Puppeteer).
 - [`app_bridge_wizard_reload.test.js`](ui/tests/app_bridge_wizard_reload.test.js) — card bridge open/close and alignment at desktop, tablet, and phone widths, wizard flow, update-reload browser reload (Puppeteer).
-- [`app_home_visual_regression.test.js`](ui/tests/app_home_visual_regression.test.js), [`css_dark_surface_token_regression.test.js`](ui/tests/css_dark_surface_token_regression.test.js) — screenshot/CSS hash baselines in [`fixtures/`](ui/tests/fixtures/).
+- [`app_home_visual_regression.test.js`](ui/tests/app_home_visual_regression.test.js), [`css_dark_surface_token_regression.test.js`](ui/tests/css_dark_surface_token_regression.test.js) — screenshot/CSS hash baselines in [`fixtures/`](ui/tests/fixtures/). The update flags write the current OS and architecture variant.
+- [`container_backup_browser.test.js`](ui/tests/container_backup_browser.test.js) — real Chromium against the UI server and a stateful API fixture covering export receipts, filtering, verification, binary download, phone layout, restore confirmation and retry, restart failures, and expired credentials.
 - [`wizard_css_transform_guard.test.js`](ui/tests/wizard_css_transform_guard.test.js) — static CSS guard for wizard transforms.
 - [`proxy_path_encoding.test.js`](ui/tests/proxy_path_encoding.test.js) — proxied path params are URI-encoded upstream.
 - [`wizard_nav_resume_debug.test.js`](ui/tests/wizard_nav_resume_debug.test.js) — wizard arrow-key/swipe navigation (ignored inside inputs, never submits), progress resume after reload, literal field rendering, password and recipe parameter exclusion from progress, fresh upgrade preflight and backup confirmation, Debug copy/export redaction, fast-action drag/drop + ↑/↓ ordering (Puppeteer).
@@ -494,7 +497,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 - **Behavior:** admin login (password policy, lockout, audit, optional TOTP), token sessions, app deck with wizards (keyboard/swipe step navigation, per-tab resume after refresh), image catalog, Settings (upgrade/update-reload, reorderable fast actions), Debug panel copy/export, Terminal apps, LAMP sub-apps for tagged containers (`user.lizard.stack=lamp`). Screenshots of each screen live in `docs/screenshots/` (README "Screenshots").
 - **Owners:** [`ui/server.js`](ui/server.js), [`ui/public/js/app.js`](ui/public/js/app.js), [`ui/apps/`](ui/apps/).
-- **Tests and gaps:** [`ui/tests/`](ui/tests/); container sub-apps (Access, Network, Packages, Recipes, Backups) are not fully wired; manifest schema undocumented.
+- **Tests and gaps:** [`ui/tests/`](ui/tests/); container sub-apps (Access, Network, Packages, Recipes) are not fully wired. The Backups app and sub-app support real archive operations. The manifest schema is undocumented.
 
 ### Pitfall: forgetting container scope on a new route
 
@@ -669,7 +672,7 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - **Auth:** tokens stored unhashed; expired tokens are rejected but never swept from the store.
 - **VM privilege:** `qemu_binary`/`extra_args`/`bridge_name`/paths are now allowlisted, but `vm_manage` still runs QEMU/VirtualBox as the API user and can attach any `.iso` path to a guest; grant it to trusted operators only.
 - **Concurrency:** API users, routes, recipe health history, and monitoring history use `update_json`. Recipes and site creation use `_holds_store_lock`. Site deploy, backup, rollback, update, delete, and restart use `_site_mutation`. Hosts and VMs use `_locked_store_operation` and merge provision/probe results through `_long_store_operation`. Terminal sessions and UI sessions are in-process memory.
-- **Visual baselines:** `app_home_visual_regression` and `css_dark_surface_token_regression` hashes are environment-sensitive (they fail on macOS Chromium at this revision without code changes).
+- **Visual baselines:** screenshot hashes depend on the browser and platform. Tests select a macOS arm64 variant where available and retain the default hashes for other environments.
 - **Dependencies:** `requirements.txt` is unpinned (a fresh AlmaLinux 10 install pulled FastAPI 0.162 / Starlette 1.10 vs 0.128 / 0.49 on the dev venv — newer FastAPI no longer flattens included routers into `app.routes`, so enumerate routes via `app.openapi()`); code uses Pydantic v1-style `.dict()`.
 - **No CI** and no real-LXD integration test lane.
 

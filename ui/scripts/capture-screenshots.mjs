@@ -198,6 +198,16 @@ const SHOTS = [
     prepare: (page) => openApp(page, "container:lamp-shop"),
   },
   {
+    id: "backups",
+    title: "Container backups",
+    caption: "Stored archives with integrity checks, downloads, and guided restore.",
+    viewport: DESKTOP,
+    prepare: async (page) => {
+      await openApp(page, "backups");
+      await page.waitForSelector(".app-home-backups .app-home-item", { visible: true });
+    },
+  },
+  {
     id: "create-container-wizard",
     title: "Create-container wizard",
     caption: "Full-stage slide wizard with step breadcrumbs, validation, and keyboard (← / →) navigation.",

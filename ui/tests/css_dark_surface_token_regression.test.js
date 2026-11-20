@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { readVisualBaselines, writeVisualBaselines } from "./fixtures/visual-baselines.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const cssPath = path.resolve(__dirname, "../public/css/app.css");
@@ -249,19 +250,6 @@ async function screenshotElement(page, selector) {
   throw new Error(`Unable to capture screenshot for ${selector}`);
 }
 
-function loadBaselines() {
-  if (!fs.existsSync(BASELINE_FILE)) {
-    return {};
-  }
-  try {
-    const raw = fs.readFileSync(BASELINE_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
 test("dark surface CSS uses tokenized utility color contract", () => {
   const css = fs.readFileSync(cssPath, "utf8");
 
@@ -401,12 +389,11 @@ test("dark surface visual regression stays stable for row-more panel and wizard"
     };
 
     if (UPDATE_BASELINES) {
-      fs.mkdirSync(path.dirname(BASELINE_FILE), { recursive: true });
-      fs.writeFileSync(BASELINE_FILE, `${JSON.stringify(observed, null, 2)}\n`);
+      writeVisualBaselines(BASELINE_FILE, observed);
       return;
     }
 
-    const baselines = loadBaselines();
+    const baselines = readVisualBaselines(BASELINE_FILE);
     assert.ok(
       baselines.row_more_dark_surface,
       "Missing row_more_dark_surface baseline. Run with UPDATE_DARK_SURFACE_BASELINES=1."

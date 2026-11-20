@@ -5,6 +5,8 @@ import os from "os";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import fsPromises from "fs/promises";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 let fetchFn;
 let dispatcher;
@@ -599,7 +601,7 @@ function resolveAuthMode(req) {
   return "none";
 }
 
-async function fortressRequest(method, apiPath, body, tokenOverride) {
+async function fortressRequest(method, apiPath, body, tokenOverride, { download = false, signal, onResponse } = {}) {
   const url = new URL(apiPath, API_URL);
   const headers = authHeaders(tokenOverride);
   if (body) {
@@ -609,6 +611,7 @@ async function fortressRequest(method, apiPath, body, tokenOverride) {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   };
   if (dispatcher) {
     options.dispatcher = dispatcher;
@@ -630,6 +633,10 @@ async function fortressRequest(method, apiPath, body, tokenOverride) {
     error.cause = err;
     throw error;
   }
+  onResponse?.(response);
+  if (download && response.ok) {
+    return response;
+  }
   const text = await response.text();
   let payload = null;
   if (text) {
@@ -649,7 +656,8 @@ async function fortressRequest(method, apiPath, body, tokenOverride) {
         : typeof payload === "string"
         ? payload
         : response.statusText;
-    let resolvedDetail = detail || `Fortress API request failed (${response.status})`;
+    let resolvedDetail = (typeof detail === "object" ? detail.message : detail) ||
+      `Fortress API request failed (${response.status})`;
     if (response.status === 404 || response.status === 405) {
       const identity = await detectApiIdentity();
       if (identity && identity.kind === "lxd") {
@@ -762,9 +770,15 @@ async function getContainers(tokenOverride) {
   return containers.map(normalizeContainer).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function fortressRequestFor(req, method, apiPath, body) {
+function fortressRequestFor(req, method, apiPath, body, { clientResponse, ...options } = {}) {
   const token = getSessionToken(req);
-  return fortressRequest(method, apiPath, body, token);
+  return fortressRequest(method, apiPath, body, token, {
+    ...options,
+    onResponse: clientResponse ? (upstream) => {
+      const requestId = upstream.headers.get("x-fortress-request-id");
+      if (requestId) clientResponse.setHeader("X-Fortress-Request-ID", requestId);
+    } : undefined,
+  });
 }
 
 async function findAppFiles(dir, collected = []) {
@@ -895,6 +909,9 @@ function asyncHandler(handler) {
     try {
       await handler(req, res);
     } catch (err) {
+      if (res.destroyed || res.headersSent) {
+        return;
+      }
       const status = err.status || 500;
       const payload = {
         error: err.message || "Request failed",
@@ -1515,7 +1532,9 @@ app.post(
 app.post(
   "/api/containers/:name/backup",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/backup/${encodeURIComponent(req.params.name)}`);
+    const payload = await fortressRequestFor(
+      req, "POST", `/backup/${encodeURIComponent(req.params.name)}`, null, { clientResponse: res }
+    );
     res.json(payload);
   })
 );
@@ -1825,7 +1844,42 @@ app.post(
 app.get(
   "/api/backup/list",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", "/backup/list");
+    const query = typeof req.query.container === "string" ? `?container=${encodeURIComponent(req.query.container)}` : "";
+    const payload = await fortressRequestFor(req, "GET", `/backup/list${query}`);
+    res.json(payload);
+  })
+);
+
+app.get(
+  "/api/backup/download/:filename",
+  asyncHandler(async (req, res) => {
+    const controller = new AbortController();
+    res.once("close", () => controller.abort());
+    const upstream = await fortressRequestFor(
+      req, "GET", `/backup/download/${encodeURIComponent(req.params.filename)}`, null,
+      { download: true, signal: controller.signal, clientResponse: res }
+    );
+    res.attachment(req.params.filename);
+    res.set({
+      "Content-Type": "application/octet-stream",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+    await pipeline(Readable.fromWeb(upstream.body), res);
+  })
+);
+
+app.post(
+  "/api/backup/restore/:filename",
+  asyncHandler(async (req, res) => {
+    const query = new URLSearchParams();
+    if (req.body?.dry_run === true) query.set("dry_run", "true");
+    if (typeof req.body?.container_name === "string") query.set("container_name", req.body.container_name);
+    const parameters = query.toString();
+    const suffix = parameters ? `?${parameters}` : "";
+    const payload = await fortressRequestFor(
+      req, "POST", `/backup/restore/${encodeURIComponent(req.params.filename)}${suffix}`, null, { clientResponse: res }
+    );
     res.json(payload);
   })
 );

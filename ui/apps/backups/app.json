@@ -1,0 +1,8 @@
+{
+  "id": "backups",
+  "title": "Backups",
+  "description": "Verify, download, and restore stored container archives.",
+  "icon": "vault",
+  "parent": "home",
+  "order": 11
+}

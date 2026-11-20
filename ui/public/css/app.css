@@ -605,6 +605,21 @@ body {
   font-size: 10px;
 }
 
+.app-home-backups .app-home-item-title,
+.app-home-backups .app-home-item-detail,
+.app-home-backups [data-backup-notice] {
+  overflow-wrap: anywhere;
+  text-transform: none;
+}
+
+.app-home-backups .app-home-item-detail {
+  font-family: ui-monospace, monospace;
+}
+
+.backup-download {
+  text-decoration: none;
+}
+
 .app-home-empty {
   border-radius: 12px;
   border: 1px dashed rgba(58, 75, 45, 0.32);
@@ -1938,6 +1953,11 @@ body {
   gap: 8px;
   max-height: 180px;
   overflow-y: auto;
+}
+
+#debug-panel .pill {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .event-item {
