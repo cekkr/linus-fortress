@@ -86,7 +86,7 @@ const state = {
     hideUnavailable: false,
   },
   ui: {
-    fastActions: [],
+    fastActionPreferences: null,
     expandedCardId: null,
     cardsAnimated: false,
     pendingWizardResume: null,
@@ -282,7 +282,10 @@ const elements = {
   logoutButton: document.getElementById("logout"),
 };
 
-const FAST_ACTION_STORAGE_KEY = "lizard.fast-actions.v1";
+const LEGACY_FAST_ACTION_STORAGE_KEY = "lizard.fast-actions.v1";
+const FAST_ACTION_PROFILES_STORAGE_KEY = "lizard.fast-action-profiles.v1";
+const DEFAULT_FAST_ACTION_PROFILE = "Default";
+const FAST_ACTION_PROFILE_NAME_LIMIT = 48;
 const IMAGE_CATALOG_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 let imageCatalogRefreshTimer = null;
 let gridResizeTimer = null;
@@ -609,38 +612,76 @@ function normalizeFastActions(rawActions) {
   return normalized.length ? normalized : FAST_ACTION_DEFAULT_IDS.slice();
 }
 
-function loadFastActionsPreference() {
+function readFastActionStorage(key) {
   try {
-    if (typeof window === "undefined" || !window.localStorage) {
-      state.ui.fastActions = FAST_ACTION_DEFAULT_IDS.slice();
-      return;
-    }
-    const raw = window.localStorage.getItem(FAST_ACTION_STORAGE_KEY);
-    if (!raw) {
-      state.ui.fastActions = FAST_ACTION_DEFAULT_IDS.slice();
-      return;
-    }
-    const parsed = JSON.parse(raw);
-    state.ui.fastActions = normalizeFastActions(parsed);
-  } catch (err) {
-    state.ui.fastActions = FAST_ACTION_DEFAULT_IDS.slice();
+    return JSON.parse(window.localStorage.getItem(key));
+  } catch {
+    return null;
   }
+}
+
+function normalizeFastActionProfileName(value) {
+  const name = typeof value === "string" ? value.trim().normalize("NFC") : "";
+  return name.length <= FAST_ACTION_PROFILE_NAME_LIMIT && !/[\u0000-\u001f\u007f-\u009f]/u.test(name) ? name : "";
+}
+
+function loadFastActionsPreference() {
+  const saved = readFastActionStorage(FAST_ACTION_PROFILES_STORAGE_KEY);
+  const profiles = new Map();
+  for (const profile of Array.isArray(saved?.profiles) ? saved.profiles : []) {
+    const name = normalizeFastActionProfileName(profile?.name);
+    const key = name.toLowerCase();
+    if (name && !profiles.has(key)) {
+      profiles.set(key, {
+        name: key === "default" ? DEFAULT_FAST_ACTION_PROFILE : name,
+        actions: normalizeFastActions(profile.actions),
+      });
+    }
+  }
+  const defaultProfile = profiles.get("default") || {
+    name: DEFAULT_FAST_ACTION_PROFILE,
+    actions: normalizeFastActions(readFastActionStorage(LEGACY_FAST_ACTION_STORAGE_KEY)),
+  };
+  profiles.delete("default");
+  const available = [defaultProfile, ...profiles.values()];
+  state.ui.fastActionPreferences = {
+    active: available.find((profile) => profile.name === saved?.active)?.name || DEFAULT_FAST_ACTION_PROFILE,
+    profiles: available,
+  };
 }
 
 function persistFastActionsPreference() {
   try {
-    if (typeof window === "undefined" || !window.localStorage) {
-      return;
-    }
-    window.localStorage.setItem(FAST_ACTION_STORAGE_KEY, JSON.stringify(state.ui.fastActions || []));
-  } catch (err) {
-    // Ignore storage errors.
+    window.localStorage.setItem(FAST_ACTION_PROFILES_STORAGE_KEY, JSON.stringify(state.ui.fastActionPreferences));
+  } catch {
+    logEvent("error", "Fast-action profiles could not be saved in this browser.");
   }
 }
 
+function activeFastActionProfile() {
+  const preferences = state.ui.fastActionPreferences;
+  return preferences.profiles.find((profile) => profile.name === preferences.active);
+}
+
 function updateFastActions(nextActions) {
-  state.ui.fastActions = normalizeFastActions(nextActions);
+  activeFastActionProfile().actions = normalizeFastActions(nextActions);
   persistFastActionsPreference();
+  renderFastActionSettings();
+}
+
+function selectFastActionProfile(name) {
+  const preferences = state.ui.fastActionPreferences;
+  if (preferences.profiles.some((profile) => profile.name === name)) {
+    preferences.active = name;
+    persistFastActionsPreference();
+    renderFastActionSettings();
+  }
+}
+
+function renderFastActionSettings() {
+  renderFastActions();
+  renderPreview();
+  if (state.selectedId === "settings") refreshSelectedLeafHome();
 }
 
 function moveFastAction(actions, id, targetIndex) {
@@ -1494,8 +1535,7 @@ function renderFastActions() {
   if (!elements.fastActions) {
     return;
   }
-  const configured = normalizeFastActions(state.ui.fastActions);
-  state.ui.fastActions = configured;
+  const configured = activeFastActionProfile().actions;
   const settingsAvailable = state.nodesById.has("settings");
   const buttonsMarkup = configured
     .map((id) => {
@@ -2168,24 +2208,34 @@ function buildAppHomeModel(node) {
 
   if (nodeId === "vms") {
     const vms = Array.isArray(state.vms) ? state.vms : [];
-    const running = vms.filter((vm) => String(vm.status || vm.state || "").toLowerCase().includes("running")).length;
+    const running = vms.filter((vm) => String(vm.status || vm.state || "").toLowerCase() === "running").length;
     const snapshots = vms.reduce((sum, vm) => sum + (Array.isArray(vm.snapshots) ? vm.snapshots.length : 0), 0);
+    const invalid = vms.filter((vm) => vm.validation?.valid === false);
     model.kicker = "Main App";
     model.metrics = [
       { label: "VMs", value: state.vmsLoading ? "loading..." : String(vms.length) },
       { label: "Running", value: String(running), tone: "running" },
       { label: "Snapshots", value: String(snapshots) },
     ];
+    if (invalid.length) {
+      model.metrics.push({ label: "Configuration issues", value: String(invalid.length), tone: "stopped" });
+    }
     model.itemsTitle = "VM Lab Status";
-    model.items = vms.slice(0, 8).map((vm) => {
+    const orderedVms = invalid.concat(vms.filter((vm) => vm.validation?.valid !== false));
+    model.items = orderedVms.slice(0, 8).map((vm) => {
       const status = String(vm.status || vm.state || "unknown");
+      const configurationIssue = vm.validation?.valid === false;
+      const details = `${vm.profile || vm.provider || "vm"} • ${vm.memory_mb ? `${vm.memory_mb}MB` : "memory ?"} • ${
+        vm.disk_gb ? `${vm.disk_gb}GB` : "disk ?"
+      }`;
       return {
         title: vm.name || "vm",
-        detail: `${vm.profile || vm.provider || "vm"} • ${vm.memory_mb ? `${vm.memory_mb}MB` : "memory ?"} • ${
-          vm.disk_gb ? `${vm.disk_gb}GB` : "disk ?"
-        }`,
+        detail: configurationIssue ? vm.validation.message : details,
         nodeId: nodeId,
-        pills: [{ label: status, tone: status.toLowerCase().includes("running") ? "running" : "stopped" }],
+        pills: [
+          { label: status, tone: status.toLowerCase() === "running" ? "running" : "stopped" },
+          configurationIssue ? { label: "Configuration issue", tone: "danger" } : null,
+        ],
         actions:
           vm.name && String(vm.name).trim()
             ? [
@@ -2242,7 +2292,7 @@ function buildAppHomeModel(node) {
   }
 
   if (nodeId === "settings") {
-    const selectedFastActions = normalizeFastActions(state.ui.fastActions);
+    const selectedFastActions = activeFastActionProfile().actions;
     const latestUpdateReload = state.systemUpgrade.lastUpdateReload;
     const latestStatus = latestUpdateReload
       ? latestUpdateReload.result && latestUpdateReload.result.updated
@@ -2934,7 +2984,11 @@ function renderRecipesPreview(node) {
 }
 
 function renderSettingsPreview(node) {
-  const selectedSet = new Set(normalizeFastActions(state.ui.fastActions));
+  const currentProfile = activeFastActionProfile();
+  const selectedSet = new Set(currentProfile.actions);
+  const profileOptions = state.ui.fastActionPreferences.profiles.map(({ name }) =>
+    `<option value="${escapeHtml(name)}" ${name === currentProfile.name ? "selected" : ""}>${escapeHtml(name)}</option>`
+  ).join("");
   const optionsMarkup = FAST_ACTION_OPTIONS.map((option) => {
     const checked = selectedSet.has(option.id) ? "checked" : "";
     return `
@@ -2947,7 +3001,7 @@ function renderSettingsPreview(node) {
       </div>
     `;
   }).join("");
-  const orderedFastActions = normalizeFastActions(state.ui.fastActions)
+  const orderedFastActions = currentProfile.actions
     .map((id) => fastActionOptionById(id))
     .filter(Boolean);
   const currentFastActions = orderedFastActions
@@ -3007,6 +3061,22 @@ function renderSettingsPreview(node) {
     ${systemSummary}
     <div class="event-item">
       <div><strong>Fast Actions Menu</strong> (top horizontal bar)</div>
+      <div class="settings-fast-profile">
+        <label for="fast-action-profile">Active profile</label>
+        <div class="settings-fast-profile-controls">
+          <select id="fast-action-profile">${profileOptions}</select>
+          <button type="button" class="action ghost" data-action-id="settings-fast-profile-delete"
+                  ${currentProfile.name === DEFAULT_FAST_ACTION_PROFILE ? "disabled" : ""}>Remove profile</button>
+        </div>
+        <form id="fast-action-profile-form">
+          <label for="fast-action-profile-name">New profile</label>
+          <div class="settings-fast-profile-controls">
+            <input id="fast-action-profile-name" name="profileName" maxlength="${FAST_ACTION_PROFILE_NAME_LIMIT}" required />
+            <button type="submit" class="action ghost">Save a copy</button>
+          </div>
+          <div id="fast-action-profile-error" class="event-item error" role="alert" hidden></div>
+        </form>
+      </div>
       <div class="settings-fast-desc">Choose which actions stay one click away.</div>
       <div class="settings-fast-actions">
         ${optionsMarkup}
@@ -3256,30 +3326,35 @@ function renderVmsPreview(node) {
       ? `<div>No VMs defined yet.</div>`
       : vms
           .map((vm) => {
-            const status = vm.status || vm.state || "unknown";
-            const pill = `<span class="pill ${status.includes("running") ? "running" : "stopped"}">${status}</span>`;
+            const status = String(vm.status || vm.state || "unknown");
+            const pill = `<span class="pill ${status.toLowerCase() === "running" ? "running" : "stopped"}">${escapeHtml(status)}</span>`;
+            const vmName = escapeHtml(vm.name);
+            const configurationIssue = vm.validation?.valid === false;
+            const nodeId = escapeHtml(node.id);
             const snapshotButtons =
               Array.isArray(vm.snapshots) && vm.snapshots.length
                 ? vm.snapshots
                     .map(
                       (snap) =>
-                        `<button class="action ghost" data-action-id="vm-restore" data-vm="${vm.name}" data-snapshot="${snap}" data-node-id="${node.id}">Restore ${snap}</button>`
+                        `<button class="action ghost" data-action-id="vm-restore" data-vm="${vmName}" data-snapshot="${escapeHtml(snap)}" data-node-id="${nodeId}">Restore ${escapeHtml(snap)}</button>`
                     )
                     .join("")
                 : "";
             return `
           <div class="event-item">
-            <div><strong>${vm.name}</strong> — ${vm.profile || vm.provider || "vm"}</div>
+            <div><strong>${vmName}</strong> — ${escapeHtml(vm.profile || vm.provider || "vm")}</div>
             <div class="card-meta">
               ${pill}
-              ${vm.memory_mb ? `<span class="pill">${vm.memory_mb} MB</span>` : ""}
-              ${vm.disk_gb ? `<span class="pill">${vm.disk_gb} GB</span>` : ""}
+              ${vm.memory_mb ? `<span class="pill">${escapeHtml(vm.memory_mb)} MB</span>` : ""}
+              ${vm.disk_gb ? `<span class="pill">${escapeHtml(vm.disk_gb)} GB</span>` : ""}
+              ${configurationIssue ? '<span class="pill danger">Configuration issue</span>' : ""}
             </div>
+            ${configurationIssue ? `<p>${escapeHtml(vm.validation.message)}</p>` : ""}
             <div class="card-actions">
-              <button class="action ghost" data-action-id="vm-start" data-vm="${vm.name}" data-node-id="${node.id}">Start</button>
-              <button class="action ghost" data-action-id="vm-stop" data-vm="${vm.name}" data-node-id="${node.id}">Stop</button>
-              <button class="action ghost" data-action-id="vm-status" data-vm="${vm.name}" data-node-id="${node.id}">Status</button>
-              <button class="action ghost" data-action-id="vm-snapshot" data-vm="${vm.name}" data-node-id="${node.id}">Snapshot</button>
+              <button class="action ghost" data-action-id="vm-start" data-vm="${vmName}" data-node-id="${nodeId}">Start</button>
+              <button class="action ghost" data-action-id="vm-stop" data-vm="${vmName}" data-node-id="${nodeId}">Stop</button>
+              <button class="action ghost" data-action-id="vm-status" data-vm="${vmName}" data-node-id="${nodeId}">Status</button>
+              <button class="action ghost" data-action-id="vm-snapshot" data-vm="${vmName}" data-node-id="${nodeId}">Snapshot</button>
               ${snapshotButtons}
             </div>
           </div>
@@ -7204,7 +7279,7 @@ async function loadVms(options = {}) {
   state.vmsLoading = true;
   renderPreview();
   try {
-    const payload = await apiRequest("/api/vms");
+    const payload = await apiRequest("/api/vms?include_validation=true");
     state.vms = payload && Array.isArray(payload.vms) ? payload.vms : [];
     if (options.log) {
       logEvent("success", "VMs refreshed");
@@ -7558,23 +7633,29 @@ async function handleAction(actionId, node, params = {}) {
 
   if (actionId === "settings-fast-action-move") {
     const id = String(params.fastId || "");
-    const current = normalizeFastActions(state.ui.fastActions);
+    const current = activeFastActionProfile().actions;
     const index = current.indexOf(id);
     if (index < 0) {
       return;
     }
     const offset = params.direction === "up" ? -1 : 1;
     updateFastActions(moveFastAction(current, id, index + offset));
-    renderFastActions();
-    renderPreview();
     return;
   }
 
   if (actionId === "settings-fast-actions-default") {
     updateFastActions(FAST_ACTION_DEFAULT_IDS);
-    renderFastActions();
-    renderPreview();
     logEvent("success", "Fast actions reset to defaults");
+    return;
+  }
+
+  if (actionId === "settings-fast-profile-delete") {
+    const preferences = state.ui.fastActionPreferences;
+    const { active } = preferences;
+    if (active !== DEFAULT_FAST_ACTION_PROFILE && window.confirm(`Remove the fast-action profile “${active}”?`)) {
+      preferences.profiles = preferences.profiles.filter((profile) => profile.name !== active);
+      selectFastActionProfile(DEFAULT_FAST_ACTION_PROFILE);
+    }
     return;
   }
 
@@ -8954,6 +9035,25 @@ function bindEvents() {
   });
 
   if (elements.preview) {
+    elements.preview.addEventListener("change", (event) => {
+      if (event.target.id === "fast-action-profile") selectFastActionProfile(event.target.value);
+    });
+    elements.preview.addEventListener("submit", (event) => {
+      const form = event.target;
+      if (form.id !== "fast-action-profile-form") return;
+      event.preventDefault();
+      const name = normalizeFastActionProfileName(form.elements.profileName.value);
+      const preferences = state.ui.fastActionPreferences;
+      const duplicate = preferences.profiles.some((profile) => profile.name.toLowerCase() === name.toLowerCase());
+      if (!name || duplicate) {
+        const error = form.querySelector("#fast-action-profile-error");
+        error.textContent = duplicate ? "A profile with that name already exists." : "Enter a valid profile name.";
+        error.hidden = false;
+        return;
+      }
+      preferences.profiles.push({ name, actions: activeFastActionProfile().actions.slice() });
+      selectFastActionProfile(name);
+    });
     elements.preview.addEventListener("input", (event) => {
       const target = event.target;
       if (!target) {
@@ -8973,13 +9073,11 @@ function bindEvents() {
         return;
       }
       const enabled = Boolean(target.checked);
-      const current = normalizeFastActions(state.ui.fastActions);
+      const current = activeFastActionProfile().actions;
       const next = enabled
         ? [...current, fastActionId]
         : current.filter((id) => id !== fastActionId);
       updateFastActions(next);
-      renderFastActions();
-      renderPreview();
     });
   }
 
@@ -9025,15 +9123,13 @@ function bindEvents() {
       }
       event.preventDefault();
       const targetId = item.getAttribute("data-fast-order-id");
-      const current = normalizeFastActions(state.ui.fastActions);
+      const current = activeFastActionProfile().actions;
       const targetIndex = current.indexOf(targetId);
       if (targetIndex < 0 || targetId === draggedId) {
         renderPreview();
         return;
       }
       updateFastActions(moveFastAction(current, draggedId, targetIndex));
-      renderFastActions();
-      renderPreview();
       logEvent("success", "Fast actions reordered");
     });
     elements.preview.addEventListener("dragend", () => {

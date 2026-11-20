@@ -2061,7 +2061,10 @@ app.post(
 app.get(
   "/api/vms",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", "/vms");
+    const query = typeof req.query.include_validation === "string"
+      ? `?include_validation=${encodeURIComponent(req.query.include_validation)}`
+      : "";
+    const payload = await fortressRequestFor(req, "GET", `/vms${query}`);
     res.json(payload);
   })
 );

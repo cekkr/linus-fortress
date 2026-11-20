@@ -98,7 +98,7 @@ def validate_qemu_binary(binary: Optional[str]) -> Optional[str]:
     """Return the allowlisted bare name, or ``None`` for "auto" (qemu-system-x86_64, then qemu-kvm)."""
     if binary is None or binary == "":
         return None
-    if binary not in QEMU_BINARY_ALLOWLIST:
+    if not isinstance(binary, str) or binary not in QEMU_BINARY_ALLOWLIST:
         raise _bad_request(
             "qemu_binary must be one of: " + ", ".join(sorted(QEMU_BINARY_ALLOWLIST)) + " (bare name, resolved via PATH)"
         )
@@ -121,7 +121,9 @@ def resolve_qemu_executable(binary: Optional[str]) -> Optional[str]:
 
 
 def validate_extra_args(extra_args: Optional[List[str]]) -> List[str]:
-    args = list(extra_args or [])
+    if extra_args is not None and not isinstance(extra_args, list):
+        raise _bad_request("extra_args must be a list of strings")
+    args = extra_args or []
     if len(args) > MAX_EXTRA_ARGS:
         raise _bad_request(f"extra_args accepts at most {MAX_EXTRA_ARGS} items")
     normalized: List[str] = []
@@ -135,7 +137,7 @@ def validate_extra_args(extra_args: Optional[List[str]]) -> List[str]:
             canonical = canonical[1:]
         if canonical not in QEMU_EXTRA_ARG_RULES:
             raise _bad_request(
-                f"extra_args option not allowed: {option!r}; allowed: " + ", ".join(sorted(QEMU_EXTRA_ARG_RULES))
+                "extra_args contains an unsupported option. Allowed: " + ", ".join(sorted(QEMU_EXTRA_ARG_RULES))
             )
         rule = QEMU_EXTRA_ARG_RULES[canonical]
         normalized.append(canonical)
@@ -143,10 +145,10 @@ def validate_extra_args(extra_args: Optional[List[str]]) -> List[str]:
         if rule is None:
             continue
         if index >= len(args):
-            raise _bad_request(f"extra_args option {option} requires a value")
+            raise _bad_request(f"extra_args option {canonical} requires a value")
         value = args[index]
         if not isinstance(value, str) or not rule.fullmatch(value):
-            raise _bad_request(f"extra_args value not allowed for {option}: {value!r}")
+            raise _bad_request(f"extra_args has an invalid value for {canonical}")
         normalized.append(value)
         index += 1
     return normalized
@@ -155,7 +157,7 @@ def validate_extra_args(extra_args: Optional[List[str]]) -> List[str]:
 def validate_bridge_name(bridge: Optional[str]) -> Optional[str]:
     if bridge is None or bridge == "":
         return None
-    if not BRIDGE_NAME_PATTERN.fullmatch(bridge):
+    if not isinstance(bridge, str) or not BRIDGE_NAME_PATTERN.fullmatch(bridge):
         raise _bad_request("bridge_name must be 1-15 chars using letters, digits, ., _, or -")
     return bridge
 
@@ -169,25 +171,25 @@ def _validate_plain_path(path: str, field: str) -> str:
 
 
 def validate_vm_dir(vm_dir: Optional[str]) -> Optional[str]:
-    if not vm_dir:
+    if vm_dir is None or vm_dir == "":
         return None
     resolved = _validate_plain_path(vm_dir, "vm_dir")
     if not _is_within(resolved, get_vm_root()):
-        raise _bad_request(f"vm_dir must be inside {get_vm_root()}")
+        raise _bad_request("vm_dir must be inside FORTRESS_VM_ROOT")
     return resolved
 
 
 def validate_disk_path(disk_path: Optional[str]) -> Optional[str]:
-    if not disk_path:
+    if disk_path is None or disk_path == "":
         return None
     resolved = _validate_plain_path(disk_path, "disk_path")
     if not _is_within(resolved, get_vm_root()):
-        raise _bad_request(f"disk_path must be inside {get_vm_root()}")
+        raise _bad_request("disk_path must be inside FORTRESS_VM_ROOT")
     return resolved
 
 
 def validate_iso_path(iso_path: Optional[str]) -> Optional[str]:
-    if not iso_path:
+    if iso_path is None or iso_path == "":
         return None
     resolved = _validate_plain_path(iso_path, "iso_path")
     if not resolved.lower().endswith(".iso"):
@@ -207,7 +209,9 @@ def validate_vm_resources(record: Dict[str, Any]) -> None:
     if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535):
         raise _bad_request("ssh_forward_port must be between 1 and 65535")
     os_type = record.get("os_type")
-    if os_type and not OS_TYPE_PATTERN.fullmatch(os_type):
+    if os_type is not None and os_type != "" and (
+        not isinstance(os_type, str) or not OS_TYPE_PATTERN.fullmatch(os_type)
+    ):
         raise _bad_request("os_type must be 1-64 chars using letters, digits, ., _, or -")
 
 
@@ -227,6 +231,29 @@ def validate_vm_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record["disk_path"] = validate_disk_path(record.get("disk_path"))
     record["iso_path"] = validate_iso_path(record.get("iso_path"))
     return record
+
+
+def check_vm_configuration(name: str, record: Any) -> Dict[str, Any]:
+    """Check persisted settings without changing the record or invoking a hypervisor."""
+    try:
+        if not isinstance(record, dict):
+            raise _bad_request("VM record must be a JSON object")
+        validate_vm_name(name)
+        if record.get("name") != name:
+            raise _bad_request("VM name must match its registry entry")
+        provider = record.get("provider")
+        if provider not in ("qemu", "virtualbox"):
+            raise _bad_request("provider must be qemu or virtualbox in the stored record")
+        checked = validate_vm_record(dict(record))
+        if provider == "qemu":
+            if checked.get("network_mode", "user") not in ("user", "bridge"):
+                raise _bad_request("network_mode must be user or bridge")
+            missing = [field for field in ("cpu_cores", "memory_mb", "disk_path") if checked.get(field) is None]
+            if missing:
+                raise _bad_request("Required QEMU settings missing: " + ", ".join(missing))
+    except HTTPException as exc:
+        return {"valid": False, "message": exc.detail}
+    return {"valid": True}
 
 
 class VMSSHConfig(SSHConfig):
@@ -345,10 +372,12 @@ def sanitize_vm_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return sanitized
 
 
-def build_vm_summary(record: Dict[str, Any]) -> Dict[str, Any]:
-    ssh = record.get("ssh") or {}
+def build_vm_summary(name: str, record: Any) -> Dict[str, Any]:
+    record = record if isinstance(record, dict) else {}
+    ssh = record.get("ssh")
+    ssh = ssh if isinstance(ssh, dict) else {}
     return {
-        "name": record.get("name"),
+        "name": name,
         "provider": record.get("provider_display", record.get("provider")),
         "state": record.get("state", "unknown"),
         "os_type": record.get("os_type"),

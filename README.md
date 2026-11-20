@@ -25,7 +25,7 @@ Lizard UI, the optional web control deck, rendered against the demo API (placeho
 | ![Domain routing](docs/screenshots/routing.webp) | ![Firewall rules](docs/screenshots/firewall.webp) |
 | **Domain routing**: nginx routes, TLS modes, wildcard domains. | **Firewall**: backend status and rule inventory. |
 | ![VM labs](docs/screenshots/vms.webp) | ![Settings](docs/screenshots/settings.webp) |
-| **VM labs**: QEMU/VirtualBox VMs with start/stop/snapshot. | **Settings**: update + reload, system upgrade, fast-action order. |
+| **VM labs**: QEMU/VirtualBox VMs with start/stop/snapshot and configuration checks. | **Settings**: update + reload, system upgrade, and named fast-action profiles. |
 | ![App card details panel](docs/screenshots/app-card-details.webp) | ![Admin sign-in overlay](docs/screenshots/admin-login.webp) |
 | **App card details**: the more-info panel opened from a card title. | **Admin sign-in**: UI admin gate (password policy, lockout, optional TOTP). |
 | ![Containers home with image catalog](docs/screenshots/containers.webp) | <img src="docs/screenshots/mobile-deck.webp" alt="Mobile layout" width="260"> |
@@ -129,7 +129,7 @@ The Settings app also includes **Check Update + Reload**, which runs `/system/up
 Wizards support keyboard and touch navigation: ← / → (when focus is not in a form field) and horizontal swipes on the wizard viewport move between steps. Gestures only advance through validated intermediate steps; the final submit always needs an explicit click.
 Wizard progress is saved per browser tab for 12 hours in `sessionStorage` (`lizard.wizard-progress.v1`). After a refresh, choose **Resume** or **Discard** in the fast-actions bar. Passwords, secrets, tokens, environment fields, and recipe parameter blocks are excluded from saved progress. Resuming a System Upgrade that passed Scope automatically reruns the dry-run preflight. A saved Execute step resumes at Backups and requires fresh confirmation. If preflight fails, the wizard returns to Scope with the saved options available for retry.
 The Debug panel keeps the last 20 captured API errors and offers **Copy latest**, **Copy all**, **Export JSON** (`lizard-debug-<timestamp>.json`, format `lizard.debug-export.v1`), and **Clear**. Exports redact password/secret/token/API-key/cookie-like keys.
-Fast actions can be reordered in Settings by dragging items or with the ↑ / ↓ buttons; the order is saved in `localStorage` (`lizard.fast-actions.v1`).
+In Settings, use **Save a copy** to create a named fast-action profile from the current selection and order. Switch profiles using **Active profile**. Selection changes, drag-and-drop, and the ↑ / ↓ buttons update the active profile. Profiles and the active selection are stored in this browser under `lizard.fast-action-profiles.v1`. Existing `lizard.fast-actions.v1` preferences become the **Default** profile.
 The UI now includes an xterm.js-powered **Terminal** app for host shells and a recursive per-container **Terminal** sub-app; both use server-managed terminal sessions (`/terminal/sessions*`) so delegated token scope and OS-user mapping are enforced server-side.
 
 Open **Backups** from the control deck to find accessible archives, including archives for containers that have been deleted. A container’s **Backups** sub-app filters this list and can queue a new export. Refresh the list after the export completes. **Verify** checks integrity without importing, **Download** streams the encrypted archive, and **Restore** asks for an unused destination name and confirmation. The UI shows the Fortress request ID for queued exports and completed verification and restore operations. The same API permissions and scope checks apply through the UI.
@@ -510,6 +510,7 @@ Provisioning uses SSH to run the install-from-scratch scripts in `scripts/provis
 
 #### `GET /vms` (permission `vm_read`)
 - Returns VM summaries (`name`, `provider`, `state`, `installed`, `ssh_host`, labels).
+- Pass `include_validation=true` to report each stored configuration as valid or give its first issue. VM Labs requests this report and shows flagged records first. The check leaves stored records untouched and does not check installed tools, disk availability, or the live VM state.
 
 #### `POST /vms` (permission `vm_manage`)
 Body (excerpt):

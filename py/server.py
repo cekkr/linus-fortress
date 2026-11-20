@@ -154,6 +154,7 @@ from fortress.vms import (
     load_vms,
     save_vms,
     build_vm_summary,
+    check_vm_configuration,
     sanitize_vm_record,
     create_vm,
     update_vm,
@@ -2064,11 +2065,24 @@ def _vm_store_op(endpoint: str, target: Optional[str], operation, persist: bool 
     return _locked_store_operation(VMS_DB, load_vms, save_vms, endpoint, target, operation, persist=persist)
 
 @app.get("/vms")
-def list_vms(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+def list_vms(
+    x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None),
+    include_validation: bool = False,
+):
     authorize("vms_list", "vm_read", x_api_key, x_user_token)
     vms = _load_vm_store()
-    response = [build_vm_summary(record) for _, record in sorted(vms.items())]
-    audit_api("vms_list", details={"count": len(response)})
+    response = []
+    details = {"count": len(vms)}
+    if include_validation:
+        details["invalid_configurations"] = 0
+    for name, record in sorted(vms.items()):
+        summary = build_vm_summary(name, record)
+        if include_validation:
+            validation = check_vm_configuration(name, record)
+            summary["validation"] = validation
+            details["invalid_configurations"] += int(not validation["valid"])
+        response.append(summary)
+    audit_api("vms_list", details=details)
     return {"vms": response}
 
 @app.get("/vms/{name}")

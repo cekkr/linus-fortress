@@ -311,7 +311,8 @@ Lizard UI Express server: static assets, admin auth (PBKDF2-SHA256 passwords, lo
 
 Single-file browser app (vanilla JS): app-deck rendering, wizards, previews per app, terminal (xterm.js, polling), debug panel, fast-actions menu.
 
-- **Key functions and subparts:** `apiRequest` (all calls go to the UI server `/api/*`), `loadGraph`, `renderAll`/`renderGrid`/`renderCard`/`renderMoreInfoPanel`/`renderAppHome`, `renderWizard` + `WIZARD_STEP_COUNTS`/`WIZARD_MODE_LABELS`, `render*Preview` per app (routing, recipes, settings, packages, monitoring, firewall, VMs, sites, hosts, terminal), `loadPopularImages`/`renderImageCatalog`, `renderDebugPanel`, fast actions (`FAST_ACTION_OPTIONS`, `FAST_ACTION_STORAGE_KEY` in localStorage, `moveFastAction` for drag/drop + ↑/↓ ordering in Settings), `RECIPE_CATALOG`, `TERMINAL_POLL_INTERVAL_MS`.
+- **Key functions and subparts:** `apiRequest` (all calls go to the UI server `/api/*`), `loadGraph`, `renderAll`/`renderGrid`/`renderCard`/`renderMoreInfoPanel`/`renderAppHome`, `renderWizard` + `WIZARD_STEP_COUNTS`/`WIZARD_MODE_LABELS`, `render*Preview` per app (routing, recipes, settings, packages, monitoring, firewall, VMs, sites, hosts, terminal), `loadPopularImages`/`renderImageCatalog`, `renderDebugPanel`, fast actions (`FAST_ACTION_OPTIONS`, `FAST_ACTION_PROFILES_STORAGE_KEY` in localStorage, `moveFastAction` for drag/drop + ↑/↓ ordering in Settings), `RECIPE_CATALOG`, `TERMINAL_POLL_INTERVAL_MS`.
+  - Fast-action profiles store the active name and each profile's ordered action IDs at `lizard.fast-action-profiles.v1`. Load the legacy `lizard.fast-actions.v1` array as the default profile when needed. Changes apply only to the active profile.
   - Wizard navigation: `bindWizardGestures` (ArrowLeft/ArrowRight outside form fields and the xterm, horizontal swipe on `.wizard-viewport`) → `navigateWizardByGesture`, which only calls `back`/`next` between steps and never submits the final step.
   - Wizard resume: `WIZARD_PROGRESS_STORAGE_KEY` (`lizard.wizard-progress.v1` in **sessionStorage**), `WIZARD_MODE_GROUPS` (mode → wizard state group), `persistWizardProgress` (called from `renderWizard` and the wizard input handler), `normalizeWizardProgressSnapshot` (version, known mode, 12 h max age, clamped steps), `loadPendingWizardResume` at startup, `resumePendingWizard`/`discardPendingWizard` behind the fast-actions **Resume/Discard** banner. `pickPersistableWizardFields` drops keys matching `WIZARD_PROGRESS_SENSITIVE_KEY` (pass/secret/token/credential/private/environment) and drops recipe parameter blocks. `system-upgrade` persists only its option booleans and reruns dry-run preflight before restoring a saved step past Scope. A saved Execute step resumes at Backups with confirmation cleared. A failed preflight leaves the wizard at Scope.
   - Debug export: `state.debug.history` (last `DEBUG_HISTORY_LIMIT` = 20 errors), `buildDebugExport` (format `lizard.debug-export.v1`), `redactDebugValue` (`DEBUG_REDACT_KEY`), `handleDebugAction` (`data-debug-action` = `copy-latest` / `copy-all` / `export` / `clear`).
@@ -415,7 +416,7 @@ Standalone Puppeteer helper library (and its design doc) that snapshots visible 
 - [`container_backup_browser.test.js`](ui/tests/container_backup_browser.test.js) — real Chromium against the UI server and a stateful API fixture covering export receipts, filtering, verification, binary download, phone layout, restore confirmation and retry, restart failures, and expired credentials.
 - [`wizard_css_transform_guard.test.js`](ui/tests/wizard_css_transform_guard.test.js) — static CSS guard for wizard transforms.
 - [`proxy_path_encoding.test.js`](ui/tests/proxy_path_encoding.test.js) — proxied path params are URI-encoded upstream.
-- [`wizard_nav_resume_debug.test.js`](ui/tests/wizard_nav_resume_debug.test.js) — wizard arrow-key/swipe navigation (ignored inside inputs, never submits), progress resume after reload, literal field rendering, password and recipe parameter exclusion from progress, fresh upgrade preflight and backup confirmation, Debug copy/export redaction, fast-action drag/drop + ↑/↓ ordering (Puppeteer).
+- [`wizard_nav_resume_debug.test.js`](ui/tests/wizard_nav_resume_debug.test.js) — wizard navigation/resume, literal field rendering, redacted Debug exports, fast-action ordering and profile persistence, and VM configuration flags in Puppeteer.
 
 ### [`dev_samples/`](dev_samples/)
 
@@ -490,7 +491,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 ### SSH hosts and test VMs — Shipped
 
-- **Behavior:** registries with provision/probe/saved states; VMs add QEMU/VirtualBox start/stop/status/snapshots.
+- **Behavior:** registries with provision/probe/saved states. VMs add QEMU/VirtualBox start/stop/status/snapshots. `GET /vms?include_validation=true` uses `check_vm_configuration` to report invalid stored settings without modifying the record or calling the hypervisor. VM Labs requests this report and lists flagged records first.
 - **Owners:** [`py/fortress/hosts.py`](py/fortress/hosts.py), [`py/fortress/vms.py`](py/fortress/vms.py), [`py/fortress/remote.py`](py/fortress/remote.py), [`scripts/provision/`](scripts/provision/). **Tests:** [`tests/test_hosts_vms.py`](tests/test_hosts_vms.py). **Gaps:** no test against a real QEMU/VirtualBox; SSH passwords still use `sshpass`.
 
 ### Lizard UI — Shipped (several sub-apps Experimental/scaffold)

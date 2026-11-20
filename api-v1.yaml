@@ -266,6 +266,13 @@ paths:
     get:
       summary: List registered VM test environments
       tags: [VMs]
+      parameters:
+        - in: query
+          name: include_validation
+          description: Check persisted VM settings and report the first issue per VM. This read-only check runs without a hypervisor.
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: VM list
@@ -4186,6 +4193,16 @@ components:
             type: string
         updated_at:
           type: string
+        validation:
+          type: object
+          description: Included when include_validation is true.
+          required: [valid]
+          properties:
+            valid:
+              type: boolean
+            message:
+              type: string
+              description: First issue found in the stored configuration. Included for invalid records.
     VMSnapshotRecord:
       type: object
       properties:

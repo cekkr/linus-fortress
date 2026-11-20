@@ -1172,6 +1172,36 @@ body {
   margin-top: 8px;
 }
 
+.settings-fast-profile {
+  margin: 8px 0 12px;
+}
+
+.settings-fast-profile label {
+  display: block;
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+.settings-fast-profile-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.settings-fast-profile-controls input,
+.settings-fast-profile-controls select {
+  flex: 1 1 130px;
+  min-width: 0;
+  border: 1px solid rgba(35, 49, 31, 0.28);
+  border-radius: 7px;
+  background: #fff;
+  color: #23311f;
+  padding: 4px 6px;
+  font: inherit;
+}
+
 .settings-fast-item {
   border-radius: 10px;
   border: 1px solid rgba(0, 0, 0, 0.08);

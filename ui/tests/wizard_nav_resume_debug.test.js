@@ -42,6 +42,7 @@ function jsonResponse(res, payload, status = 200) {
 
 function startStubApi(port) {
   const upgrades = [];
+  const vmQueries = [];
   let failPreflight = false;
   const server = createServer(async (req, res) => {
     const pathname = new URL(req.url || "/", `http://127.0.0.1:${port}`).pathname;
@@ -84,12 +85,22 @@ function startStubApi(port) {
       jsonResponse(res, { backups: ["web-01-backup.enc"] });
       return;
     }
+    if (pathname === "/vms") {
+      const url = new URL(req.url, `http://127.0.0.1:${port}`);
+      vmQueries.push(url.searchParams.get("include_validation"));
+      jsonResponse(res, { vms: [
+        { name: "lab-ready", state: "stopped", provider: "qemu", validation: { valid: true } },
+        { name: "lab-old", state: "stopped", provider: "qemu", validation: { valid: false, message: "disk_path must be inside FORTRESS_VM_ROOT" } },
+      ] });
+      return;
+    }
     jsonResponse(res, { error: "not found" }, 404);
   });
   return new Promise((resolve, reject) => {
     server.listen(port, "127.0.0.1", () => resolve({
       server,
       upgrades,
+      vmQueries,
       setPreflightFailure: (enabled) => { failPreflight = enabled; },
     }));
     server.on("error", reject);
@@ -482,13 +493,86 @@ test("fast actions reorder via arrow buttons and drag/drop, persisted in localSt
     );
 
     const after = await topBarOrder();
-    const stored = await page.evaluate(() => JSON.parse(window.localStorage.getItem("lizard.fast-actions.v1") || "[]"));
-    assert.deepEqual(stored, after);
+    const stored = await page.evaluate(() => JSON.parse(window.localStorage.getItem("lizard.fast-action-profiles.v1")));
+    assert.deepEqual(stored, { active: "Default", profiles: [{ name: "Default", actions: after }] });
     assert.equal(after.length, before.length);
   } finally {
     if (browser) {
       await browser.close();
     }
+    harness.proc.kill("SIGTERM");
+    harness.api.server.close();
+  }
+});
+
+test("named fast-action profiles preserve legacy order and VM Labs shows configuration issues", async (t) => {
+  const puppeteer = await loadPuppeteer(t);
+  if (!puppeteer) return;
+  const harness = await launchHarness();
+  let browser;
+  try {
+    browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 930 });
+    await page.evaluateOnNewDocument(() => {
+      if (!localStorage.getItem("lizard.fast-actions.v1")) {
+        localStorage.setItem("lizard.fast-actions.v1", JSON.stringify(["system-upgrade", "refresh"]));
+      }
+    });
+    await page.goto(`http://127.0.0.1:${harness.uiPort}`, { waitUntil: "domcontentloaded" });
+    await login(page);
+
+    const topBarOrder = () =>
+      page.$$eval("#fast-actions .fast-actions-row [data-action-id]", (buttons) => buttons.map((button) => button.dataset.actionId));
+    const activeProfile = () => page.$eval("#fast-action-profile", (select) => select.value);
+    const openSettings = () => page.locator('#fast-actions [data-action-id="open-settings"]').click();
+    const saveProfile = () => page.locator('#fast-action-profile-form button[type="submit"]').click();
+    assert.deepEqual(await topBarOrder(), ["system-upgrade", "refresh"]);
+    await openSettings();
+    assert.equal(await activeProfile(), "Default");
+    await page.locator("#fast-action-profile-name").fill("Ops <review>");
+    await saveProfile();
+    assert.equal(await activeProfile(), "Ops <review>");
+    await page.locator('[data-setting-fast-action="create-container"]').click();
+    await page.locator('#fast-order-list [data-fast-id="create-container"][data-direction="up"]').click();
+    const edited = ["system-upgrade", "create-container", "refresh"];
+    assert.deepEqual(await topBarOrder(), edited);
+    assert.ok((await page.$eval("#app-grid", (el) => el.textContent)).includes("New Container"));
+
+    await page.locator("#fast-action-profile-name").fill("ops <review>");
+    await saveProfile();
+    await page.waitForSelector("#fast-action-profile-error", { visible: true });
+    assert.match(await page.$eval("#fast-action-profile-error", (el) => el.textContent), /already exists/);
+    await page.select("#fast-action-profile", "Default");
+    assert.deepEqual(await topBarOrder(), ["system-upgrade", "refresh"]);
+    await page.select("#fast-action-profile", "Ops <review>");
+    assert.deepEqual(await topBarOrder(), edited);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await openSettings();
+    assert.equal(await activeProfile(), "Ops <review>");
+    assert.deepEqual(await topBarOrder(), edited);
+
+    const remove = '[data-action-id="settings-fast-profile-delete"]';
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await page.locator(remove).click();
+    assert.equal(await activeProfile(), "Ops <review>");
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.locator(remove).click();
+    assert.equal(await activeProfile(), "Default");
+    assert.deepEqual(await topBarOrder(), ["system-upgrade", "refresh"]);
+    assert.deepEqual(await page.$$eval("#fast-action-profile option", (options) => options.map((option) => option.value)), ["Default"]);
+
+    await page.locator('#breadcrumb [data-nav-node-id="home"]').click();
+    await page.locator('.app-card[data-node-id="vms"] .card-icon-button').click();
+    await page.waitForFunction(() => document.querySelector("#app-grid .app-home-shell")?.textContent.includes("Configuration issue"));
+    assert.deepEqual(harness.api.vmQueries, ["true"]);
+    const cards = await page.$$eval("#app-grid .app-home-item", (elements) => elements.map((el) => el.textContent));
+    assert.match(cards[0], /lab-old/);
+    assert.match(cards[0], /disk_path must be inside FORTRESS_VM_ROOT/);
+    assert.doesNotMatch(cards.find((text) => text.includes("lab-ready")), /Configuration issue/);
+    assert.match(await page.$eval("#preview", (el) => el.textContent), /disk_path must be inside FORTRESS_VM_ROOT/);
+  } finally {
+    if (browser) await browser.close();
     harness.proc.kill("SIGTERM");
     harness.api.server.close();
   }

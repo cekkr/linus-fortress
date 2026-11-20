@@ -73,7 +73,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add an inline wizard step summary/history strip with breadcrumb quick-jump so users can navigate back to Home/sections and prior wizard steps without losing context.
 - Done: Persist wizard progress markers per active flow (sessionStorage, sensitive fields dropped, 12 h expiry) with a Resume/Discard banner after page refresh.
 - Done: Add drag/drop (and ↑/↓ button) ordering for the fast-actions menu in Settings.
-- Next: Add named profiles for fast-actions menu preferences (save/switch sets of actions).
+- Done: Save, switch, and remove named fast-action profiles in Settings. Preserve the legacy selection and order as the default profile.
 - Done: Rerun the dry-run preflight when resuming System Upgrade past Scope. Restore saved Execute progress at Backups with fresh confirmation, and allow a retry from Scope after preflight failure.
 - Next: Add a background cache refresh + health indicator for public LXD simplestream lookups and keep Ubuntu/Debian version-to-codename mappings current as new releases ship.
 - Done: Rework app navigation cards into an app-store model where icon click opens directly and title/description toggles an animated more-info panel with deep actions + Open CTA.
@@ -239,7 +239,7 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Done: Constrained VM inputs so `vm_manage` no longer implies command execution: `qemu_binary` allowlist (bare names), `extra_args` option/value allowlist, `bridge_name` pattern (no `,helper=`), `vm_dir`/`disk_path` confined to `FORTRESS_VM_ROOT` (purge refuses paths outside it), `.iso`-only `iso_path`, bounded resources; re-validated before start so legacy records can't bypass it.
 - Done: QEMU snapshot create/restore/delete return 409 while the VM is running (found on AlmaLinux: `qemu-img` can't take the write lock and restore would corrupt a live disk).
 - Next: Live QEMU snapshots via QMP `savevm` (would need a guarded monitor socket).
-- Next: Add a migration/report that flags stored VM records failing the new validation (today they fail at start/purge with 400).
+- Done: Add an opt-in configuration report to the VM list and surface invalid stored settings in VM Labs. Check the records without executing a hypervisor or modifying the VM store.
 - Done: Write authenticated chunked container backups with private staging and collision-resistant filenames. Read legacy Fernet archives, support offline verification and scoped stored restores, and restrict uploaded archives to trusted recovery operators.
 - Done: Add a local restic workflow for off-host snapshots of Fortress host state and verified staged recovery, including a rebuild and isolation runbook.
 - Next: Automate off-host backup scheduling, retention and backup-age alerts, and run a clean-host recovery drill with real LXD and a stopped VM disk.

@@ -12,7 +12,7 @@
   "platforms": {
     "darwin-arm64": {
       "containers": "379b66642dab37c5f96d95c95823b5415262c1b9ffdefd609bba5fad8eff523d",
-      "settings": "2b41863c59b2813bb8f742c3dee5de1cede087cd009a505199eea98061c27974",
+      "settings": "60052a5dbc0f82750a44d37329d367f2a02277d10bdf0683a2446199bde20751",
       "monitoring": "8a4167277b1c2d45b4d7a699c82eb3252cdd4e12f9f1b4bc14e7cda6279516f7",
       "routing": "97887ceebba7e812c9355a266cc5a4d21f01300236a2b46e35285b98189971d0",
       "recipes": "010b373116018b9ad433e5b0bf1d1a5bb18bae266e6b291eaf87b45bcdfd8f8c",

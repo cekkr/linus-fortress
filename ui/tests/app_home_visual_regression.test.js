@@ -407,7 +407,7 @@ function hydrationApiRequestsForApp(appId) {
     return [{ path: "/api/hosts", method: "GET" }];
   }
   if (appId === "vms") {
-    return [{ path: "/api/vms", method: "GET" }];
+    return [{ path: "/api/vms", method: "GET", query: "?include_validation=true" }];
   }
   if (appId === "sites") {
     return [
@@ -557,20 +557,19 @@ test("visual regression for all top-level app homes and per-item actions", async
               return false;
             }
             try {
-              const pathname = new URL(response.url()).pathname;
-              return pathname === requestSpec.path;
+              const url = new URL(response.url());
+              return url.pathname === requestSpec.path && (!requestSpec.query || url.search === requestSpec.query);
             } catch {
               return false;
             }
           },
           { timeout: 12000 }
-        )
+        ).catch((err) => {
+          throw new Error(`${app.id} did not receive ${requestSpec.method} ${requestSpec.path}${requestSpec.query || ""}`, { cause: err });
+        })
       );
 
-      await openAppHome(page, app.id, app.title);
-      if (hydrationWaiters.length) {
-        await Promise.all(hydrationWaiters);
-      }
+      await Promise.all([openAppHome(page, app.id, app.title), ...hydrationWaiters]);
 
       if (app.id === "routing") {
         await page.waitForFunction(

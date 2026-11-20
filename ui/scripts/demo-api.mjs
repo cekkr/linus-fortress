@@ -128,8 +128,8 @@ export function buildDemoData() {
   ];
 
   const vms = [
-    { name: "alma-lab", provider: "qemu", status: "running", profile: "fedora", memory_mb: 4096, cpus: 2, disk_gb: 30, snapshots: ["clean-install", "pre-upgrade"] },
-    { name: "ubuntu-lab", provider: "qemu", status: "stopped", profile: "ubuntu", memory_mb: 2048, cpus: 2, disk_gb: 20, snapshots: ["boot"] },
+    { name: "alma-lab", provider: "qemu", status: "running", profile: "fedora", memory_mb: 4096, cpus: 2, disk_gb: 30, snapshots: ["clean-install", "pre-upgrade"], validation: { valid: true } },
+    { name: "ubuntu-lab", provider: "qemu", status: "stopped", profile: "ubuntu", memory_mb: 2048, cpus: 2, disk_gb: 20, snapshots: ["boot"], validation: { valid: false, message: "disk_path must be inside FORTRESS_VM_ROOT" } },
   ];
 
   const sites = [
@@ -214,7 +214,12 @@ export function startDemoApi(port, options = {}) {
     if (p === "/firewall/rules/diff") return jsonResponse(res, { added: [], removed: [], unchanged: data.firewallRules });
     if (p === "/firewall/ddos") return jsonResponse(res, { enabled: true, profile: "standard", conn_limit: 80, allowlist: ["10.0.0.0/8"] });
     if (p === "/hosts") return jsonResponse(res, { hosts: data.hosts });
-    if (p === "/vms") return jsonResponse(res, { vms: data.vms });
+    if (p === "/vms") {
+      const vms = url.searchParams.get("include_validation") === "true"
+        ? data.vms
+        : data.vms.map(({ validation, ...vm }) => vm);
+      return jsonResponse(res, { vms });
+    }
     if (p === "/sites") return jsonResponse(res, { sites: data.sites });
     if (/^\/sites\/[^/]+\/backups$/.test(p)) {
       const id = decodeURIComponent(p.split("/")[2]);

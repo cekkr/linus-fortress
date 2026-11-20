@@ -419,6 +419,49 @@ class HostVMRouteTests(VMRootMixin, unittest.TestCase):
             self.assertEqual(self.client.delete("/vms/web", headers=self.master).status_code, 200)
             self.assertEqual(self.client.get("/vms/web", headers=self.master).status_code, 404)
 
+    def test_vm_configuration_report_is_read_only_and_does_not_echo_invalid_values(self):
+        store = Path(self.module.VMS_DB)
+        common = {
+            "provider": "qemu", "cpu_cores": 2, "memory_mb": 2048,
+            "disk_path": os.path.join(self.root, "disk.qcow2"),
+        }
+        records = {
+            "current": {**common, "name": "current", "extra_args": ["-M", "q35"]},
+            "legacy": {**common, "name": "legacy", "extra_args": ["example-private-value"]},
+            "invalid-type": {**common, "name": "invalid-type", "qemu_binary": ["qemu-kvm"]},
+            "incomplete": {"name": "incomplete", "provider": "qemu"},
+            "damaged": [],
+        }
+        store.write_text(json.dumps(records))
+        original = store.read_bytes()
+        users = Path(self.module.API_USERS_DB)
+        users.write_text(json.dumps({
+            "tok-vm-read": {"username": "viewer", "permissions": ["vm_read"]},
+            "tok-denied": {"username": "denied", "permissions": []},
+        }))
+        viewer = {"X-User-Token": "tok-vm-read"}
+        with (
+            mock.patch("fortress.vms.run_command") as run,
+            mock.patch("fortress.vms.shutil.which") as which,
+        ):
+            self.assertEqual(self.client.get("/vms?include_validation=true", headers={"X-User-Token": "tok-denied"}).status_code, 403)
+            basic = self.client.get("/vms", headers=viewer)
+            self.assertEqual(basic.status_code, 200, basic.text)
+            self.assertTrue(all("validation" not in vm for vm in basic.json()["vms"]))
+            report = self.client.get("/vms?include_validation=true", headers=viewer)
+            self.assertEqual(report.status_code, 200, report.text)
+            run.assert_not_called()
+            which.assert_not_called()
+        result = {vm["name"]: vm["validation"] for vm in report.json()["vms"]}
+        self.assertEqual(result["current"], {"valid": True})
+        self.assertIn("extra_args", result["legacy"]["message"])
+        self.assertIn("qemu_binary", result["invalid-type"]["message"])
+        self.assertIn("disk_path", result["incomplete"]["message"])
+        self.assertIn("JSON object", result["damaged"]["message"])
+        self.assertTrue(all(not result[name]["valid"] for name in records if name != "current"))
+        self.assertNotIn("example-private-value", report.text)
+        self.assertEqual(store.read_bytes(), original)
+
     def test_host_probe_merges_into_current_record(self):
         self.client.post("/hosts", json={"name": "edge1", "ssh": {"host": "edge1.example", "username": "ops"}}, headers=self.master)
 

@@ -258,16 +258,22 @@ const SHOTS = [
   {
     id: "vms",
     title: "VM labs",
-    caption: "QEMU/VirtualBox test VMs with start/stop/snapshot quick controls.",
+    caption: "QEMU/VirtualBox test VMs with configuration reports and start/stop/snapshot controls.",
     viewport: DESKTOP,
     prepare: (page) => openApp(page, "vms"),
   },
   {
     id: "settings",
     title: "Settings",
-    caption: "Update + reload, guided system upgrade, and drag-to-reorder fast actions.",
+    caption: "Update + reload, guided system upgrade, and named fast-action profiles.",
     viewport: DESKTOP,
-    prepare: (page) => openApp(page, "settings"),
+    prepare: async (page) => {
+      await openApp(page, "settings");
+      await page.locator("#fast-action-profile-name").fill("Maintenance");
+      await page.locator('#fast-action-profile-form button[type="submit"]').click();
+      await page.waitForFunction(() => document.getElementById("fast-action-profile")?.value === "Maintenance");
+      await settle(page);
+    },
   },
   {
     id: "mobile-deck",
