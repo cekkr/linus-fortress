@@ -3,6 +3,7 @@ import os
 import sqlite3
 import threading
 import logging
+from contextlib import closing
 from typing import Optional, Dict, Any
 
 
@@ -19,7 +20,14 @@ class CommandLogger:
         try:
             if directory:
                 os.makedirs(directory, exist_ok=True)
-            with sqlite3.connect(self.db_path) as conn:
+            # Open existing databases without truncating their history, including on upgrade.
+            fd = os.open(self.db_path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+            finally:
+                os.close(fd)
+            with closing(sqlite3.connect(self.db_path)) as conn, conn:
+                conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS command_log (
@@ -31,9 +39,16 @@ class CommandLogger:
                         action TEXT,
                         target TEXT,
                         details TEXT,
-                        status TEXT
+                        status TEXT,
+                        request_id TEXT
                     )
                     """
+                )
+                columns = {column[1] for column in conn.execute("PRAGMA table_info(command_log)")}
+                if "request_id" not in columns:
+                    conn.execute("ALTER TABLE command_log ADD COLUMN request_id TEXT")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS command_log_request_id ON command_log (request_id)"
                 )
         except (OSError, sqlite3.Error) as exc:
             logging.error("Unable to initialize command log database: %s", exc)
@@ -47,17 +62,18 @@ class CommandLogger:
         target: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
         status: str = "success",
+        request_id: Optional[str] = None,
     ):
         payload = json.dumps(details, default=str) if details is not None else None
         try:
             with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+                with closing(sqlite3.connect(self.db_path)) as conn, conn:
                     conn.execute(
                         """
-                        INSERT INTO command_log (actor, endpoint, category, action, target, details, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO command_log (actor, endpoint, category, action, target, details, status, request_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (actor, endpoint, category, action, target, payload, status),
+                        (actor, endpoint, category, action, target, payload, status, request_id),
                     )
         except (OSError, sqlite3.Error) as exc:
             logging.error("Failed to persist audit log entry: %s", exc)

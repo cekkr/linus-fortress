@@ -1,14 +1,14 @@
 import ipaddress
-import logging
 import os
 import re
 import shlex
 import shutil
-import subprocess
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel
+
+from fortress.system import run_command
 
 PROVISION_SCRIPTS_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "provision")
@@ -24,19 +24,7 @@ class SSHConfig(BaseModel):
 
 
 def _run_subprocess(command: List[str], input_text: Optional[str] = None) -> str:
-    try:
-        result = subprocess.run(
-            command,
-            input=input_text,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as exc:
-        logging.error("Command failed: %s. Error: %s", exc.cmd, exc.stderr)
-        raise HTTPException(status_code=500, detail=f"System Error: {exc.stderr.strip()}")
+    return run_command(command, input_text=input_text)
 
 
 SSH_USERNAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]{0,63}$")

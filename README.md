@@ -46,6 +46,7 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 - Disable the master API key after bootstrap; rely on delegated tokens with minimal permissions and `allowed_containers`.
 - Bind the API to a private interface; terminate TLS at a trusted proxy; rotate credentials regularly.
 - Set `FORTRESS_BACKUP_PASSWORD` and store it outside the host; verify backup restores.
+- Protect an off-host copy of backups and the command register with retention controlled off-host. See [Host recovery](#host-recovery).
 - Keep host OS and LXD patched; apply security updates before provisioning new containers.
 - Restrict firewall rules and `POST /containers/expose` to known allowlists; prefer specific bind addresses.
 - For terminal access, grant `terminal_host`/`terminal_container` only where needed and map each delegated token to a least-privilege OS user via `terminal_host.os_user` / `terminal_container.os_user`.
@@ -56,7 +57,7 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 ## Authentication
 
 - `X-API-Key`: optional centralized master key with unrestricted access, best used only during bootstrap (set `FORTRESS_API_KEY` or `API_SECRET_KEY`). Disable it long-term to reduce blast radius.
-- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `migration_admin`, `terminal_host`, `terminal_container`, optional `terminal_root`, optional `terminal_impersonate`) and optional `allowed_containers` scope.
+- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `restore_external_backup`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `migration_admin`, `terminal_host`, `terminal_container`, optional `terminal_root`, optional `terminal_impersonate`) and optional `allowed_containers` scope.
 - Either header grants access; if both are provided the master key takes precedence. Tokens scoped to containers must match the container(s) referenced by the request payload.
 - Delegated tokens may carry an expiry (`expires_at`, set at creation with `ttl_seconds`/`expires_at` or later via `PUT /api-users/{token}`). Tokens without one never expire; a record with an unparseable `expires_at` is treated as expired.
 - Status codes: **401** (with `WWW-Authenticate`) = no credential, unknown credential, or expired token — re-authenticate; **403** = authenticated, but the token lacks the permission or the container is outside `allowed_containers`.
@@ -991,8 +992,8 @@ Example dependency recipe:
 ### Backup & Restore
 
 #### `POST /backup/{container_name}` (permission `manage_backups`, scoped)
-- Path parameter `container_name` (LXD instance name: letter first, then letters/digits/hyphens; `400` otherwise); no body. Starts encrypted backup task.
-- Archives are written as `<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc` (mode `0600`) via a `.partial` file + rename, so half-written archives never appear in listings.
+- Starts an encrypted LXD export in the background. A placeholder or missing `FORTRESS_BACKUP_PASSWORD` returns `503`. Check `backup_complete` or `backup_failed` using the response request ID.
+- Successful exports are published atomically as `<container>_<YYYYmmdd_HHMMSS>-<uuidhex>.tar.gz.enc` (UTC, mode `0600`). Each export uses private staging. V2 archives use per-archive keys, authenticated chunks and an authenticated end marker.
 
 #### `GET /backup/list` (permission `manage_backups`, scoped)
 - Optional query `container` (must be in scope). Creates the backup directory on demand.
@@ -1000,11 +1001,16 @@ Example dependency recipe:
 - Tokens with a non-empty `allowed_containers` only see archives of in-scope containers; legacy names that don't match the pattern are hidden from them.
 
 #### `GET /backup/download/{filename}` (permission `manage_backups`, scoped)
-- `filename` must match `<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc` (`400` otherwise) and its container must be in scope (`403`). Returns the archive as an `application/octet-stream` attachment; combine with `fortress-cli backup download`.
+- Accepts current filenames and legacy filenames without the unique suffix. The filename's container must be in scope. Returns an `application/octet-stream` attachment.
 
-#### `POST /restore` (permission `restore_container`, scoped)
-- Query parameter `container_name` and multipart form body containing `file` (encrypted `.enc` upload). The upload is streamed to a per-request owner-only staging dir under the backup dir (removed afterwards), decrypted with the server-side Fernet key, and imported with `lxc import`. Concurrent restores don't share temp files.
-- `FORTRESS_RESTORE_MAX_BYTES` (default `0` = unlimited) caps the upload size (`413`). Decryption is still in memory because Fernet tokens aren't streamable.
+#### `POST /backup/restore/{filename}` (permission `restore_container`, scoped)
+- Verifies and imports a stored backup. Set `dry_run=true` to authenticate the full archive without calling LXD. Both v2 and legacy Fernet archives are supported.
+- Use `container_name` to choose a new instance name for a recovery drill. It defaults to the source name. Both source and destination must be in scope. LXD refuses to overwrite an existing instance.
+
+#### `POST /restore` (permissions `restore_container` and `restore_external_backup`, unrestricted container scope)
+- Supply `container_name` in the query and an encrypted v2 or legacy Fernet archive in the multipart `file` field. Import attaches the configuration from the archive. Grant upload access only to trusted recovery operators and use vetted exports.
+- Keep routine delegated restores on `POST /backup/restore/{filename}`. Keep the server backup directory writable only by trusted administrators and the Fortress service account.
+- `FORTRESS_RESTORE_MAX_BYTES` returns `413` for an oversized upload after multipart parsing. Apply a request-body limit at the reverse proxy to cap initial spooling.
 
 ### Migrations & Upgrades (permission `migration_admin`)
 
@@ -1056,9 +1062,27 @@ Body:
 - If `auto_stash=false` and the working tree has local tracked changes, the endpoint returns `409` and skips pull/reload.
 
 ### Command Register & Auditing
-- Every API call records an immutable entry into `command_log.db` (see `COMMAND_LOG_DB`), capturing `actor`, endpoint, action, target, and sanitized payload details.
-- Internal behaviours such as `lxc exec` commands are also logged with command metadata (sensitive arguments are redacted) so operators can trace suspicious cross-container activity.
-- The register lives alongside other Fortress state under `/var/lib/fortress`; query it via `sqlite3 /var/lib/fortress/command_log.db 'select * from command_log order by id desc limit 20;'`.
+- The owner-only SQLite register records HTTP outcomes, including rejected credentials, denied permissions and invalid requests. Request records use the route template, actor, method and status code. Operation records carry the action and target. Commands run through Fortress's shared subprocess wrapper record the executable and exit status. The wrapper omits argument values, command output and SSH script contents.
+- Use the response's `X-Fortress-Request-ID` to find the related records. Keep raw access logging disabled for token-bearing routes and configure custom uvicorn launches with `--no-access-log`.
+
+```bash
+sqlite3 -header -column /var/lib/fortress/command_log.db \
+  'SELECT id,timestamp,actor,endpoint,action,target,status,request_id FROM command_log ORDER BY id DESC LIMIT 30;'
+sqlite3 -header -column /var/lib/fortress/command_log.db \
+  "SELECT timestamp,category,action,target,status,details FROM command_log WHERE request_id = 'PASTE_REQUEST_ID' ORDER BY id;"
+```
+
+### Host recovery
+
+Run recovery commands from a trusted operator shell. Install [restic](https://restic.readthedocs.io/en/stable/) and initialize a dedicated off-host repository. Configure `RESTIC_REPOSITORY` and a protected password source such as `RESTIC_PASSWORD_FILE`. Keep recovery credentials outside the Fortress host. Use server-side retention or append-only backup credentials so a compromised host account cannot delete the recovery history.
+
+1. Export LXD instances and wait for `backup_complete` before taking the host snapshot. Quiesce databases or take application-consistent dumps first. Export LXD custom storage volumes separately and include those exports in the snapshot. Shut down Fortress and Lizard UI writers and any QEMU/VirtualBox guests whose disk files will be copied.
+2. Run `bash scripts/host-recovery.sh backup`. It includes `/etc/fortress`, `/var/lib/fortress` (the audit DB, Fortress stores, backups, shared storage and VM disks in the default location), and available nginx, Let's Encrypt, firewall and Fortress service configuration. Pass any non-default locations as additional absolute paths, including an overridden audit DB, external VM disks, UI admin stores or custom volume exports. Check the exit status and record the snapshot ID off-host. Restic can retain an incomplete snapshot when the backup exits with code 3.
+3. Run `bash scripts/host-recovery.sh snapshots` to list tagged snapshots. Run `bash scripts/host-recovery.sh verify` to read and check the repository data. For a drill or an incident, use a clean recovery machine and run `bash scripts/host-recovery.sh restore SNAPSHOT_ID /path/to/trusted/staging-parent`. This restores with verification into a new private directory. Use the stated directory only after a successful exit. On Linux, check command outcomes with `journalctl -t fortress-recovery`.
+4. Rebuild the host from trusted OS and Fortress versions, then review the recovered state before installing it. Preserve ownership and permissions, restore SELinux labels where applicable, and check nginx and firewall configuration before enabling services. After a compromise, use a known-good snapshot and rotate restored credentials and signing keys before reopening network access. Keep old backup passwords in offline custody for historical archives.
+5. Restore LXD profiles, networks, storage pools and volumes before importing instances. Verify encrypted exports locally with `fortress-cli backup verify`. Import a test copy into isolated networking, check application data and health, then restore production routing. VM disks require their matching hypervisor configuration and an isolated boot test. Keep OS images or other bare-metal recovery media separately.
+
+Collect persistent OS, SSH, application and LXD logs from the host and guests and forward them to a separately administered collector for incident investigation. The Fortress register covers work through the control plane. OS login activity, processes started independently inside guests and commands typed into interactive terminals need their own telemetry.
 
 ## Deployment Notes
 
@@ -1069,7 +1093,7 @@ Body:
 - Configure secrets via env vars (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`) instead of hardcoding defaults.
 - Configure `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` as the active signing key for recipe exports; optional `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS` supports signature verification during key rotation.
 - Optional runtime paths: `FORTRESS_LOG_PATH` overrides the API log file target and `FORTRESS_COMMAND_LOG_DB` overrides the SQLite audit DB path.
-- `FORTRESS_RESTORE_MAX_BYTES` caps `POST /restore` uploads in bytes (default `0` = unlimited); set it on hosts with limited RAM since restores decrypt in memory.
+- `FORTRESS_RESTORE_MAX_BYTES` checks `POST /restore` uploads in bytes (default `0` = unlimited). V2 decryption reads bounded chunks while legacy Fernet decryption reads the whole archive into memory.
 - `FORTRESS_VM_ROOT` (default `/var/lib/fortress/vms`) is the directory that must contain every VM `vm_dir`/`disk_path`; it is read per request.
 - ACME HTTP-01 challenges are served from `/var/lib/fortress/acme-challenges`; override via `FORTRESS_ACME_CHALLENGE_DIR`.
 - Ensure the runtime user has permission to run `lxc`, manage firewall (`ufw` or `firewall-cmd`), manage nginx reloads, invoke `certbot`, run package commands (`apt-get`, `dnf`, or `yum`), and manage conn-limit tooling (`iptables` and/or `nft`) when anti-DDoS conn caps are enabled.
@@ -1084,7 +1108,7 @@ Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`,
 2. Subsequent commands unlock the private key (either interactively or via `--passphrase`/`FORTRESS_PASSPHRASE`) and reuse the stored credentials:
    - `python fortress-cli.py status` → GET `/status`
    - `python fortress-cli.py call POST /packages/install --json '{"packages":["vim"]}'`
-   - `python fortress-cli.py backup list|trigger|download|decrypt ...`
+   - `python fortress-cli.py backup list|trigger|download|verify|decrypt ...`
    - `python fortress-cli.py api-users create alice --permissions manage_containers read_status`
    - `python fortress-cli.py recipes list|create|apply ...`
    - `python fortress-cli.py recipes seed|plan|export|import ...`
@@ -1093,7 +1117,7 @@ Common helpers include `recipes *`, `sites *`, `migrations *`, `system upgrade`,
    - `python fortress-cli.py migrations status|plan|apply|rollback|ledger ...`
    - `python fortress-cli.py terminal open|read|write|resize|close ...`
    - `python fortress-cli.py system update-reload --mode auto` (add `--no-auto-stash` only when you want dirty-tree pulls to fail instead of stashing)
-3. Encrypted backups can be downloaded and decrypted locally via `python fortress-cli.py backup download foo.enc --dest ./foo.enc` followed by `python fortress-cli.py backup decrypt ./foo.enc --output ./foo.tar.gz`.
+3. Download an encrypted archive by its listed filename. Use `python fortress-cli.py backup verify ./foo.enc` to check integrity or `python fortress-cli.py backup decrypt ./foo.enc --output ./foo.tar.gz` to write a private decrypted archive. The verify and decrypt commands work offline with the backup password.
 
 Recipe CLI examples:
 - Create a recipe: `python fortress-cli.py recipes create --name base-python --package python3 --package python3-pip`

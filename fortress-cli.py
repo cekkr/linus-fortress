@@ -23,10 +23,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import requests
-from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
-import hashlib
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "py"))
+from fortress.backups import InvalidBackup, backup_output, decrypt_backup
 
 
 CONFIG_DIR = Path(os.environ.get("FORTRESS_HOME", Path.home() / ".fortress-cli"))
@@ -141,11 +142,6 @@ def load_config() -> Dict[str, Any]:
     if not CONFIG_PATH.exists():
         raise FortressCLIError("Configuration not initialized. Run `fortress-cli setup` first.")
     return json.loads(CONFIG_PATH.read_text())
-
-
-def get_fernet_key(password: str) -> bytes:
-    digest = hashlib.sha256(password.encode()).digest()
-    return base64.urlsafe_b64encode(digest)
 
 
 def load_json_payload(text_value: Optional[str], file_path: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -491,6 +487,30 @@ def api_users_command(args: argparse.Namespace) -> None:
 
 
 def backup_command(args: argparse.Namespace) -> None:
+    if args.subcommand in ("decrypt", "verify"):
+        password = args.password
+        if not password and CONFIG_PATH.exists():
+            password = CredentialContext(load_config()).get_secret("backup_password", args.passphrase)
+        if not password:
+            password = prompt_secret("Backup password")
+        enc_path = Path(args.input)
+        try:
+            with enc_path.open("rb") as source:
+                if args.subcommand == "verify":
+                    decrypt_backup(source, None, password)
+                    print("Backup integrity verified")
+                    return
+                default_path = enc_path.with_suffix("") if enc_path.name.endswith(".tar.gz.enc") else enc_path.with_suffix(".tar.gz")
+                out_path = Path(args.output) if args.output else default_path
+                if out_path.resolve() == enc_path.resolve():
+                    raise FortressCLIError("Use a different output path from the encrypted backup")
+                with backup_output(out_path) as output:
+                    decrypt_backup(source, output, password)
+        except (InvalidBackup, OSError) as exc:
+            raise FortressCLIError(str(exc)) from exc
+        print(f"Decrypted archive written to {out_path}")
+        return
+
     config = load_config()
     client = FortressClient(config, passphrase=args.passphrase)
     if args.subcommand == "list":
@@ -505,20 +525,6 @@ def backup_command(args: argparse.Namespace) -> None:
         dest = Path(args.dest or args.filename)
         client.stream_download(f"/backup/download/{args.filename}", dest)
         print(f"Downloaded to {dest}")
-        return
-    if args.subcommand == "decrypt":
-        config_ctx = CredentialContext(config)
-        password = args.password
-        if not password:
-            password = config_ctx.get_secret("backup_password", args.passphrase)
-        if not password:
-            password = prompt_secret("Backup password")
-        enc_path = Path(args.input)
-        out_path = Path(args.output or enc_path.with_suffix(".tar.gz"))
-        fernet = Fernet(get_fernet_key(password))
-        decrypted = fernet.decrypt(enc_path.read_bytes())
-        out_path.write_bytes(decrypted)
-        print(f"Decrypted archive written to {out_path}")
         return
     raise FortressCLIError("Unsupported backup subcommand")
 
@@ -1410,6 +1416,10 @@ def build_parser() -> argparse.ArgumentParser:
     backup_decrypt.add_argument("--output", help="Decrypted output file path")
     backup_decrypt.add_argument("--password", help="Override backup password instead of stored secret")
     backup_decrypt.set_defaults(func=backup_command)
+    backup_verify = backup_sub.add_parser("verify", help="Verify encrypted backup integrity locally")
+    backup_verify.add_argument("input", help="Encrypted .enc file")
+    backup_verify.add_argument("--password", help="Override backup password instead of stored secret")
+    backup_verify.set_defaults(func=backup_command)
 
     recipes_parser = subparsers.add_parser("recipes", help="Manage automation recipes")
     recipes_parser.add_argument("--auth-mode", choices=["api-key", "user-token"], help="Override stored auth preference")

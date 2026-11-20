@@ -43,7 +43,7 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 
 ### Everything is audited
 
-- Every mutating route MUST call `audit_api(...)` on success *and* on failure (`status="error"`). Internal subprocess activity goes through `audit_internal` / the `configure_audit` callback in [`py/fortress/containers.py`](py/fortress/containers.py).
+- Every mutating route MUST call `audit_api(...)` on success *and* on failure (`status="error"`). Request middleware records HTTP outcomes, including failures before route execution, with an `X-Fortress-Request-ID`. The shared `run_command` wrapper and existing container audit callbacks produce correlated command and operation events.
 - Audit details MUST be sanitized: `sanitize_payload`, `sanitize_payload_fuzzy(..., SENSITIVE_KEYWORDS)`, `sanitize_command_details`, `mask_token`. Never log raw tokens, passwords, or DB credentials.
 
 ### Changes to the host roll back on failure
@@ -74,7 +74,7 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 - **Recipe bundles:** export/import use format `fortress.recipe-bundle.v1` with SHA-256 checksum and optional HMAC-SHA256 signature. Verification tries the active key `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` then every key in `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS`. Unsigned import requires explicit `require_signature=false` (CLI `--allow-unsigned`). Tests: [`tests/test_recipes.py`](tests/test_recipes.py), permission matrix.
 - **Recipe templating:** `{{param}}` placeholders (`PLACEHOLDER_PATTERN`) are rendered by `render_template`; a missing parameter is a `ValueError` → HTTP 400. Recipe dependency cycles are rejected by `resolve_recipe_plan`.
 - **Migrations:** every JSON store registered in `MIGRATION_ENGINE` (server.py) MUST have a matching `schemas/<store>.json`, and its `fields` MUST list every key the code writes — otherwise `migrate_record` parks it under `_legacy` (this silently revoked terminal policies and recipe history before schema v2; guarded by `SchemaFieldCoverageTests`). `_promote_legacy_fields` moves now-known fields back out of `_legacy` on the next apply. `apply` takes a file lock (`migrations.lock`), backs up each store, appends to `ledger.jsonl`, and updates `versions.json`. Unknown fields are preserved under `_legacy` unless `prune_unknown`. Tests: [`tests/test_migrations.py`](tests/test_migrations.py).
-- **Backups:** `perform_encrypted_backup` runs `lxc export` then Fernet-encrypts with a key derived by SHA-256 of `FORTRESS_BACKUP_PASSWORD` (`get_fernet_key`; the CLI uses the same derivation to decrypt). Changing the derivation breaks every existing backup.
+- **Backups:** `perform_encrypted_backup` writes v2 archives using [`fortress.backups`](py/fortress/backups.py). API and CLI readers also support legacy SHA-256-derived Fernet. The complete archive must authenticate before LXD import or local output publication. Stored restores check scope for both source and destination. Uploaded restores require `restore_container`, `restore_external_backup`, and unrestricted container scope. Keep the backup directory writable only by trusted operators.
 - **Update-reload:** `/system/update-reload` runs `git pull --ff-only` in the repo root, auto-stashes local changes by default, applies pending migrations only when HEAD changed, then schedules `restart.sh --no-pull --mode <mode>` in a detached process. It refuses to restart if the stash could not be restored cleanly.
 - **Firewall anti-DDoS ordering:** allowlist ACCEPT rules MUST be inserted *before* conn-limit DROP rules. iptables is preferred; nftables fallback uses table `inet fortress`, chain `input`, and comment tags from `_build_nft_rule_tag`. Tests: [`tests/test_firewall.py`](tests/test_firewall.py).
 - **Container image canonicalization:** popular image lists merge discovered LXD images, saved presets (`/var/lib/fortress/container_images.json`, legacy bare-list and `alias` key supported), and fallbacks; stale aliases (`ubuntu:lts`, `debian:12`) are resolved via the public simplestream index (`FORTRESS_PUBLIC_IMAGE_INDEX_URL`). `_run_lxc_image_list_json` retries without `--limit` for old LXD CLIs. Tests: [`tests/test_container_images.py`](tests/test_container_images.py).
@@ -105,8 +105,8 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 | `/var/lib/fortress/container_images.json` | container router | popular image presets |
 | `/var/lib/fortress/firewall/{rollbacks/,ddos_policy.json}` | `fortress.firewall` | |
 | `/var/lib/fortress/migrations/{versions.json,ledger.jsonl,migrations.lock}` | `fortress.migrations` | |
-| `/var/lib/fortress/backups/*.enc` | server.py backup | Fernet-encrypted `lxc export`, `<container>_<ts>.tar.gz.enc`, `0600`; `.restore-*` staging dirs are transient |
-| `/var/lib/fortress/command_log.db` | `fortress.audit` | override `FORTRESS_COMMAND_LOG_DB` |
+| `/var/lib/fortress/backups/*.enc` | server.py backup | Encrypted `lxc export`, `<container>_<ts>-<uuidhex>.tar.gz.enc`, `0600`. Readers accept the legacy name without a UUID suffix. Private export/restore staging is transient. |
+| `/var/lib/fortress/command_log.db` | `fortress.audit` | `0600`, includes indexed request IDs. Override with `FORTRESS_COMMAND_LOG_DB`. |
 | `/var/lib/fortress/shares/`, `acme-challenges/` | container router, `fortress.tls` | |
 | `/etc/fortress/fortress.env` | `run-server.sh` | env for service/screen modes |
 | `~/.fortress-cli/` | `fortress-cli.py` | config + RSA keypair (`FORTRESS_HOME`) |
@@ -122,14 +122,14 @@ The FastAPI application and the owner of most routes, configuration constants, a
   - Module constants (lines ~183–216) — all runtime paths (`API_USERS_DB`, `ROUTING_DB`, `BACKUP_DIR`, …) and env-driven settings (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`, `FORTRESS_HOST_INTERFACE`/`PORT`, `FORTRESS_SCHEMA_DIR`, `FORTRESS_ACME_CHALLENGE_DIR`, `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY(S)`, `FORTRESS_LOG_PATH`, `FORTRESS_COMMAND_LOG_DB`, `FORTRESS_UPDATE_RELOAD_LOG`, `FORTRESS_RECIPE_HEALTH_HISTORY_MAX`, `FORTRESS_RESTORE_MAX_BYTES`). Evaluated at import time.
   - `MIGRATION_ENGINE` — registry of store name → path; add new JSON stores here *and* in `schemas/`.
   - `authorize` — the single entry point for permission + scope checks; sets `REQUEST_CONTEXT` so audits carry the actor.
-  - `audit_event` / `audit_api` / `audit_internal`, `sanitize_payload`, `sanitize_payload_fuzzy` — audit glue.
+  - `RequestAuditMiddleware`, `audit_event` / `audit_api` / `audit_internal`, `sanitize_payload`, `sanitize_payload_fuzzy` — audit glue. Request rows use route templates and omit the raw URL, headers and body. Use the route's audit helpers for sanitized operation details.
   - Terminal policy helpers: `_resolve_terminal_policy`, `_resolve_terminal_os_user`, `_require_terminal_permission`, `_authorize_terminal_session_access`, `_serialize_terminal_policy`.
   - Request models (`DomainRoute`, `DomainRouteTLS`, `APIUserCreate`, `TerminalAccessPolicy`, `Firewall*Request`, `SystemUpgradeRequest`, `SystemUpdateReloadRequest`, `Migration*Request`, `Package*Request`).
   - Update-reload: `_run_system_update_reload`, `_launch_restart_script`, `_git_*` helpers, `_restore_stashed_changes`.
   - Routing: `add_domain_routing`, `refresh_domain_routing`, `remove_domain_routing`, `_apply_nginx_config`, `_restore_nginx_config`, `_apply_nginx_route`.
   - Recipes: `LAMP_RECIPE_BUNDLE` + `FILEMANAGER_COMMAND` (seed data), `_collect_lamp_health_report` and probe builders, health-history store helpers (`_append_recipe_health_history_entry`, `_build_recipe_health_trend`).
   - Sites: `_resolve_site_tls_status`, `_apply_php_ini_overrides`, `_normalize_fpm_pool_tuning`, `_apply_php_fpm_pool_tuning`, `_apply_site_routing`, `_backup_site_files`, `_restore_site_db`, `_restart_site_services`.
-  - Backups: `get_fernet_key`, `perform_encrypted_backup` (background task; `.partial` + rename, `0600`), `CONTAINER_NAME_PATTERN`, `BACKUP_FILENAME_PATTERN` (`<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc`, used to scope list/download), `_ensure_backup_dir`, `restore_container` (per-request staging dir, `RESTORE_MAX_BYTES`).
+  - Backups: `perform_encrypted_backup` (background task, private staging, atomic publication), `CONTAINER_NAME_PATTERN`, `BACKUP_FILENAME_PATTERN` (used to check scope), `restore_stored_backup` (supports verification-only dry run), `restore_container` (privileged uploads, `RESTORE_MAX_BYTES`).
   - `/status` scoping: `_filter_status_containers`.
   - Store locking: `_holds_store_lock(path_getter)` (decorator for recipe writers and site creation), `_site_mutation` (per-site locks for deploy, backup, rollback, update, delete, and restart), `_locked_store_operation` (hosts/VMs: locked load → mutate → save, error-path audit, nothing saved on failure), `_long_store_operation` (SSH provision/probe: run unlocked, merge changed fields under the lock).
 - **Called by / depends on:** started by [`run-server.sh`](run-server.sh) / [`restart.sh`](restart.sh) as `.venv/bin/python py/server.py` (the script dir `py/` is on `sys.path`, which is how `import fortress` resolves). Imports every module in [`py/fortress/`](py/fortress/).
@@ -176,11 +176,15 @@ Master-key resolution, typed-token parsing, delegated-token verification, and co
 
 ### [`py/fortress/audit.py`](py/fortress/audit.py)
 
-`CommandLogger` — thread-locked SQLite writer for the `command_log` table (`timestamp, actor, endpoint, category, action, target, details, status`). Failures are logged, never raised, so auditing can't break a request.
+`CommandLogger` — thread-locked SQLite writer for the `command_log` table (`timestamp, actor, endpoint, category, action, target, details, status, request_id`). Failures are logged and the request continues.
 
 - **Called by / depends on:** instantiated once in [`py/server.py`](py/server.py) with `COMMAND_LOG_DB`.
 - **Tests:** [`tests/test_auth_audit.py`](tests/test_auth_audit.py) (`AuditLoggingTests`).
-- **Common mistakes:** the table is append-only by convention; don't add update/delete paths. Schema changes need a manual migration (it is not in the JSON migration engine).
+- **Compatibility:** startup adds and indexes the nullable `request_id` column under a SQLite write transaction. Older records remain queryable. The table is append-only by convention.
+
+### [`py/fortress/backups.py`](py/fortress/backups.py)
+
+Archive v2 uses a random salt and Scrypt-derived AES-GCM key per archive. Ordered 1 MiB records authenticate the header and length. An authenticated empty record marks the end. Keep magic, salt, KDF settings and framing compatible with shipped v2 archives. The reader falls back to the original Fernet format. An API import or local publication must wait for successful authentication of the complete archive.
 
 ### [`py/fortress/storage.py`](py/fortress/storage.py)
 
@@ -192,7 +196,7 @@ JSON helpers: `load_json` (default on missing/corrupt), `load_json_dict` (resets
 
 ### [`py/fortress/system.py`](py/fortress/system.py)
 
-`run_command(cmd_list)` uses `subprocess.run(check=True)` without a shell. On failure it raises `HTTPException(500, "System Error: <stderr>")` and logs only the executable and exit status.
+`run_command(cmd_list, input_text=None)` uses `subprocess.run(check=True)` without a shell. The request-local audit callback records the executable and exit status or OS error number. On nonzero exit the caller gets `HTTPException(500, "System Error: <stderr>")`.
 
 ### [`py/fortress/routing.py`](py/fortress/routing.py)
 
@@ -289,7 +293,7 @@ Package markers only.
 
 Standalone client. Stores credentials in `~/.fortress-cli/config.json` encrypted with a passphrase-protected 4096-bit RSA keypair; decrypts backups locally.
 
-- **Key functions and subparts:** `setup_command` (keys, server URL, TLS mode/CA bundle), `CredentialContext.get_secret`, `FortressClient.request` / `stream_download` (`FORTRESS_API_KEY` / `FORTRESS_USER_TOKEN` env override stored secrets), `get_fernet_key` (must match server), `build_parser` (subcommands: `setup`, `info`, `call`, `status`, `api-users list|create|expire|delete` (`--ttl 30d` / `--expires-at` / `--never`, via `parse_duration_seconds`), `backup`, `recipes`, `firewall`, `sites`, `migrations`, `system upgrade|update-reload`, `tls renew`, `terminal open|read|write|resize|close`, `vms`, `hosts`), per-group `*_command` handlers.
+- **Key functions and subparts:** `setup_command` (keys, server URL, TLS mode/CA bundle), `CredentialContext.get_secret`, `FortressClient.request` / `stream_download` (`FORTRESS_API_KEY` / `FORTRESS_USER_TOKEN` env override stored secrets), `build_parser` (subcommands: `setup`, `info`, `call`, `status`, `api-users list|create|expire|delete` (`--ttl 30d` / `--expires-at` / `--never`, via `parse_duration_seconds`), `backup list|trigger|download|verify|decrypt`, `recipes`, `firewall`, `sites`, `migrations`, `system upgrade|update-reload`, `tls renew`, `terminal open|read|write|resize|close`, `vms`, `hosts`), per-group `*_command` handlers.
 - **Tests:** [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py), [`tests/test_cli_terminal.py`](tests/test_cli_terminal.py), [`tests/test_cli_api_users.py`](tests/test_cli_api_users.py).
 - **Common mistakes:** a new API route needs a CLI handler *and* parser entry; container lifecycle, routing, packages, and monitoring are only reachable via `call`.
 
@@ -345,6 +349,10 @@ Interactive client bootstrap: runs `fortress-cli setup`, TLS pinning (`--pin-cer
 ### [`scripts/setup-service-user.sh`](scripts/setup-service-user.sh) and [`scripts/fortress-sudoers.template`](scripts/fortress-sudoers.template)
 
 Create a non-root service user and install the sudoers entry allowing only `run-server.sh` and `systemctl start|stop|restart|status fortress[-ui]`. Keep the template minimal; adding commands widens privilege.
+
+### [`scripts/host-recovery.sh`](scripts/host-recovery.sh)
+
+Local operator commands for restic backup, snapshot listing, verification, and verified restore into a new private staging directory. Standard paths are listed in [Host recovery](README.md#host-recovery). Operators quiesce writers and supply repository credentials and custom data paths. Review staged data on a clean system before installing it.
 
 ### [`scripts/provision/`](scripts/provision/)
 
@@ -460,9 +468,9 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 ### Encrypted backups and restore — Shipped
 
-- **Behavior:** background `lxc export` + Fernet encryption; container-scoped list/download (`FileResponse`, filename pattern validated); restore by streamed upload into a per-request staging dir + `lxc import`.
-- **Owners:** backup section of [`py/server.py`](py/server.py); decryption in [`fortress-cli.py`](fortress-cli.py) `backup decrypt`.
-- **Tests:** [`tests/test_backups.py`](tests/test_backups.py). **Gaps:** decrypt/encrypt are in-memory (Fernet format is a compatibility contract); legacy archive names not matching the pattern are only visible to unscoped tokens.
+- **Behavior:** background `lxc export` and chunked encryption, scoped list/download, scoped stored archive verification/import, and privileged external upload/import. `backup verify` and `backup decrypt` work offline.
+- **Owners:** [`py/server.py`](py/server.py), [`py/fortress/backups.py`](py/fortress/backups.py), [`fortress-cli.py`](fortress-cli.py).
+- **Tests:** [`tests/test_backups.py`](tests/test_backups.py), [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py). Legacy Fernet decryption still reads the whole archive.
 
 ### Migrations, system upgrade, update-reload — Shipped
 
@@ -525,7 +533,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 - **HTTP API (authoritative registry: `@app.*` decorators in [`py/server.py`](py/server.py) and `@router.*` in [`py/fortress/api/containers.py`](py/fortress/api/containers.py)):**
   - [`py/fortress/api/containers.py`](py/fortress/api/containers.py): `/container/create`, `DELETE /container/{name}`, `/containers/images/popular[/remove]`, `/access/external/{open,close}`, `/container/users/{create,password,groups}`, `DELETE /container/users`, `/container/groups`, `/containers/connect/tcp[/remove]`, `/containers/connect/share[/remove]`, `/containers/expose`, `/containers/probe`, `/containers/{start,stop,restart}`, `/containers/snapshot`, `/containers/snapshots/restore`, `GET /containers/{name}/snapshots`, `DELETE /containers/{name}/snapshots/{snapshot_name}`, `/containers/exec`, `GET /containers/{name}/logs`.
-  - [`py/server.py`](py/server.py): `/status`, `/monitoring/resources`, `/routing`, `/routing/add`, `/routing/refresh`, `DELETE /routing/{domain}`, `/tls/renew`, `/api-users[/{token}]`, `/terminal/sessions[/{id}[/output|/input|/resize]]`, `/firewall/{open,close,status,rules,rules/apply,rules/diff,rollback,ddos}`, `/packages/{install,remove,update}`, `/system/upgrade`, `/system/update-reload`, `/vms*`, `/hosts*`, `/recipes`, `/recipes/{name}`, `/recipes/{seed,export,import,apply,plan,health-history}`, `/sites`, `/sites/{site_id}[/tls/status|/backups|/deploy|/backup|/rollback|/logs|/health|/services/restart]`, `/migrations/{status,plan,apply,rollback,ledger}`, `/backup/{container_name}`, `/backup/list`, `/backup/download/{filename}`, `/restore`.
+  - [`py/server.py`](py/server.py): `/status`, `/monitoring/resources`, `/routing`, `/routing/add`, `/routing/refresh`, `DELETE /routing/{domain}`, `/tls/renew`, `/api-users[/{token}]`, `/terminal/sessions[/{id}[/output|/input|/resize]]`, `/firewall/{open,close,status,rules,rules/apply,rules/diff,rollback,ddos}`, `/packages/{install,remove,update}`, `/system/upgrade`, `/system/update-reload`, `/vms*`, `/hosts*`, `/recipes`, `/recipes/{name}`, `/recipes/{seed,export,import,apply,plan,health-history}`, `/sites`, `/sites/{site_id}[/tls/status|/backups|/deploy|/backup|/rollback|/logs|/health|/services/restart]`, `/migrations/{status,plan,apply,rollback,ledger}`, `/backup/{container_name}`, `/backup/list`, `/backup/download/{filename}`, `/backup/restore/{filename}`, `/restore`.
   - Contract document: [`api-v1.yaml`](api-v1.yaml); request bodies and permissions: [README API Reference](README.md#api-reference).
 - **CLI:** `build_parser` in [`fortress-cli.py`](fortress-cli.py) is the command registry.
 - **Lizard UI HTTP (`/api/*`):** route registrations in [`ui/server.js`](ui/server.js) — `/api/admin/*` (UI-local admin), `/api/session`, `/api/health`, `/api/apps` (app graph), and proxies mirroring Fortress routes.
@@ -622,6 +630,7 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - UI admin gate, proxying, rendering, visuals → [`ui/tests/`](ui/tests/)
 - Wizard keyboard/swipe navigation and resume, Debug export, fast-action ordering → [`ui/tests/wizard_nav_resume_debug.test.js`](ui/tests/wizard_nav_resume_debug.test.js)
 - Backup/restore routes and `/status` scoping → [`tests/test_backups.py`](tests/test_backups.py)
+- Host backup command construction, failure status and private restore staging → [`tests/test_host_recovery.py`](tests/test_host_recovery.py)
 - JSON storage atomicity/locking → [`tests/test_storage.py`](tests/test_storage.py)
 - Route registry ↔ `api-v1.yaml` parity and `$ref` resolution → [`tests/test_api_spec.py`](tests/test_api_spec.py)
 - Monitoring helpers, alerts, anomaly detection, history persistence → [`tests/test_monitoring.py`](tests/test_monitoring.py)
@@ -636,7 +645,7 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - **UI:** admin passwords hashed with PBKDF2-SHA256 (200k iterations, per-user salt); tokens kept server-side only; `FORTRESS_UI_COOKIE_SECURE=1` when served over HTTPS.
 - **Trust levels:** containers, remote hosts, uploaded archives/backups, and imported recipe bundles are untrusted. Validate names with the module regexes (`HOST_NAME_PATTERN`, `VM_NAME_PATTERN`, `SITE_NAME_PATTERN`, `RECIPE_NAME_PATTERN`, `validate_domain`, `validate_port`) before they reach commands or paths.
 - **Compatibility:** stored JSON shapes evolve only through `schemas/` + migrations (aliases for renames). Backup encryption (`get_fernet_key`) and bundle digest format are compatibility contracts. The API has no versioned prefix; route removals break the CLI and UI.
-- **Backup/restore:** backups are only as safe as `FORTRESS_BACKUP_PASSWORD`; the default placeholder string is insecure and must be overridden.
+- **Backup/restore:** new backups require a configured non-placeholder `FORTRESS_BACKUP_PASSWORD`. Keep historical passwords and off-host repository credentials in offline custody. A host recovery stages files for operator review and needs separate LXD configuration/volume and OS recovery plans.
 
 ## Current Status and Known Gaps
 
@@ -652,7 +661,8 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 
 ### Known Gaps
 
-- **Restore/backup memory:** Fernet encrypt/decrypt holds the whole archive in memory (cap uploads with `FORTRESS_RESTORE_MAX_BYTES`); a streamable format would need a new versioned backup format.
+- **Legacy restore memory:** v1 Fernet decryption holds the whole archive in memory. Set `FORTRESS_RESTORE_MAX_BYTES` and configure a proxy body limit for uploads.
+- **Audit coverage:** the register covers the API and instruments commands through the shared wrapper. System activity outside Fortress requires host and guest log collection and independent retention.
 - **Auth:** tokens stored unhashed; expired tokens are rejected but never swept from the store.
 - **VM privilege:** `qemu_binary`/`extra_args`/`bridge_name`/paths are now allowlisted, but `vm_manage` still runs QEMU/VirtualBox as the API user and can attach any `.iso` path to a guest; grant it to trusted operators only.
 - **Concurrency:** API users, routes, recipe health history, and monitoring history use `update_json`. Recipes and site creation use `_holds_store_lock`. Site deploy, backup, rollback, update, delete, and restart use `_site_mutation`. Hosts and VMs use `_locked_store_operation` and merge provision/probe results through `_long_store_operation`. Terminal sessions and UI sessions are in-process memory.

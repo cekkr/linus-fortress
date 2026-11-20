@@ -1,9 +1,13 @@
+import io
 import json
 import os
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from cryptography.fernet import Fernet
@@ -14,8 +18,29 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "py")))
 
 from test_permissions_matrix import load_server_module  # noqa: E402
+from fortress.backups import CHUNK_BYTES, MAGIC, InvalidBackup, decrypt_backup, encrypt_backup, get_fernet_key
 
 BACKUP_PASSWORD = "integration-backup-password"
+
+
+class BackupFormatTests(unittest.TestCase):
+    def test_v2_round_trip_and_tamper_detection(self) -> None:
+        plaintext = b"a" * CHUNK_BYTES + b"another chunk"
+        output = io.BytesIO()
+        encrypt_backup(io.BytesIO(plaintext), output, BACKUP_PASSWORD)
+        archive = output.getvalue()
+        self.assertTrue(archive.startswith(MAGIC))
+        restored = io.BytesIO()
+        decrypt_backup(io.BytesIO(archive), restored, BACKUP_PASSWORD)
+        self.assertEqual(restored.getvalue(), plaintext)
+
+        altered = bytearray(archive)
+        altered[len(MAGIC) + 16 + 4] ^= 1
+        for corrupt in (archive[:-20], archive[:-1], archive + b"x", altered):
+            with self.subTest(size=len(corrupt)), self.assertRaises(InvalidBackup):
+                decrypt_backup(io.BytesIO(corrupt), None, BACKUP_PASSWORD)
+        with self.assertRaises(InvalidBackup):
+            decrypt_backup(io.BytesIO(archive), None, "wrong-password")
 
 
 class _ServerRouteTestBase(unittest.TestCase):
@@ -41,12 +66,14 @@ class _ServerRouteTestBase(unittest.TestCase):
                 {
                     "token-web": {"username": "web", "permissions": ["manage_backups", "restore_container", "read_status"], "allowed_containers": ["web01"]},
                     "token-all": {"username": "all", "permissions": ["manage_backups", "restore_container", "read_status"], "allowed_containers": []},
+                    "token-import": {"username": "importer", "permissions": ["restore_container", "restore_external_backup"], "allowed_containers": []},
+                    "token-scoped-import": {"username": "scoped", "permissions": ["restore_container", "restore_external_backup"], "allowed_containers": ["web01"]},
                     "token-none": {"username": "none", "permissions": [], "allowed_containers": None},
                 },
                 fh,
             )
         self.client = TestClient(self.module.app)
-        self.fernet = Fernet(self.module.get_fernet_key(BACKUP_PASSWORD))
+        self.fernet = Fernet(get_fernet_key(BACKUP_PASSWORD))
 
     def _get(self, path: str, token: str):
         return self.client.get(path, headers={"X-User-Token": token})
@@ -103,6 +130,28 @@ class BackupRouteTests(_ServerRouteTestBase):
             self.assertEqual(self.client.post("/backup/web01", headers=headers).status_code, 200)
         task.assert_called_once()
 
+    def test_trigger_rejects_placeholder_and_correlates_successful_background_task(self) -> None:
+        headers = {"X-User-Token": "token-web"}
+        with mock.patch.object(self.module, "BACKUP_ENCRYPTION_PASSWORD", self.module.DEFAULT_BACKUP_PASSWORD):
+            self.assertEqual(self.client.post("/backup/web01", headers=headers).status_code, 503)
+
+        def fake_export(cmd):
+            Path(cmd[3]).write_bytes(b"export data")
+            return ""
+
+        with mock.patch.object(self.module, "run_command", side_effect=fake_export):
+            response = self.client.post("/backup/web01", headers=headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        with sqlite3.connect(self.module.COMMAND_LOG_DB) as db:
+            rows = db.execute(
+                "SELECT actor, action, status FROM command_log WHERE request_id = ? ORDER BY id",
+                (response.headers["X-Fortress-Request-ID"],),
+            ).fetchall()
+        self.assertEqual(rows, [
+            ("web", "backup_trigger", "success"), ("web", "http_request", "success"),
+            ("web", "backup_start", "success"), ("web", "backup_complete", "success"),
+        ])
+
     def test_perform_backup_writes_encrypted_owner_only_file(self) -> None:
         def fake_export(cmd):
             with open(cmd[3], "wb") as fh:
@@ -113,11 +162,39 @@ class BackupRouteTests(_ServerRouteTestBase):
             self.module.perform_encrypted_backup("web01", "tester")
         names = os.listdir(self.module.BACKUP_DIR)
         self.assertEqual(len(names), 1)
-        self.assertRegex(names[0], self.module.BACKUP_FILENAME_PATTERN)
+        self.assertIsNotNone(self.module._parse_backup_filename(names[0]))
         path = os.path.join(self.module.BACKUP_DIR, names[0])
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
         with open(path, "rb") as fh:
-            self.assertEqual(self.fernet.decrypt(fh.read()), b"raw-archive")
+            restored = io.BytesIO()
+            decrypt_backup(fh, restored, BACKUP_PASSWORD)
+        self.assertEqual(restored.getvalue(), b"raw-archive")
+
+    def test_concurrent_exports_never_overwrite_one_another(self) -> None:
+        barrier = threading.Barrier(2, timeout=5)
+
+        def fake_export(cmd):
+            Path(cmd[3]).write_bytes(threading.current_thread().name.encode())
+            barrier.wait()
+            return ""
+
+        with mock.patch.object(self.module, "run_command", side_effect=fake_export):
+            threads = [
+                threading.Thread(target=self.module.perform_encrypted_backup, args=("web01",), name=name)
+                for name in ("first", "second")
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        restored = []
+        for path in Path(self.module.BACKUP_DIR).iterdir():
+            with path.open("rb") as source:
+                output = io.BytesIO()
+                decrypt_backup(source, output, BACKUP_PASSWORD)
+                restored.append(output.getvalue())
+        self.assertCountEqual(restored, [b"first", b"second"])
 
     def test_perform_backup_failure_leaves_no_partial_files(self) -> None:
         def fake_export(cmd):
@@ -126,7 +203,7 @@ class BackupRouteTests(_ServerRouteTestBase):
             return ""
 
         with mock.patch.object(self.module, "run_command", side_effect=fake_export), \
-                mock.patch.object(self.module, "Fernet", side_effect=RuntimeError("bad key")):
+                mock.patch.object(self.module, "encrypt_backup", side_effect=RuntimeError("bad key")):
             self.module.perform_encrypted_backup("web01", "tester")
         self.assertEqual(os.listdir(self.module.BACKUP_DIR), [])
 
@@ -148,8 +225,8 @@ class BackupRouteTests(_ServerRouteTestBase):
 
         token = self.fernet.encrypt(b"archive-bytes")
         with mock.patch.object(self.module, "run_command", side_effect=fake_import):
-            first = self._restore("token-web", "web01", token)
-            second = self._restore("token-web", "web01", token)
+            first = self._restore("token-import", "web01", token)
+            second = self._restore("token-import", "web01", token)
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(second.status_code, 200)
         self.assertEqual([data for _, data in seen], [b"archive-bytes", b"archive-bytes"])
@@ -169,7 +246,7 @@ class BackupRouteTests(_ServerRouteTestBase):
         results = []
         with mock.patch.object(self.module, "run_command", side_effect=fake_import):
             threads = [
-                threading.Thread(target=lambda data=data: results.append(self._restore("token-all", "web01", self.fernet.encrypt(data)).status_code))
+                threading.Thread(target=lambda data=data: results.append(self._restore("token-import", "web01", self.fernet.encrypt(data)).status_code))
                 for data in (b"alpha", b"beta")
             ]
             for thread in threads:
@@ -181,15 +258,58 @@ class BackupRouteTests(_ServerRouteTestBase):
 
     def test_restore_rejects_bad_payload_scope_and_size(self) -> None:
         with mock.patch.object(self.module, "run_command") as run:
-            bad = self._restore("token-web", "web01", b"not-a-fernet-token")
+            bad = self._restore("token-import", "web01", b"not-a-fernet-token")
             self.assertEqual(bad.status_code, 500)
             self.assertIn("FORTRESS_BACKUP_PASSWORD", bad.json()["detail"])
-            self.assertEqual(self._restore("token-web", "db01", b"x").status_code, 403)
-            self.assertEqual(self._restore("token-all", "bad_name", b"x").status_code, 400)
+            self.assertEqual(self._restore("token-scoped-import", "web01", b"x").status_code, 403)
+            self.assertEqual(self._restore("token-all", "web01", b"x").status_code, 403)
+            self.assertEqual(self._restore("token-import", "bad_name", b"x").status_code, 400)
             self.module.RESTORE_MAX_BYTES = 4
-            self.assertEqual(self._restore("token-all", "web01", b"0123456789").status_code, 413)
+            self.assertEqual(self._restore("token-import", "web01", b"0123456789").status_code, 413)
             run.assert_not_called()
         self.assertEqual(os.listdir(self.module.BACKUP_DIR), [])
+
+    def test_stored_restore_checks_source_and_target_and_verifies_before_import(self) -> None:
+        self._seed_backups()
+        path = Path(self.module.BACKUP_DIR) / "web01_20260101_010101.tar.gz.enc"
+        with path.open("wb") as output:
+            encrypt_backup(io.BytesIO(b"export data"), output, BACKUP_PASSWORD)
+        url = f"/backup/restore/{path.name}"
+        headers = {"X-User-Token": "token-web"}
+        with mock.patch.object(self.module, "run_command") as run:
+            self.assertEqual(self.client.post(url + "?container_name=db01", headers=headers).status_code, 403)
+            denied = "/backup/restore/db01_20260101_010101.tar.gz.enc?container_name=web01"
+            self.assertEqual(self.client.post(denied, headers=headers).status_code, 403)
+            self.assertEqual(self.client.post(url + "?dry_run=true", headers=headers).status_code, 200)
+            run.assert_not_called()
+            self.assertEqual(self.client.post(url, headers=headers).status_code, 200)
+            cmd, = run.call_args.args
+            self.assertEqual(cmd[:2], ["lxc", "import"])
+            self.assertEqual(cmd[-1], "web01")
+            self.assertFalse(Path(cmd[2]).exists())
+            run.reset_mock()
+            path.write_bytes(path.read_bytes()[:-1])
+            self.assertEqual(self.client.post(url, headers=headers).status_code, 500)
+            run.assert_not_called()
+
+    def test_scoped_backup_routes_refuse_symlinks_to_other_archives(self) -> None:
+        self._seed_backups()
+        root = Path(self.module.BACKUP_DIR)
+        link = root / "web01_20260102_010101.tar.gz.enc"
+        link.symlink_to(root / "db01_20260101_010101.tar.gz.enc")
+        self.assertNotIn(link.name, self._get("/backup/list", "token-web").json()["backups"])
+        self.assertEqual(self._get(f"/backup/download/{link.name}", "token-web").status_code, 404)
+        with mock.patch.object(self.module, "run_command") as run:
+            response = self.client.post(f"/backup/restore/{link.name}", headers={"X-User-Token": "token-web"})
+            self.assertEqual(response.status_code, 404)
+            run.assert_not_called()
+
+    def test_backup_storage_must_have_a_trusted_owner_and_permissions(self) -> None:
+        self._seed_backups()
+        Path(self.module.BACKUP_DIR).chmod(0o777)
+        response = self._get("/backup/list", "token-web")
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("trusted owner", response.json()["detail"])
 
 
 class StatusScopeTests(_ServerRouteTestBase):
@@ -208,6 +328,39 @@ class StatusScopeTests(_ServerRouteTestBase):
     def test_status_unparseable_output_is_hidden_from_scoped_token(self) -> None:
         self.assertEqual(self.module._filter_status_containers("not json", {"allowed_containers": ["web01"]}), "[]")
         self.assertEqual(self.module._filter_status_containers("not json", {"allowed_containers": None}), "not json")
+
+    def test_request_receipts_correlate_commands_and_exclude_raw_credentials(self) -> None:
+        def fake_subprocess(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, self._fake_run(cmd), "")
+
+        with mock.patch("fortress.system.subprocess.run", side_effect=fake_subprocess):
+            ok = self._get("/status?unused=integration-query-secret", "token-web")
+            denied = self._get("/status", "token-none")
+            anonymous = self.client.delete("/api-users/integration-path-secret")
+            missing = self.client.get("/integration-unmatched-secret")
+        self.assertEqual([r.status_code for r in (ok, denied, anonymous, missing)], [200, 403, 401, 404])
+        with sqlite3.connect(self.module.COMMAND_LOG_DB) as db:
+            rows = db.execute(
+                "SELECT request_id, actor, endpoint, category, action, details FROM command_log ORDER BY id"
+            ).fetchall()
+        receipts = {row[0]: row[1:] for row in rows if row[3] == "request"}
+        for response, actor, endpoint in (
+            (ok, "web", "/status"),
+            (denied, "none", "/status"),
+            (anonymous, "anonymous", "/api-users/{token}"),
+            (missing, "anonymous", "<unmatched>"),
+        ):
+            receipt = receipts[response.headers["X-Fortress-Request-ID"]]
+            self.assertEqual(receipt[:2], (actor, endpoint))
+            self.assertEqual(json.loads(receipt[-1])["status_code"], response.status_code)
+        command_rows = [row for row in rows if row[3] == "command"]
+        self.assertTrue(command_rows)
+        for request_id, actor, _, _, _, details in command_rows:
+            self.assertEqual(request_id, ok.headers["X-Fortress-Request-ID"])
+            self.assertEqual(actor, "web")
+            self.assertEqual(set(json.loads(details)), {"executable", "exit_code"})
+        for secret in ("integration-query-secret", "integration-path-secret", "integration-unmatched-secret", "token-web"):
+            self.assertNotIn(secret, str(rows))
 
 
 if __name__ == "__main__":

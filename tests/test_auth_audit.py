@@ -1,7 +1,10 @@
 import os
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from fastapi import HTTPException
@@ -9,6 +12,7 @@ from fastapi import HTTPException
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "py")))
 
 from fortress.auth import enforce_container_scope, enforce_container_scopes
+from fortress.audit import CommandLogger
 from fortress.containers import configure_audit, exec_in_container
 from fortress.system import run_command
 
@@ -32,6 +36,24 @@ class ContainerScopeTests(unittest.TestCase):
 class AuditLoggingTests(unittest.TestCase):
     def tearDown(self) -> None:
         configure_audit(None)
+
+    def test_logger_upgrades_existing_database_and_keeps_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "command_log.db"
+            with sqlite3.connect(path) as db:
+                db.execute(
+                    "CREATE TABLE command_log (id INTEGER PRIMARY KEY, timestamp TEXT, actor TEXT, "
+                    "endpoint TEXT, category TEXT, action TEXT, target TEXT, details TEXT, status TEXT)"
+                )
+                db.execute("INSERT INTO command_log (action) VALUES ('previous_action')")
+            path.chmod(0o644)
+            logger = CommandLogger(str(path))
+            logger.log("test-user", "test_endpoint", "api", "related_action", request_id="request-1")
+            CommandLogger(str(path))
+            with sqlite3.connect(path) as db:
+                rows = db.execute("SELECT action, request_id FROM command_log ORDER BY id").fetchall()
+            self.assertEqual(rows, [("previous_action", None), ("related_action", "request-1")])
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_exec_in_container_audits_success(self) -> None:
         events = []

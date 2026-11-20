@@ -169,9 +169,7 @@ def verify_token(
             raise _unauthenticated("API token expired")
 
         permissions = record.get("permissions", [])
-        if required_permission and required_permission not in permissions and "*" not in permissions:
-            logging.warning("API user lacks permission %s", required_permission)
-            raise HTTPException(status_code=403, detail="Permission denied for this API user")
+        require_permission(permissions, required_permission)
 
         return {
             "actor": record.get("username", "api-user"),
@@ -186,6 +184,12 @@ def verify_token(
     if x_api_key:
         raise _unauthenticated("Invalid API key")
     raise _unauthenticated("Authentication required")
+
+
+def require_permission(permissions, required_permission: Optional[str]) -> None:
+    if required_permission and required_permission not in permissions and "*" not in permissions:
+        logging.warning("API user lacks permission %s", required_permission)
+        raise HTTPException(status_code=403, detail="Permission denied for this API user")
 
 
 def enforce_container_scope(auth_context: Dict[str, Any], container_name: str) -> None:

@@ -11,6 +11,9 @@ info:
     Auth failures: **401** (with a `WWW-Authenticate` header) when no credential, an unknown credential,
     or an expired delegated token is presented; **403** when the credential is valid but lacks the
     required permission or container scope. These apply to every route and are not repeated per operation.
+
+    Application responses include `X-Fortress-Request-ID` for correlating HTTP outcomes, operation
+    events, and command outcomes in the host's SQLite audit register.
 servers:
   - url: https://fortress.local:8443
     description: Fortress default listener (change host/port as needed)
@@ -2160,6 +2163,9 @@ paths:
     post:
       summary: Trigger encrypted LXD backup
       tags: [Backups]
+      description: |
+        Requires `manage_backups` and container scope. Queues a v2 authenticated, chunked archive
+        with a unique filename. Use the request ID in the audit register to confirm completion.
       parameters:
         - in: path
           name: container_name
@@ -2173,14 +2179,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+        "503":
+          description: Backup password is unset or still the placeholder
   /backup/list:
     get:
       summary: List encrypted backup archives
       tags: [Backups]
       description: |
         Requires `manage_backups`. Creates the backup directory on demand. Tokens with a non-empty
-        `allowed_containers` only see archives named `<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc` for
-        containers in scope (unparseable legacy names are hidden from scoped tokens).
+        `allowed_containers` only see parseable archives for containers in scope. Current archives
+        are named `<container>_<YYYYmmdd_HHMMSS>-<uuidhex>.tar.gz.enc`. The suffix is optional for
+        legacy names.
       parameters:
         - in: query
           name: container
@@ -2220,8 +2229,8 @@ paths:
       summary: Download encrypted backup
       tags: [Backups]
       description: |
-        Requires `manage_backups`. `filename` must match `<container>_<YYYYmmdd_HHMMSS>.tar.gz.enc`
-        and the container must be inside the token's `allowed_containers` scope.
+        Requires `manage_backups` and scope for the container in the filename. Accepts current
+        names with the unique suffix and legacy names without it.
       parameters:
         - in: path
           name: filename
@@ -2242,14 +2251,53 @@ paths:
           description: Missing permission or container out of scope
         "404":
           description: Archive not found
+  /backup/restore/{filename}:
+    post:
+      summary: Verify or restore a server-side backup
+      tags: [Backups]
+      description: |
+        Requires `restore_container` and scope for both the archive's source and the destination
+        container. Supports v2 and legacy Fernet backups. A restore imports a new instance through
+        LXD after full authentication of the archive. LXD refuses to overwrite an existing instance.
+      parameters:
+        - in: path
+          name: filename
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: container_name
+          description: Destination instance name. Defaults to the source name from the filename.
+          schema:
+            type: string
+        - in: query
+          name: dry_run
+          description: Verify the entire encrypted archive without invoking LXD.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Verification or restore result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "400":
+          description: Invalid archive filename or destination name
+        "404":
+          description: Server backup not found
+        "500":
+          description: Archive verification, staging, or import failed
   /restore:
     post:
       summary: Restore encrypted backup into a container
       tags: [Backups]
       description: |
-        Requires `restore_container` and container scope. The upload is streamed to a per-request
-        owner-only staging directory under the backup dir (removed afterwards), so concurrent restores
-        do not collide. Uploads larger than `FORTRESS_RESTORE_MAX_BYTES` (when set) are rejected with 413.
+        Requires `restore_container`, `restore_external_backup` and unrestricted container scope.
+        Use only vetted LXD archives. Accepts v2 and legacy Fernet. The multipart upload is spooled
+        by the framework, then decrypted to a private staging directory. LXD import runs only
+        after verification. Uploads beyond `FORTRESS_RESTORE_MAX_BYTES` (when set) return 413.
       parameters:
         - in: query
           name: container_name
@@ -2262,6 +2310,7 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              required: [file]
               properties:
                 file:
                   type: string

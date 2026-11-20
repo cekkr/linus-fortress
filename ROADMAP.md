@@ -25,6 +25,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 ## Path 3: Audit and scope enforcement tests (short term)
 - Done: Add unit tests for container scope enforcement rules.
 - Done: Add unit tests for audit logging behavior (mock LXC subprocess calls).
+- Done: Record request outcomes including authorization failures, with request IDs linking route activity, shared subprocess outcomes and background container backups. Upgrade the existing SQLite register in place.
+- Next: Add off-host audit delivery with independent retention, and collect persistent OS and guest audit events alongside Fortress events.
 
 ## Path 4: Integration tests and permission matrix (mid term)
 - Done: Add route-level integration tests for recipes/system-upgrade flows with delegated-token permission matrix coverage.
@@ -233,7 +235,9 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Done: QEMU snapshot create/restore/delete return 409 while the VM is running (found on AlmaLinux: `qemu-img` can't take the write lock and restore would corrupt a live disk).
 - Next: Live QEMU snapshots via QMP `savevm` (would need a guarded monitor socket).
 - Next: Add a migration/report that flags stored VM records failing the new validation (today they fail at start/purge with 400).
-- Next: Versioned chunked backup format (streaming encrypt/decrypt) to drop the in-memory Fernet limit, keeping v1 decrypt for old archives.
+- Done: Write authenticated chunked container backups with private staging and collision-resistant filenames. Read legacy Fernet archives, support offline verification and scoped stored restores, and restrict uploaded archives to trusted recovery operators.
+- Done: Add a local restic workflow for off-host snapshots of Fortress host state and verified staged recovery, including a rebuild and isolation runbook.
+- Next: Automate off-host backup scheduling, retention and backup-age alerts, and run a clean-host recovery drill with real LXD and a stopped VM disk.
 - Next: Refresh or make environment-independent the Puppeteer visual baselines (`app_home_visual_regression`, `css_dark_surface_token_regression` fail on macOS Chromium at HEAD).
 - Done: Validated the Python suite, cross-process `update_json` locking, and real firewalld partial-failure revert on an AlmaLinux 10.2 x86_64 QEMU VM; fixed firewalld 2.x rich-rule parsing (attribute order) found there.
 - Done: Validated token expiry, the 401/403 split, cross-process `update_json` locking (4 uvicorn workers, 40 concurrent `/api-users` creates), the api_users v1→v2 migration with `_legacy` promotion, SSH option-injection rejection, and a real-ssh host probe on an AlmaLinux 10.2 x86_64 QEMU VM (FastAPI 0.162 / Starlette 1.10 / Pydantic 2.14 / Python 3.12).

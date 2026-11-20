@@ -1,3 +1,5 @@
+import base64
+import errno
 import os
 import re
 import shlex
@@ -9,19 +11,20 @@ import logging
 import subprocess
 import hashlib
 import json
-import base64
 import copy
 import functools
 import binascii
+import stat
 import uuid
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, List, Dict, Literal, Union, Any, Tuple
 
 import uvicorn
-from cryptography.fernet import Fernet
-from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -33,10 +36,18 @@ from fortress.auth import (
     is_token_expired,
     mask_token,
     parse_expiry,
+    require_permission,
     resolve_master_key,
     verify_token,
 )
 from fortress.audit import CommandLogger
+from fortress.backups import (
+    DEFAULT_BACKUP_PASSWORD,
+    InvalidBackup,
+    backup_output,
+    decrypt_backup,
+    encrypt_backup,
+)
 from fortress.api.containers import build_container_router
 from fortress.containers import (
     SENSITIVE_KEYWORDS,
@@ -101,7 +112,7 @@ from fortress.sites import (
     update_site_record,
     validate_site_name,
 )
-from fortress.system import run_command
+from fortress.system import command_audit, run_command
 from fortress.routing import (
     build_nginx_proxy_config,
     ensure_nginx_site,
@@ -191,7 +202,7 @@ def _parse_signing_key_list(value: Optional[str]) -> List[str]:
 # --- CONFIGURATION ---
 # In production, load these from environment variables
 API_SECRET_KEY = os.environ.get("FORTRESS_API_KEY", os.environ.get("API_SECRET_KEY", DEFAULT_API_SECRET))
-BACKUP_ENCRYPTION_PASSWORD = os.environ.get("FORTRESS_BACKUP_PASSWORD", "CHANGE_THIS_TO_YOUR_STRONG_BACKUP_PASSWORD")
+BACKUP_ENCRYPTION_PASSWORD = os.environ.get("FORTRESS_BACKUP_PASSWORD", DEFAULT_BACKUP_PASSWORD)
 HOST_INTERFACE = os.environ.get("FORTRESS_HOST_INTERFACE", "0.0.0.0")
 HOST_PORT = int(os.environ.get("FORTRESS_HOST_PORT", "8443"))
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -245,7 +256,7 @@ elif RECIPE_BUNDLE_SIGNING_KEYS:
     RECIPE_BUNDLE_SIGNING_KEY = RECIPE_BUNDLE_SIGNING_KEYS[0]
 
 app = FastAPI(title="VPS Fortress Manager")
-REQUEST_CONTEXT = ContextVar("REQUEST_CONTEXT", default={"actor": "system", "endpoint": "internal"})
+REQUEST_CONTEXT = ContextVar("REQUEST_CONTEXT", default=None)
 command_logger = CommandLogger(COMMAND_LOG_DB)
 terminal_manager = TerminalSessionManager()
 MIGRATION_ENGINE = MigrationEngine(
@@ -266,22 +277,14 @@ MIGRATION_ENGINE = MigrationEngine(
 
 # --- SECURITY UTILS ---
 
-def get_fernet_key(password: str) -> bytes:
-    """Derive a 32-byte base64 key from the password for AES encryption."""
-    digest = hashlib.sha256(password.encode()).digest()
-    return base64.urlsafe_b64encode(digest)
-
-def set_request_context(actor: str, endpoint: str):
-    REQUEST_CONTEXT.set({"actor": actor or "system", "endpoint": endpoint})
-
 def get_request_context() -> Dict[str, str]:
-    return REQUEST_CONTEXT.get()
+    return REQUEST_CONTEXT.get() or {}
 
 def audit_event(category: str, action: str, target: Optional[str] = None, details: Optional[Dict[str, Any]] = None, status: str = "success"):
     ctx = get_request_context()
     actor = ctx.get("actor", "system")
     endpoint = ctx.get("endpoint", "internal")
-    command_logger.log(actor, endpoint, category, action, target, details, status)
+    command_logger.log(actor, endpoint, category, action, target, details, status, ctx.get("request_id"))
 
 def audit_api(action: str, target: Optional[str] = None, details: Optional[Dict[str, Any]] = None, status: str = "success"):
     audit_event("api", action, target, details, status)
@@ -290,6 +293,55 @@ def audit_internal(action: str, target: Optional[str] = None, details: Optional[
     audit_event("internal", action, target, details, status)
 
 configure_audit(audit_event)
+
+
+class RequestAuditMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = uuid.uuid4().hex
+        context = {"actor": "anonymous", "request_id": request_id}
+        context_token = REQUEST_CONTEXT.set(context)
+        command_token = command_audit.set(audit_event)
+        recorded = False
+
+        async def record(status_code):
+            # Use the route template only. Paths, headers and bodies can contain secrets.
+            endpoint = getattr(scope.get("route"), "path", None) or "<unmatched>"
+            await run_in_threadpool(
+                command_logger.log, context["actor"], endpoint, "request", "http_request",
+                None, {"method": scope["method"], "status_code": status_code},
+                "error" if status_code >= 400 else "success", request_id,
+            )
+
+        async def send_with_audit(message):
+            nonlocal recorded
+            if message["type"] == "http.response.start":
+                await record(message["status"])
+                recorded = True
+                message["headers"] = [
+                    *message.get("headers", []), (b"x-fortress-request-id", request_id.encode("ascii")),
+                ]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_audit)
+        finally:
+            try:
+                if not recorded:
+                    await record(500)
+            finally:
+                command_audit.reset(command_token)
+                REQUEST_CONTEXT.reset(context_token)
+
+
+app.add_middleware(RequestAuditMiddleware)
+
 
 def sanitize_payload(payload: Dict[str, Any], sensitive_keys: Optional[List[str]] = None) -> Dict[str, Any]:
     if not payload:
@@ -316,11 +368,17 @@ def authorize(endpoint: str, required_permission: Optional[str], x_api_key: Opti
     auth_context = verify_token(
         x_api_key,
         x_user_token,
-        required_permission=required_permission,
         master_key=MASTER_API_KEY,
         load_users=load_api_users,
     )
-    set_request_context(auth_context.get("actor", "system"), endpoint)
+    context = REQUEST_CONTEXT.get()
+    if context is None:
+        REQUEST_CONTEXT.set({"actor": auth_context["actor"], "endpoint": endpoint})
+    else:
+        # A sync route runs in a worker thread. Mutate the request-local context so
+        # the ASGI middleware also sees the verified actor when the route returns.
+        context.update(actor=auth_context["actor"], endpoint=endpoint)
+    require_permission(auth_context["permissions"], required_permission)
     if containers:
         if isinstance(containers, str):
             enforce_container_scope(auth_context, containers)
@@ -4062,26 +4120,31 @@ def migration_ledger(x_api_key: Optional[str] = Header(default=None), x_user_tok
 
 # LXD instance names: start with a letter, then letters/digits/hyphens (max 63 chars).
 CONTAINER_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,62}$")
-# Backup archives are written as <container>_<YYYYmmdd_HHMMSS>.tar.gz.enc by perform_encrypted_backup.
-BACKUP_FILENAME_PATTERN = re.compile(r"^(?P<container>[A-Za-z][A-Za-z0-9-]{0,62})_(?P<timestamp>\d{8}_\d{6})\.tar\.gz\.enc$")
-RESTORE_UPLOAD_CHUNK_BYTES = 1024 * 1024
+BACKUP_FILENAME_PATTERN = re.compile(
+    r"(?P<container>[A-Za-z][A-Za-z0-9-]{0,62})_(?P<timestamp>[0-9]{8}_[0-9]{6})"
+    r"(?:-[0-9a-f]{32})?\.tar\.gz\.enc"
+)
 
 
 def _validate_container_name(container_name: str) -> str:
-    if not isinstance(container_name, str) or not CONTAINER_NAME_PATTERN.match(container_name):
+    if not isinstance(container_name, str) or not CONTAINER_NAME_PATTERN.fullmatch(container_name):
         raise HTTPException(status_code=400, detail="Invalid container name")
     return container_name
 
 
 def _ensure_backup_dir() -> str:
     os.makedirs(BACKUP_DIR, mode=0o700, exist_ok=True)
-    return BACKUP_DIR
+    root = os.path.realpath(BACKUP_DIR)
+    info = os.stat(root)
+    if info.st_uid not in (0, os.geteuid()) or info.st_mode & 0o022:
+        raise HTTPException(status_code=500, detail="Backup directory must be writable only by its trusted owner")
+    return root
 
 
 def _parse_backup_filename(filename: str) -> Optional[Dict[str, str]]:
     if not isinstance(filename, str) or os.path.basename(filename) != filename:
         return None
-    match = BACKUP_FILENAME_PATTERN.match(filename)
+    match = BACKUP_FILENAME_PATTERN.fullmatch(filename)
     if not match:
         return None
     return {"container": match.group("container"), "timestamp": match.group("timestamp")}
@@ -4092,45 +4155,27 @@ def _container_in_scope(auth_context: Dict[str, Any], container_name: str) -> bo
     return not allowed or container_name in allowed
 
 
-def perform_encrypted_backup(container_name: str, initiator: str = "system"):
-    set_request_context(initiator, "backup_task")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = BACKUP_DIR
-    raw_file = os.path.join(backup_dir, f"{container_name}_{timestamp}.tar.gz")
-    enc_file = f"{raw_file}.enc"
-    partial_file = f"{enc_file}.partial"
-
+def perform_encrypted_backup(container_name: str, initiator: str = "system", request_id: Optional[str] = None):
+    context_token = REQUEST_CONTEXT.set({"actor": initiator, "endpoint": "backup_task", "request_id": request_id})
+    command_token = command_audit.set(audit_event)
     try:
-        _ensure_backup_dir()
-        audit_internal("backup_start", target=container_name, details={"raw_file": raw_file})
-        # 1. Export Container ('lxc export' creates a unified backup including config)
-        run_command(["lxc", "export", container_name, raw_file])
-
-        # 2. Encrypt File (Fernet tokens are not streamable; format is a compatibility contract)
-        fernet = Fernet(get_fernet_key(BACKUP_ENCRYPTION_PASSWORD))
-        with open(raw_file, "rb") as f:
-            encrypted_data = fernet.encrypt(f.read())
-
-        # Write under a non-listed name, then rename so /backup/list never shows half-written archives.
-        fd = os.open(partial_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(encrypted_data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(partial_file, enc_file)
-        logging.info(f"Backup for {container_name} created and encrypted.")
-        audit_internal("backup_complete", target=container_name, details={"enc_file": enc_file})
-
-    except Exception as e:
-        logging.error(f"Backup failed for {container_name}: {e}")
-        audit_internal("backup_failed", target=container_name, details={"error": str(e)}, status="error")
+        _validate_container_name(container_name)
+        root = Path(_ensure_backup_dir())
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"{container_name}_{timestamp}-{uuid.uuid4().hex}.tar.gz.enc"
+        audit_internal("backup_start", target=container_name, details={"filename": filename})
+        with tempfile.TemporaryDirectory(dir=root, prefix=".export-") as staging:
+            raw_file = Path(staging) / "export.tar.gz"
+            run_command(["lxc", "export", container_name, str(raw_file)])
+            with raw_file.open("rb") as source, backup_output(root / filename) as output:
+                encrypt_backup(source, output, BACKUP_ENCRYPTION_PASSWORD)
+        audit_internal("backup_complete", target=container_name, details={"filename": filename})
+    except Exception as exc:
+        logging.error("Backup failed for %s (%s)", container_name, type(exc).__name__)
+        audit_internal("backup_failed", target=container_name, details={"error_type": type(exc).__name__}, status="error")
     finally:
-        for leftover in (raw_file, partial_file):
-            if os.path.exists(leftover):
-                try:
-                    os.remove(leftover)
-                except OSError:
-                    logging.warning("Unable to remove backup temp file %s", leftover)
+        command_audit.reset(command_token)
+        REQUEST_CONTEXT.reset(context_token)
 
 @app.post("/backup/{container_name}")
 def trigger_backup(container_name: str, background_tasks: BackgroundTasks, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
@@ -4138,10 +4183,13 @@ def trigger_backup(container_name: str, background_tasks: BackgroundTasks, x_api
     try:
         _validate_container_name(container_name)
     except HTTPException as exc:
-        audit_api("backup_trigger", target=container_name, details={"error": exc.detail}, status="error")
+        audit_api("backup_trigger", details={"error": exc.detail}, status="error")
         raise
+    if BACKUP_ENCRYPTION_PASSWORD in ("", DEFAULT_BACKUP_PASSWORD):
+        audit_api("backup_trigger", target=container_name, details={"error": "backup password unset"}, status="error")
+        raise HTTPException(status_code=503, detail="Set FORTRESS_BACKUP_PASSWORD before creating backups")
     ctx = get_request_context()
-    background_tasks.add_task(perform_encrypted_backup, container_name, ctx.get("actor", "system"))
+    background_tasks.add_task(perform_encrypted_backup, container_name, ctx.get("actor", "system"), ctx.get("request_id"))
     audit_api("backup_trigger", target=container_name)
     return {"message": "Backup started in background"}
 
@@ -4151,7 +4199,8 @@ def list_backups(container: Optional[str] = None, x_api_key: Optional[str] = Hea
     restricted = bool(auth_context.get("allowed_containers"))
     files: List[str] = []
     items: List[Dict[str, Any]] = []
-    for name in sorted(os.listdir(_ensure_backup_dir())):
+    root = _ensure_backup_dir()
+    for name in sorted(os.listdir(root)):
         if not name.endswith(".enc"):
             continue
         parsed = _parse_backup_filename(name)
@@ -4160,13 +4209,15 @@ def list_backups(container: Optional[str] = None, x_api_key: Optional[str] = Hea
             continue
         if container and owner != container:
             continue
-        path = os.path.join(BACKUP_DIR, name)
+        path = os.path.join(root, name)
         try:
-            size = os.path.getsize(path)
+            info = os.lstat(path)
         except OSError:
             continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
         files.append(name)
-        items.append({"filename": name, "container": owner, "timestamp": parsed["timestamp"] if parsed else None, "size_bytes": size})
+        items.append({"filename": name, "container": owner, "timestamp": parsed["timestamp"] if parsed else None, "size_bytes": info.st_size})
     audit_api("backup_list", target=container, details={"count": len(files), "scoped": restricted})
     return {"backups": files, "items": items}
 
@@ -4175,16 +4226,16 @@ def download_backup(filename: str, x_api_key: Optional[str] = Header(default=Non
     auth_context = authorize("backup_download", "manage_backups", x_api_key, x_user_token)
     parsed = _parse_backup_filename(filename)
     if parsed is None:
-        audit_api("backup_download", target=filename, details={"error": "invalid filename"}, status="error")
+        audit_api("backup_download", details={"error": "invalid filename"}, status="error")
         raise HTTPException(status_code=400, detail="Invalid backup filename")
     try:
         enforce_container_scope(auth_context, parsed["container"])
     except HTTPException:
         audit_api("backup_download", target=filename, details={"error": "container out of scope"}, status="error")
         raise
-    backup_root = os.path.realpath(_ensure_backup_dir())
-    file_path = os.path.realpath(os.path.join(backup_root, filename))
-    if os.path.dirname(file_path) != backup_root or not os.path.isfile(file_path):
+    backup_root = _ensure_backup_dir()
+    file_path = os.path.join(backup_root, filename)
+    if os.path.islink(file_path) or not os.path.isfile(file_path):
         audit_api("backup_download", target=filename, details={"error": "not found"}, status="error")
         raise HTTPException(status_code=404, detail="File not found")
     audit_api("backup_download", target=filename, details={"container": parsed["container"]})
@@ -4192,62 +4243,89 @@ def download_backup(filename: str, x_api_key: Optional[str] = Header(default=Non
 
 # --- RESTORE LOGIC ---
 
-@app.post("/restore")
-async def restore_container(file: UploadFile, container_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("restore_container", "restore_container", x_api_key, x_user_token, containers=container_name)
+def _restore_backup(source, container_name: str, dry_run: bool) -> Dict[str, str]:
+    if dry_run:
+        decrypt_backup(source, None, BACKUP_ENCRYPTION_PASSWORD)
+        return {"message": "Backup integrity verified"}
+    with tempfile.TemporaryDirectory(prefix=".restore-", dir=_ensure_backup_dir()) as staging:
+        archive = Path(staging) / "restore.tar.gz"
+        with open(archive, "xb", opener=_owner_only_open) as output:
+            decrypt_backup(source, output, BACKUP_ENCRYPTION_PASSWORD)
+        run_command(["lxc", "import", str(archive), container_name])
+    return {"message": f"Container {container_name} restored successfully"}
+
+
+def _owner_only_open(path, flags):
+    return os.open(path, flags, 0o600)
+
+
+def _open_stored_backup(path, flags):
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK)
+    if stat.S_ISREG(os.fstat(fd).st_mode):
+        return fd
+    os.close(fd)
+    raise FileNotFoundError(errno.ENOENT, "Backup not found")
+
+
+@app.post("/backup/restore/{filename}")
+def restore_stored_backup(
+    filename: str, container_name: Optional[str] = None, dry_run: bool = False,
+    x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None),
+):
+    action = "backup_restore"
+    auth_context = authorize(action, "restore_container", x_api_key, x_user_token)
     try:
-        _validate_container_name(container_name)
-    except HTTPException as exc:
-        audit_api("restore_container", target=container_name, details={"error": exc.detail}, status="error")
-        raise
-
-    # Per-request staging dir (owner-only) so concurrent restores never share temp files.
-    staging_dir = tempfile.mkdtemp(prefix=".restore-", dir=_ensure_backup_dir())
-    enc_path = os.path.join(staging_dir, "upload.enc")
-    dec_path = os.path.join(staging_dir, "restore.tar.gz")
-
-    try:
-        # 1. Stream the upload to disk in chunks (bounded by FORTRESS_RESTORE_MAX_BYTES when set).
-        received = 0
-        fd = os.open(enc_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as buffer:
-            while True:
-                chunk = await file.read(RESTORE_UPLOAD_CHUNK_BYTES)
-                if not chunk:
-                    break
-                received += len(chunk)
-                if RESTORE_MAX_BYTES and received > RESTORE_MAX_BYTES:
-                    raise HTTPException(status_code=413, detail="Backup upload exceeds FORTRESS_RESTORE_MAX_BYTES")
-                buffer.write(chunk)
-
-        # 2. Decrypt (Fernet needs the whole token; the decrypted archive goes straight to disk).
-        fernet = Fernet(get_fernet_key(BACKUP_ENCRYPTION_PASSWORD))
-        with open(enc_path, "rb") as f:
-            decrypted_data = fernet.decrypt(f.read())
-        os.remove(enc_path)
-        fd = os.open(dec_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(decrypted_data)
-        del decrypted_data
-
-        # 3. Import to LXD
-        run_command(["lxc", "import", dec_path, container_name])
-        audit_api("restore_container", target=container_name, details={"size_bytes": received})
-
-        return {"message": f"Container {container_name} restored successfully"}
-
-    except HTTPException as exc:
-        audit_api("restore_container", target=container_name, details={"error": str(exc.detail)}, status="error")
-        if exc.status_code < 500:
+        parsed = _parse_backup_filename(filename)
+        if parsed is None:
+            raise HTTPException(status_code=400, detail="Invalid backup filename")
+        target = _validate_container_name(parsed["container"] if container_name is None else container_name)
+        enforce_container_scopes(auth_context, [parsed["container"], target])
+        path = os.path.join(_ensure_backup_dir(), filename)
+        try:
+            source = open(path, "rb", opener=_open_stored_backup)
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ELOOP):
+                raise HTTPException(status_code=404, detail="Backup not found") from exc
             raise
-        raise HTTPException(status_code=500, detail=f"Restore failed: {exc.detail}")
-    except Exception as e:
-        error = "Invalid backup or wrong FORTRESS_BACKUP_PASSWORD" if e.__class__.__name__ == "InvalidToken" else str(e)
-        audit_api("restore_container", target=container_name, details={"error": error}, status="error")
-        raise HTTPException(status_code=500, detail=f"Restore failed: {error}")
-    finally:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        with source:
+            result = _restore_backup(source, target, dry_run)
+        audit_api(action, target=target, details={"filename": filename, "dry_run": dry_run})
+        return result
+    except HTTPException as exc:
+        audit_api(action, details={"status_code": exc.status_code, "dry_run": dry_run}, status="error")
+        raise
+    except (InvalidBackup, OSError) as exc:
+        audit_api(action, details={"error_type": type(exc).__name__, "dry_run": dry_run}, status="error")
+        detail = str(exc) if isinstance(exc, InvalidBackup) else "Unable to read or stage backup"
+        raise HTTPException(status_code=500, detail=detail) from exc
+
+
+@app.post("/restore")
+def restore_container(file: UploadFile, container_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+    action = "restore_container"
+    auth_context = authorize(action, "restore_container", x_api_key, x_user_token, containers=container_name)
+    try:
+        require_permission(auth_context["permissions"], "restore_external_backup")
+        if auth_context.get("allowed_containers"):
+            raise HTTPException(status_code=403, detail="External backup imports require unrestricted container scope")
+        _validate_container_name(container_name)
+        size = file.size
+        if size is None:
+            size = file.file.seek(0, os.SEEK_END)
+            file.file.seek(0)
+        if RESTORE_MAX_BYTES and size > RESTORE_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Backup upload exceeds FORTRESS_RESTORE_MAX_BYTES")
+        result = _restore_backup(file.file, container_name, False)
+        audit_api(action, target=container_name, details={"size_bytes": size})
+        return result
+    except HTTPException as exc:
+        audit_api(action, details={"status_code": exc.status_code}, status="error")
+        raise
+    except (InvalidBackup, OSError) as exc:
+        audit_api(action, details={"error_type": type(exc).__name__}, status="error")
+        detail = str(exc) if isinstance(exc, InvalidBackup) else "Unable to read or stage backup"
+        raise HTTPException(status_code=500, detail=f"Restore failed: {detail}") from exc
 
 if __name__ == "__main__":
     # In production, run behind a real webserver or use SSL context here
-    uvicorn.run(app, host=HOST_INTERFACE, port=HOST_PORT, ssl_keyfile="/etc/fortress/ssl/key.pem", ssl_certfile="/etc/fortress/ssl/cert.pem")
+    uvicorn.run(app, host=HOST_INTERFACE, port=HOST_PORT, access_log=False, ssl_keyfile="/etc/fortress/ssl/key.pem", ssl_certfile="/etc/fortress/ssl/cert.pem")

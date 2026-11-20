@@ -73,7 +73,7 @@ class SSHCommandTests(unittest.TestCase):
 
     def test_subprocess_failure_becomes_http_500(self):
         err = subprocess.CalledProcessError(255, ["ssh"], stderr="Permission denied\n")
-        with mock.patch.object(remote.subprocess, "run", side_effect=err):
+        with mock.patch("fortress.system.subprocess.run", side_effect=err):
             with self.assertRaises(HTTPException) as ctx:
                 remote._run_subprocess(["ssh"])
         self.assertEqual(ctx.exception.status_code, 500)
