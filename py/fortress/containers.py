@@ -126,9 +126,11 @@ def validate_port(port: int, field: str) -> None:
         raise HTTPException(status_code=400, detail=f"{field} must be between {MIN_PORT}-{MAX_PORT}")
 
 
-def exec_in_container(container_name: str, command: List[str]) -> str:
+def exec_in_container(container_name: str, command: List[str], *, audit_arguments: bool = True) -> str:
     cmd = ["lxc", "exec", container_name, "--"] + command
     details = sanitize_command_details(command)
+    if not audit_arguments:
+        details["arg_preview"] = []
     try:
         result = run_command(cmd)
         _audit("container_exec", f"exec:{details['command']}", target=container_name, details=details)

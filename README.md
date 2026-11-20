@@ -57,7 +57,7 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 ## Authentication
 
 - `X-API-Key`: optional centralized master key with unrestricted access, best used only during bootstrap (set `FORTRESS_API_KEY` or `API_SECRET_KEY`). Disable it long-term to reduce blast radius.
-- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `restore_external_backup`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `migration_admin`, `terminal_host`, `terminal_container`, optional `terminal_root`, optional `terminal_impersonate`) and optional `allowed_containers` scope.
+- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `restore_external_backup`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `sites_deploy_local`, `migration_admin`, `terminal_host`, `terminal_container`, optional `terminal_root`, optional `terminal_impersonate`) and optional `allowed_containers` scope.
 - Either header grants access; if both are provided the master key takes precedence. Tokens scoped to containers must match the container(s) referenced by the request payload.
 - Delegated tokens may carry an expiry (`expires_at`, set at creation with `ttl_seconds`/`expires_at` or later via `PUT /api-users/{token}`). Tokens without one never expire; a record with an unparseable `expires_at` is treated as expired.
 - Status codes: **401** (with `WWW-Authenticate`) = no credential, unknown credential, or expired token — re-authenticate; **403** = authenticated, but the token lacks the permission or the container is outside `allowed_containers`.
@@ -388,6 +388,7 @@ Body:
 }
 ```
 - Creates the site record, configures routing/TLS, and provisions DB credentials when enabled (requires `database.password`).
+- Use an absolute `docroot` below `/`. The site directory itself must be a directory path without a final symlink.
 - `database.root_password` is optional and used to provision DB users/databases when root authentication requires a password.
 - When `runtime.php_ini_overrides` is provided, Fortress writes a per-site ini file inside the container and restarts PHP-FPM.
 - When `runtime.fpm_pool` is provided, Fortress writes a per-site PHP-FPM pool override file (`zz-fortress-<site>.conf`) and restarts PHP-FPM.
@@ -397,6 +398,10 @@ Body:
 - Retrieves full site details plus `tls_status` (certificate presence, expiry, renewal indicators).
 
 Site deploy, backup, rollback, update, delete, and service restart requests for the same site run one at a time across API workers. The API stores the operation locks in `/var/lib/fortress/sites.json.locks/`. Deploy and backup operations for different sites can run concurrently and use separate staging directories inside their containers.
+
+Deploy and rollback keep a private copy of the document root in the container while replacing its contents. The checkpoint includes hidden files, symlinks, and permissions. Deploy keeps existing top-level dotfiles unless the deployment overwrites them. Rollback replaces the entire tree with the selected backup. Use separate document roots for sites and leave space for the checkpoint and staged input under `/tmp`. A document root can be a mount. A nested mount within the document root blocks replacement.
+
+If file replacement, a post-deploy command, database import, or a requested restart fails, Fortress restores the previous files. A failed file recovery preserves the checkpoint in `/tmp/fortress-site-…/previous-docroot` inside the container. Look up `site_docroot_checkpoint`, `site_docroot_restored`, and `site_docroot_restore_failed` using the API request ID. Database changes and side effects outside the document root require separate recovery.
 
 #### `PUT /sites/{site_id}` / `DELETE /sites/{site_id}` (permission `sites_manage`)
 - Updates or removes a website definition.
@@ -417,6 +422,8 @@ Body:
 }
 ```
 - Deploys code, runs optional post-deploy commands, and restarts services as requested.
+- Git checkouts and HTTP(S) archive downloads run inside the site's container. Deploying a host directory (`source_type=local`) or a host archive additionally requires `sites_deploy_local` and unrestricted container scope. That permission grants access to files readable by the Fortress service account.
+- Requested service restart failures return `500` with the failed service targets. Deploy hooks and authenticated source URLs are omitted from argument previews in the audit register.
 
 #### `POST /sites/{site_id}/backup` (permission `sites_manage`)
 - Creates a site-level backup (files plus optional database).
@@ -433,6 +440,7 @@ Body:
 
 #### `POST /sites/{site_id}/services/restart` (permission `sites_manage`)
 - Restarts one or more site services (defaults to web + PHP-FPM).
+- Returns `restarted` and `failed` arrays. A failed target is recorded as an error in the audit register.
 
 ### Container Lifecycle
 

@@ -37,6 +37,15 @@ class AuditLoggingTests(unittest.TestCase):
     def tearDown(self) -> None:
         configure_audit(None)
 
+    def test_exec_can_omit_argument_values_from_audit_events(self) -> None:
+        callback = mock.Mock()
+        configure_audit(callback)
+        with mock.patch("fortress.containers.run_command", return_value=""):
+            exec_in_container("demo", ["sh", "-c", "echo example-value"], audit_arguments=False)
+        _, _, target, details, _ = callback.call_args.args
+        self.assertEqual(target, "demo")
+        self.assertEqual(details, {"command": "sh", "arg_preview": [], "arg_length": 2})
+
     def test_logger_upgrades_existing_database_and_keeps_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "command_log.db"

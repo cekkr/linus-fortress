@@ -100,6 +100,7 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 | `/var/lib/fortress/recipe_health_history.json` | server.py | capped by `FORTRESS_RECIPE_HEALTH_HISTORY_MAX` |
 | `/var/lib/fortress/routes.json` | server.py routing | + nginx files in `/etc/nginx/sites-{available,enabled}` |
 | `/var/lib/fortress/sites.json`, `sites.json.locks/`, `site_backups/` | `fortress.sites` + server.py | Per-site mutation locks and owner-only backup archives with ownership metadata |
+| `/tmp/fortress-site-…/` inside a target container | server.py site operations | Private staging and document-root checkpoint. Retained when file recovery fails. |
 | `/var/lib/fortress/hosts.json`, `vms.json`, `vms/` | `fortress.hosts`, `fortress.vms` | SSH passwords stored; redacted on output |
 | `/var/lib/fortress/monitoring_history.json` | `fortress.monitoring` | ring buffer (`history_limit`) |
 | `/var/lib/fortress/container_images.json` | container router | popular image presets |
@@ -128,7 +129,7 @@ The FastAPI application and the owner of most routes, configuration constants, a
   - Update-reload: `_run_system_update_reload`, `_launch_restart_script`, `_git_*` helpers, `_restore_stashed_changes`.
   - Routing: `add_domain_routing`, `refresh_domain_routing`, `remove_domain_routing`, `_apply_nginx_config`, `_restore_nginx_config`, `_apply_nginx_route`.
   - Recipes: `LAMP_RECIPE_BUNDLE` + `FILEMANAGER_COMMAND` (seed data), `_collect_lamp_health_report` and probe builders, health-history store helpers (`_append_recipe_health_history_entry`, `_build_recipe_health_trend`).
-  - Sites: `_resolve_site_tls_status`, `_apply_php_ini_overrides`, `_normalize_fpm_pool_tuning`, `_apply_php_fpm_pool_tuning`, `_apply_site_routing`, `_backup_site_files`, `_restore_site_db`, `_restart_site_services`.
+  - Sites: `_resolve_site_tls_status`, `_apply_php_ini_overrides`, `_normalize_fpm_pool_tuning`, `_apply_php_fpm_pool_tuning`, `_apply_site_routing`, `_backup_site_files`, `_site_docroot_change`, `_restore_site_db`, `_restart_site_services`.
   - Backups: `perform_encrypted_backup` (background task, private staging, atomic publication), `CONTAINER_NAME_PATTERN`, `BACKUP_FILENAME_PATTERN` (used to check scope), `restore_stored_backup` (supports verification-only dry run), `restore_container` (privileged uploads, `RESTORE_MAX_BYTES`).
   - `/status` scoping: `_filter_status_containers`.
   - Store locking: `_holds_store_lock(path_getter)` (decorator for recipe writers and site creation), `_site_mutation` (per-site locks for deploy, backup, rollback, update, delete, and restart), `_locked_store_operation` (hosts/VMs: locked load → mutate → save, error-path audit, nothing saved on failure), `_long_store_operation` (SSH provision/probe: run unlocked, merge changed fields under the lock).
@@ -453,7 +454,9 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 - **Behavior:** site records bound to a container/docroot/runtime/DB/TLS/routing; deploy from archive, backup/rollback (files + DB dump), logs, health, service restart, php.ini overrides, PHP-FPM pool tuning, TLS status.
 - **Flow and owners:** site routes + helpers in [`py/server.py`](py/server.py) → models in [`py/fortress/sites.py`](py/fortress/sites.py) → `lxc exec`, routing helpers.
 - **Concurrency:** Site mutations lock the site across API threads and processes. Update and delete acquire site locks before the JSON store lock. Check container scope again after acquiring the locks. Each deploy, backup, and rollback that stages files uses a distinct container directory. Site rollback checks backup ownership before touching the container.
-- **Tests and gaps:** [`tests/test_sites.py`](tests/test_sites.py) and [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py) cover site records, permissions, serialization, and backup rollback ownership. TLS renewal failure history is pending.
+- **Recovery:** Deploy and rollback require an absolute document root below `/` without a final symlink or nested mounts. The site lock covers checkpoint, replacement, and file recovery. Keep the staging directory after failed recovery and audit its path. Database changes and side effects outside the document root have separate recovery requirements.
+- **Permissions:** Deploys that read any host file require `sites_manage`, `sites_deploy_local` and unrestricted container scope. Git/HTTP(S) sources run inside the guest and their argument previews are omitted from the audit register.
+- **Tests and gaps:** [`tests/test_sites.py`](tests/test_sites.py), [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py), and [`tests/test_site_recovery.py`](tests/test_site_recovery.py) cover site records, permissions, serialization, backup ownership and document-root recovery. TLS renewal failure history is pending.
 
 ### Firewall and anti-DDoS — Shipped
 

@@ -624,7 +624,7 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
             if command[:3] == ["lxc", "file", "pull"]:
                 Path(command[-1]).write_bytes(b"test archive")
 
-        deploy = self.module.SiteDeployRequest(source_type="archive", source="/demo.tar.gz", restart_services=False)
+        deploy = self.module.SiteDeployRequest(source_type="archive", source="https://example.test/demo.tar.gz", restart_services=False)
         backup = self.module.SiteBackupRequest(include_database=False)
         with (
             mock.patch.object(self.module, "json_store_lock", side_effect=observe_lock),
@@ -642,7 +642,7 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
                 other_result = other_site.result(timeout=10)
                 self.assertFalse(same_site.done())
                 self.assertTrue(Path(other_result["path"]).is_file())
-                self.assertEqual([call.args[0][2] for call in run.call_args_list], ["push", "pull"])
+                self.assertEqual([call.args[0][2] for call in run.call_args_list], ["pull"])
             finally:
                 finish_deploy.set()
             self.assertEqual(deployment.result(timeout=10)["message"], "Site deployed")
