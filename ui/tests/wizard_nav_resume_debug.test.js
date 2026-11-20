@@ -43,6 +43,8 @@ function jsonResponse(res, payload, status = 200) {
 function startStubApi(port) {
   const upgrades = [];
   const vmQueries = [];
+  const vmSnapshotRequests = [];
+  const snapshots = [];
   let failPreflight = false;
   const server = createServer(async (req, res) => {
     const pathname = new URL(req.url || "/", `http://127.0.0.1:${port}`).pathname;
@@ -91,7 +93,28 @@ function startStubApi(port) {
       jsonResponse(res, { vms: [
         { name: "lab-ready", state: "stopped", provider: "qemu", validation: { valid: true } },
         { name: "lab-old", state: "stopped", provider: "qemu", validation: { valid: false, message: "disk_path must be inside FORTRESS_VM_ROOT" } },
+        { name: "lab-live", state: "running", provider: "qemu", live_snapshots: true, snapshots },
       ] });
+      return;
+    }
+    if (pathname.startsWith("/vms/lab-live/snapshots") && ["POST", "DELETE"].includes(req.method)) {
+      const url = new URL(req.url, `http://127.0.0.1:${port}`);
+      let body = "";
+      for await (const chunk of req) {
+        body += chunk;
+      }
+      const payload = body ? JSON.parse(body) : null;
+      vmSnapshotRequests.push({ method: req.method, path: pathname, live: url.searchParams.get("live"), payload });
+      if (pathname === "/vms/lab-live/snapshots" && req.method === "POST") {
+        if (!payload?.name || payload.live !== true) {
+          jsonResponse(res, { detail: "Expected a named live snapshot" }, 400);
+          return;
+        }
+        snapshots.push({ name: payload.name, live: true });
+      } else if (req.method === "DELETE") {
+        snapshots.length = 0;
+      }
+      jsonResponse(res, { message: "Snapshot request complete" });
       return;
     }
     jsonResponse(res, { error: "not found" }, 404);
@@ -101,6 +124,7 @@ function startStubApi(port) {
       server,
       upgrades,
       vmQueries,
+      vmSnapshotRequests,
       setPreflightFailure: (enabled) => { failPreflight = enabled; },
     }));
     server.on("error", reject);
@@ -148,6 +172,76 @@ async function loadPuppeteer(t) {
     return null;
   }
 }
+
+test("VM Labs creates, restores, and deletes a live snapshot through the proxy", async (t) => {
+  const puppeteer = await loadPuppeteer(t);
+  if (!puppeteer) return;
+  const harness = await launchHarness();
+  let browser;
+  try {
+    browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1500, height: 980 });
+    await page.goto(`http://127.0.0.1:${harness.uiPort}`, { waitUntil: "networkidle0" });
+    await login(page);
+    await page.locator('.app-card[data-node-id="vms"] .card-icon-button').click();
+
+    const vmAction = (id, name = "lab-live") => `#preview [data-action-id="${id}"][data-vm="${name}"]`;
+    const next = '#wizard [data-wizard-action="next"]';
+    await page.locator(vmAction("vm-snapshot", "lab-ready")).click();
+    await page.waitForSelector("#wiz-vm-snap-name", { visible: true });
+    assert.equal(await page.$("#wiz-vm-snap-live"), null);
+    await page.locator('#wizard [data-wizard-action="close"]').click();
+
+    await page.locator(vmAction("vm-snapshot")).click();
+    await page.locator("#wiz-vm-snap-name").fill("checkpoint");
+    assert.equal(await page.$eval("#wiz-vm-snap-live", (input) => input.checked), false);
+    await page.locator("#wiz-vm-snap-live").click();
+    await page.locator(next).click();
+    assert.match(await page.$eval("#wizard", (el) => el.textContent), /Live snapshot including VM memory/);
+    assert.deepEqual(harness.api.vmSnapshotRequests, []);
+    await page.locator(next).click();
+
+    const restore = vmAction("vm-restore");
+    await page.waitForSelector(restore, { visible: true });
+    assert.match(await page.$eval("#preview", (el) => el.textContent), /checkpoint \(live\)/);
+    const endpoint = "/vms/lab-live/snapshots";
+    assert.deepEqual(harness.api.vmSnapshotRequests, [
+      { method: "POST", path: endpoint, live: null, payload: { name: "checkpoint", live: true } },
+    ]);
+
+    const dismissRestore = new Promise((resolve) => page.once("dialog", async (dialog) => {
+      await dialog.dismiss();
+      resolve(dialog.message());
+    }));
+    await page.locator(restore).click();
+    assert.match(await dismissRestore, /rewinds the disk and VM memory/);
+    assert.equal(harness.api.vmSnapshotRequests.length, 1);
+
+    page.once("dialog", (dialog) => dialog.accept());
+    const restored = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api${endpoint}/checkpoint/restore` && response.ok());
+    await page.locator(restore).click();
+    await restored;
+    assert.equal(harness.api.vmSnapshotRequests[1].live, "true");
+
+    const deleteButton = vmAction("vm-snapshot-delete");
+    await page.waitForSelector(deleteButton, { visible: true });
+    page.once("dialog", (dialog) => dialog.accept());
+    const deleted = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api${endpoint}/checkpoint` && response.ok());
+    await page.locator(deleteButton).click();
+    await deleted;
+    await page.waitForSelector(deleteButton, { hidden: true });
+    assert.equal(harness.api.vmSnapshotRequests[2].method, "DELETE");
+    assert.equal(harness.api.vmSnapshotRequests[2].live, "true");
+    assert.equal(harness.api.vmSnapshotRequests.length, 3);
+  } finally {
+    if (browser) await browser.close();
+    harness.proc.kill("SIGTERM");
+    harness.api.server.close();
+  }
+});
 
 test("wizard arrow keys + swipe navigate steps, never submit, and progress resumes after reload", async (t) => {
   const puppeteer = await loadPuppeteer(t);

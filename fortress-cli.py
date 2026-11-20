@@ -1052,15 +1052,19 @@ def vms_command(args: argparse.Namespace) -> None:
             return
         if args.action == "create":
             payload = {"name": args.snapshot, "description": args.description}
+            if args.live:
+                payload["live"] = True
             result = client.request("POST", f"/vms/{args.name}/snapshots", json_body=payload, auth_override=auth_override)
             print(json.dumps(result, indent=2))
             return
         if args.action == "restore":
-            result = client.request("POST", f"/vms/{args.name}/snapshots/{args.snapshot}/restore", auth_override=auth_override)
+            params = {"live": "true"} if args.live else None
+            result = client.request("POST", f"/vms/{args.name}/snapshots/{args.snapshot}/restore", params=params, auth_override=auth_override)
             print(json.dumps(result, indent=2))
             return
         if args.action == "delete":
-            result = client.request("DELETE", f"/vms/{args.name}/snapshots/{args.snapshot}", auth_override=auth_override)
+            params = {"live": "true"} if args.live else None
+            result = client.request("DELETE", f"/vms/{args.name}/snapshots/{args.snapshot}", params=params, auth_override=auth_override)
             print(json.dumps(result, indent=2))
             return
         raise FortressCLIError("Unsupported snapshot action")
@@ -1800,6 +1804,7 @@ def build_parser() -> argparse.ArgumentParser:
     vms_snapshot.add_argument("name")
     vms_snapshot.add_argument("--snapshot")
     vms_snapshot.add_argument("--description")
+    vms_snapshot.add_argument("--live", action="store_true", help="Use the running QEMU guest for create, restore, or delete")
     vms_snapshot.set_defaults(func=vms_command)
     vms_probe = vms_sub.add_parser("probe", help="Probe VM over SSH")
     vms_probe.add_argument("name")

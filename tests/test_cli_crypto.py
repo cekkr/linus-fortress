@@ -20,6 +20,26 @@ def load_cli_module(temp_home: str):
     return module, module_name
 
 
+class CliVmSnapshotTests(unittest.TestCase):
+    def test_live_flag_sets_request_mode(self):
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(os.environ, {"FORTRESS_HOME": tmpdir}):
+            module, name = load_cli_module(tmpdir)
+            self.addCleanup(sys.modules.pop, name, None)
+            with mock.patch.object(module, "load_config"), mock.patch.object(module, "FortressClient") as client:
+                request = client.return_value.request
+                request.return_value = {}
+                with mock.patch("builtins.print"):
+                    for action in ("create", "restore", "delete"):
+                        self.assertEqual(module.main(["vms", "snapshot", action, "lab", "--snapshot", "baseline", "--live"]), 0)
+                    self.assertEqual(module.main(["vms", "snapshot", "create", "lab", "--snapshot", "baseline"]), 0)
+                self.assertEqual(request.call_args_list, [
+                    mock.call("POST", "/vms/lab/snapshots", json_body={"name": "baseline", "description": None, "live": True}, auth_override=None),
+                    mock.call("POST", "/vms/lab/snapshots/baseline/restore", params={"live": "true"}, auth_override=None),
+                    mock.call("DELETE", "/vms/lab/snapshots/baseline", params={"live": "true"}, auth_override=None),
+                    mock.call("POST", "/vms/lab/snapshots", json_body={"name": "baseline", "description": None}, auth_override=None),
+                ])
+
+
 class CliCryptoTests(unittest.TestCase):
     def test_keypair_roundtrip_encrypt_decrypt(self) -> None:
         passphrase = "KeyPass-123_ABC"

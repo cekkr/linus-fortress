@@ -459,6 +459,7 @@ paths:
                       $ref: "#/components/schemas/VMSnapshotRecord"
     post:
       summary: Create a VM snapshot
+      description: QEMU uses its stopped disk by default. Set live in the request body to capture disk and memory from a managed running QEMU guest.
       tags: [VMs]
       parameters:
         - in: path
@@ -478,10 +479,18 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Message"
+                type: object
+                properties:
+                  message:
+                    type: string
+                  snapshot:
+                    $ref: "#/components/schemas/VMSnapshotRecord"
+        "409":
+          description: Snapshot conflict or incompatible VM state
   /vms/{name}/snapshots/{snapshot_name}/restore:
     post:
       summary: Restore a VM snapshot
+      description: Use live=true to restore a snapshot that contains VM memory to a compatible running QEMU guest.
       tags: [VMs]
       parameters:
         - in: path
@@ -494,6 +503,11 @@ paths:
           required: true
           schema:
             type: string
+        - in: query
+          name: live
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: Snapshot restore
@@ -501,9 +515,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+        "409":
+          description: Snapshot or VM incompatible with the requested restore mode
   /vms/{name}/snapshots/{snapshot_name}:
     delete:
       summary: Delete a VM snapshot
+      description: Use live=true to delete a snapshot while a managed QEMU guest is running.
       tags: [VMs]
       parameters:
         - in: path
@@ -516,6 +533,11 @@ paths:
           required: true
           schema:
             type: string
+        - in: query
+          name: live
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: Snapshot deletion
@@ -523,6 +545,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+        "409":
+          description: VM incompatible with the requested snapshot mode
   /vms/{name}/provision:
     post:
       summary: Provision a VM via SSH
@@ -4090,6 +4114,10 @@ components:
           type: string
         description:
           type: string
+        live:
+          type: boolean
+          default: false
+          description: Capture the disk and memory of a managed running QEMU guest.
     VMProvision:
       type: object
       properties:
@@ -4193,6 +4221,13 @@ components:
             type: string
         updated_at:
           type: string
+        live_snapshots:
+          type: boolean
+          description: The VM record has a managed QEMU monitor from its last launch.
+        snapshots:
+          type: array
+          items:
+            $ref: "#/components/schemas/VMSnapshotRecord"
         validation:
           type: object
           description: Included when include_validation is true.
@@ -4212,6 +4247,9 @@ components:
           type: string
         created_at:
           type: string
+        live:
+          type: boolean
+          description: Present and true for QEMU snapshots saved with VM memory.
     VMStatus:
       type: object
       properties:

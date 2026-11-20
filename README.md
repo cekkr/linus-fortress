@@ -509,7 +509,7 @@ VM records let you spin up real OS test environments (QEMU/UTM or VirtualBox) an
 Provisioning uses SSH to run the install-from-scratch scripts in `scripts/provision/provision_ubuntu.sh` and `scripts/provision/provision_fedora.sh`.
 
 #### `GET /vms` (permission `vm_read`)
-- Returns VM summaries (`name`, `provider`, `state`, `installed`, `ssh_host`, labels).
+- Returns VM summaries including stored snapshot metadata and `live_snapshots`, which indicates whether the VM record has a managed QEMU monitor from its last launch.
 - Pass `include_validation=true` to report each stored configuration as valid or give its first issue. VM Labs requests this report and shows flagged records first. The check leaves stored records untouched and does not check installed tools, disk availability, or the live VM state.
 
 #### `POST /vms` (permission `vm_manage`)
@@ -544,11 +544,19 @@ Body (excerpt):
 - Returns `running`/`stopped` based on provider status checks.
 
 #### `POST /vms/{name}/snapshots` (permission `vm_manage`)
-- QEMU snapshots use `qemu-img snapshot` and need the VM stopped (create/restore/delete return `409` while it is running).
-Body: `{ "name": "baseline", "description": "clean install" }`
+- Create a disk snapshot of a stopped QEMU guest with `{"name": "baseline", "description": "clean install"}`.
+- Set `"live": true` to include the running guest's disk and memory. Live mode requires QEMU 6.0 or later, a VM started by this version of Fortress, and a single writable QCOW2 disk. The guest pauses while QEMU captures its state.
+- The API service keeps QEMU monitor sockets under `FORTRESS_VM_ROOT/.fortress-qmp/` in an owner-only directory. QEMU's temporary `-snapshot` mode and VM roots that cannot fit a Unix socket path support stopped-disk operations only.
+- In VM Labs, choose **Include running VM memory** in the snapshot wizard to use live mode.
+
+#### `GET /vms/{name}/snapshots` (permission `vm_read`)
+- Lists registered snapshots. QEMU memory snapshots carry `"live": true`.
 
 #### `POST /vms/{name}/snapshots/{snapshot}/restore` (permission `vm_manage`)
-- Restores a saved snapshot to continue testing from a known state.
+- Restore a stopped QEMU guest's disk snapshot with the default request. For a memory snapshot, start the VM with the same hardware configuration and boot media, then pass `?live=true` to rewind both disk and memory.
+
+#### `DELETE /vms/{name}/snapshots/{snapshot}` (permission `vm_manage`)
+- Delete a registered snapshot. Pass `?live=true` if the managed QEMU guest is running. If a live operation times out, retry the same operation to check or finish its outcome.
 
 #### `POST /vms/{name}/provision` (permission `vm_manage`)
 Body (excerpt):
@@ -571,6 +579,9 @@ Body (excerpt):
 CLI examples:
 - `fortress-cli vms create --name lab-ubuntu --provider qemu --iso /var/lib/isos/ubuntu.iso --ssh-host 127.0.0.1 --ssh-user ubuntu --ssh-port 2222 --ssh-key ~/.ssh/id_rsa`
 - `fortress-cli vms start lab-ubuntu --use-iso`
+- `fortress-cli vms snapshot create lab-ubuntu --snapshot baseline --live`
+- `fortress-cli vms snapshot restore lab-ubuntu --snapshot baseline --live`
+- `fortress-cli vms snapshot delete lab-ubuntu --snapshot baseline --live`
 - `fortress-cli vms provision lab-ubuntu --profile ubuntu --repo-url https://github.com/your-org/linus-fortress.git`
 - `fortress-cli vms probe lab-ubuntu --save-as baseline`
 

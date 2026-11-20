@@ -2112,7 +2112,9 @@ app.get(
 app.post(
   "/api/vms/:name/snapshots",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "POST", `/vms/${encodeURIComponent(req.params.name)}/snapshots`, req.body || {});
+    const payload = await fortressRequestFor(
+      req, "POST", `/vms/${encodeURIComponent(req.params.name)}/snapshots`, req.body || {}, { clientResponse: res }
+    );
     res.json(payload);
   })
 );
@@ -2120,11 +2122,13 @@ app.post(
 app.post(
   "/api/vms/:name/snapshots/:snapshot/restore",
   asyncHandler(async (req, res) => {
+    const query = req.query.live === "true" ? "?live=true" : "";
     const payload = await fortressRequestFor(
       req,
       "POST",
-      `/vms/${encodeURIComponent(req.params.name)}/snapshots/${encodeURIComponent(req.params.snapshot)}/restore`,
-      req.body || {}
+      `/vms/${encodeURIComponent(req.params.name)}/snapshots/${encodeURIComponent(req.params.snapshot)}/restore${query}`,
+      req.body || {},
+      { clientResponse: res }
     );
     res.json(payload);
   })
@@ -2133,10 +2137,13 @@ app.post(
 app.delete(
   "/api/vms/:name/snapshots/:snapshot",
   asyncHandler(async (req, res) => {
+    const query = req.query.live === "true" ? "?live=true" : "";
     const payload = await fortressRequestFor(
       req,
       "DELETE",
-      `/vms/${encodeURIComponent(req.params.name)}/snapshots/${encodeURIComponent(req.params.snapshot)}`
+      `/vms/${encodeURIComponent(req.params.name)}/snapshots/${encodeURIComponent(req.params.snapshot)}${query}`,
+      undefined,
+      { clientResponse: res }
     );
     res.json(payload);
   })

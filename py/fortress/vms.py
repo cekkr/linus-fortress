@@ -4,19 +4,24 @@ import os
 import re
 import shutil
 import signal
+import stat
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from fortress.qmp import DISK_NODE, run_snapshot
 from fortress.remote import SSHConfig, build_probe_script, load_provision_script, run_ssh_script, validate_ssh_config
 from fortress.storage import ensure_parent_dir, load_json_dict, save_json
 from fortress.system import run_command
 
 VM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 DEFAULT_VM_DIR = "/var/lib/fortress/vms"
+QMP_DIRECTORY = ".fortress-qmp"
+QMP_SOCKET_NAME = re.compile(r"[0-9a-f]{32}\.sock")
 
 # --- Input constraints -------------------------------------------------------
 # `vm_manage` must not imply arbitrary command execution on the API host, so every
@@ -170,22 +175,27 @@ def _validate_plain_path(path: str, field: str) -> str:
     return os.path.realpath(path)
 
 
+def _validate_vm_data_path(value: str, field: str) -> str:
+    resolved = _validate_plain_path(value, field)
+    root = get_vm_root()
+    if not _is_within(resolved, root):
+        raise _bad_request(f"{field} must be inside FORTRESS_VM_ROOT")
+    private = os.path.join(root, QMP_DIRECTORY)
+    if resolved == private or _is_within(resolved, private):
+        raise _bad_request(f"{field} cannot use the private QEMU monitor directory")
+    return resolved
+
+
 def validate_vm_dir(vm_dir: Optional[str]) -> Optional[str]:
     if vm_dir is None or vm_dir == "":
         return None
-    resolved = _validate_plain_path(vm_dir, "vm_dir")
-    if not _is_within(resolved, get_vm_root()):
-        raise _bad_request("vm_dir must be inside FORTRESS_VM_ROOT")
-    return resolved
+    return _validate_vm_data_path(vm_dir, "vm_dir")
 
 
 def validate_disk_path(disk_path: Optional[str]) -> Optional[str]:
     if disk_path is None or disk_path == "":
         return None
-    resolved = _validate_plain_path(disk_path, "disk_path")
-    if not _is_within(resolved, get_vm_root()):
-        raise _bad_request("disk_path must be inside FORTRESS_VM_ROOT")
-    return resolved
+    return _validate_vm_data_path(disk_path, "disk_path")
 
 
 def validate_iso_path(iso_path: Optional[str]) -> Optional[str]:
@@ -313,6 +323,7 @@ class VMStopRequest(BaseModel):
 class VMSnapshotRequest(BaseModel):
     name: str
     description: Optional[str] = None
+    live: bool = False
 
 
 class VMProvisionRequest(BaseModel):
@@ -360,6 +371,7 @@ def save_vms(path: str, vms: Dict[str, Dict[str, Any]]) -> None:
 
 def sanitize_vm_record(record: Dict[str, Any]) -> Dict[str, Any]:
     sanitized = dict(record)
+    sanitized.pop("qmp_socket", None)
     ssh = sanitized.get("ssh")
     if isinstance(ssh, dict):
         ssh_copy = dict(ssh)
@@ -386,12 +398,16 @@ def build_vm_summary(name: str, record: Any) -> Dict[str, Any]:
         "ssh_port": ssh.get("port"),
         "labels": record.get("labels", {}),
         "updated_at": record.get("updated_at"),
+        "live_snapshots": record.get("provider") == "qemu" and bool(record.get("qmp_socket")),
+        "snapshots": record.get("snapshots") or [],
     }
 
 
 def _pid_is_running(pid: int) -> bool:
     try:
         os.kill(pid, 0)
+        return True
+    except PermissionError:
         return True
     except (OSError, ValueError):
         return False
@@ -511,6 +527,52 @@ def _qemu_pid_file(record: Dict[str, Any]) -> str:
     return os.path.join(_resolve_vm_dir(record), f"{record['name']}.pid")
 
 
+def _qmp_directory(create: bool = False) -> str:
+    root = get_vm_root()
+    info = os.stat(root)
+    if info.st_uid not in (0, os.geteuid()) or info.st_mode & 0o022:
+        raise HTTPException(409, "The VM root must be under trusted ownership to use the QEMU monitor")
+    directory = os.path.join(root, QMP_DIRECTORY)
+    if create:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+    info = os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise HTTPException(409, "The QEMU monitor directory must be private to the API service")
+    return directory
+
+
+def _new_qmp_socket(record: Dict[str, Any]) -> Optional[str]:
+    if "-snapshot" in record["extra_args"]:
+        return None  # QEMU's temporary overlay discards snapshots on exit.
+    name = f"{uuid.uuid4().hex}.sock"
+    path = os.path.join(get_vm_root(), QMP_DIRECTORY, name)
+    if len(os.fsencode(path)) >= 104 or "," in path:
+        return None  # Keep cold snapshot support on paths unsuitable for a Unix socket.
+    return os.path.join(_qmp_directory(create=True), name)
+
+
+def _stored_qmp_socket(record: Dict[str, Any]) -> str:
+    name = record.get("qmp_socket")
+    if not isinstance(name, str) or not QMP_SOCKET_NAME.fullmatch(name):
+        raise HTTPException(409, "Start the VM with Fortress before using live snapshots")
+    try:
+        path = os.path.join(_qmp_directory(), name)
+        info = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise HTTPException(409, "Start the VM with Fortress before using live snapshots") from exc
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.geteuid():
+        raise HTTPException(409, "The stored QEMU monitor is not a trusted Unix socket")
+    return path
+
+
+def _retire_qmp_socket(record: Dict[str, Any]) -> None:
+    try:
+        os.unlink(_stored_qmp_socket(record))
+    except (HTTPException, OSError):
+        pass
+    record.pop("qmp_socket", None)
+
+
 def _build_qemu_network(record: Dict[str, Any]) -> List[str]:
     mode = record.get("network_mode", "user")
     if mode == "bridge":
@@ -525,10 +587,14 @@ def _build_qemu_network(record: Dict[str, Any]) -> List[str]:
 
 
 def _start_qemu_vm(record: Dict[str, Any], request: VMStartRequest) -> None:
+    validate_vm_name(record["name"])
     validate_vm_record(record)  # re-check stored values; legacy records predate validation
+    if _status_qemu_vm(record) != "stopped":
+        raise HTTPException(409, "The QEMU guest must be stopped before it can start")
     binary = _ensure_qemu_tools(record)
     pid_file = _qemu_pid_file(record)
     iso_path = _ensure_iso_path(record, request.iso_path if request.use_iso else None)
+    qmp_socket = _new_qmp_socket(record)
     cmd = [
         binary,
         "-name",
@@ -538,7 +604,9 @@ def _start_qemu_vm(record: Dict[str, Any], request: VMStartRequest) -> None:
         "-smp",
         str(record["cpu_cores"]),
         "-drive",
-        f"file={record['disk_path']},format=qcow2,if=virtio",
+        f"file={record['disk_path']},format=qcow2,if=virtio,node-name={DISK_NODE}",
+        "-monitor",
+        "none",
         "-daemonize",
         "-pidfile",
         pid_file,
@@ -549,42 +617,61 @@ def _start_qemu_vm(record: Dict[str, Any], request: VMStartRequest) -> None:
         cmd.extend(["-display", "none"])
     if iso_path:
         cmd.extend(["-cdrom", iso_path, "-boot", "order=d"])
+    if qmp_socket:
+        cmd.extend(["-qmp", f"unix:{qmp_socket},server=on,wait=off"])
     cmd.extend(_build_qemu_network(record))
     cmd.extend(validate_extra_args(record.get("extra_args")))
     run_command(cmd)
+    _retire_qmp_socket(record)
+    if qmp_socket:
+        record["qmp_socket"] = os.path.basename(qmp_socket)
     record["pid_file"] = pid_file
 
 
-def _stop_qemu_vm(record: Dict[str, Any], force: bool) -> None:
+def _read_qemu_pid(record: Dict[str, Any]) -> Optional[int]:
     pid_file = record.get("pid_file") or _qemu_pid_file(record)
-    if not os.path.exists(pid_file):
-        return
+    _validate_vm_data_path(pid_file, "pid_file")
     try:
-        with open(pid_file, "r") as fh:
-            pid = int(fh.read().strip())
-    except (OSError, ValueError):
+        fd = os.open(pid_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError("Invalid QEMU PID file")
+        value = handle.read(32).strip()
+    if not value.isdigit() or not 1 < int(value) <= 2**31 - 1:
+        raise ValueError("Invalid QEMU PID")
+    return int(value)
+
+
+def _stop_qemu_vm(record: Dict[str, Any], force: bool) -> None:
+    try:
+        pid = _read_qemu_pid(record)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, "Could not verify the QEMU process ID") from exc
+    if pid is None or not _pid_is_running(pid):
         return
-    if not _pid_is_running(pid):
-        return
-    os.kill(pid, signal.SIGTERM)
-    for _ in range(10):
-        if not _pid_is_running(pid):
+    signals = (signal.SIGTERM, signal.SIGKILL) if force else (signal.SIGTERM,)
+    for sig in signals:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
             return
-        time.sleep(0.5)
-    if force:
-        os.kill(pid, signal.SIGKILL)
+        except OSError as exc:
+            raise HTTPException(409, "Could not signal the QEMU guest") from exc
+        for _ in range(10):
+            if not _pid_is_running(pid):
+                return
+            time.sleep(0.5)
+    raise HTTPException(409, "The QEMU guest has not stopped")
 
 
 def _status_qemu_vm(record: Dict[str, Any]) -> str:
-    pid_file = record.get("pid_file") or _qemu_pid_file(record)
-    if not os.path.exists(pid_file):
-        return "stopped"
     try:
-        with open(pid_file, "r") as fh:
-            pid = int(fh.read().strip())
-    except (OSError, ValueError):
+        pid = _read_qemu_pid(record)
+    except (HTTPException, OSError, ValueError):
         return "unknown"
-    return "running" if _pid_is_running(pid) else "stopped"
+    return "running" if pid is not None and _pid_is_running(pid) else "stopped"
 
 
 def _start_virtualbox_vm(record: Dict[str, Any], request: VMStartRequest) -> None:
@@ -611,25 +698,38 @@ def _status_virtualbox_vm(record: Dict[str, Any]) -> str:
 
 def _require_qemu_stopped(record: Dict[str, Any], action: str) -> None:
     # qemu-img needs the image write lock; a running guest holds it (and restoring under it would corrupt the disk).
-    if _status_qemu_vm(record) == "running":
+    if _status_qemu_vm(record) != "stopped":
         raise HTTPException(status_code=409, detail=f"Stop the VM before {action} a QEMU snapshot")
 
 
 def _snapshot_qemu(record: Dict[str, Any], snapshot_name: str) -> None:
     _require_qemu_stopped(record, "creating")
-    if not record.get("disk_path"):
-        raise HTTPException(status_code=400, detail="disk_path missing for QEMU snapshot")
-    run_command(["qemu-img", "snapshot", "-c", snapshot_name, record["disk_path"]])
+    run_command(["qemu-img", "snapshot", "-c", snapshot_name, _qemu_snapshot_disk(record)])
 
 
 def _snapshot_qemu_restore(record: Dict[str, Any], snapshot_name: str) -> None:
     _require_qemu_stopped(record, "restoring")
-    run_command(["qemu-img", "snapshot", "-a", snapshot_name, record["disk_path"]])
+    run_command(["qemu-img", "snapshot", "-a", snapshot_name, _qemu_snapshot_disk(record)])
 
 
 def _snapshot_qemu_delete(record: Dict[str, Any], snapshot_name: str) -> None:
     _require_qemu_stopped(record, "deleting")
-    run_command(["qemu-img", "snapshot", "-d", snapshot_name, record["disk_path"]])
+    run_command(["qemu-img", "snapshot", "-d", snapshot_name, _qemu_snapshot_disk(record)])
+
+
+def _qemu_snapshot_disk(record: Dict[str, Any]) -> str:
+    disk = validate_disk_path(record.get("disk_path"))
+    if not disk:
+        raise _bad_request("disk_path missing for QEMU snapshot")
+    return disk
+
+
+def _live_snapshot(record: Dict[str, Any], snapshot_name: str, action: str) -> None:
+    if record.get("provider") != "qemu":
+        raise _bad_request("Live snapshots require QEMU")
+    validate_vm_name(snapshot_name)
+    path = _stored_qmp_socket(record)
+    run_snapshot(path, record["name"], _qemu_snapshot_disk(record), action, snapshot_name)
 
 
 def _snapshot_virtualbox(record: Dict[str, Any], snapshot_name: str, description: Optional[str]) -> None:
@@ -724,15 +824,10 @@ def delete_vm(name: str, vms: Dict[str, Dict[str, Any]], purge: bool = False, fo
             _stop_virtualbox_vm(record, force=True)
             run_command(["VBoxManage", "unregistervm", name, "--delete"])
         elif record.get("provider") == "qemu":
-            root = get_vm_root()
-            disk_path = os.path.realpath(record["disk_path"]) if record.get("disk_path") else None
-            vm_dir = os.path.realpath(record["vm_dir"]) if record.get("vm_dir") else None
-            for label, path in (("disk_path", disk_path), ("vm_dir", vm_dir)):
-                if path and not _is_within(path, root):
-                    raise _bad_request(
-                        f"Refusing to purge {label} outside {root}; delete without purge and clean up manually"
-                    )
+            disk_path = validate_disk_path(record.get("disk_path"))
+            vm_dir = validate_vm_dir(record.get("vm_dir"))
             _stop_qemu_vm(record, force=True)
+            _retire_qmp_socket(record)
             if disk_path and os.path.isfile(disk_path):
                 os.remove(disk_path)
             if vm_dir and os.path.isdir(vm_dir):
@@ -759,6 +854,7 @@ def stop_vm(name: str, request: VMStopRequest, vms: Dict[str, Dict[str, Any]]) -
     record = _resolve_vm(vms, name)
     if record.get("provider") == "qemu":
         _stop_qemu_vm(record, request.force)
+        _retire_qmp_socket(record)
     elif record.get("provider") == "virtualbox":
         _stop_virtualbox_vm(record, request.force)
     else:
@@ -787,22 +883,31 @@ def create_snapshot(name: str, request: VMSnapshotRequest, vms: Dict[str, Dict[s
     for existing in record.get("snapshots", []):
         if existing.get("name") == request.name:
             raise HTTPException(status_code=409, detail="Snapshot already exists")
-    if record.get("provider") == "qemu":
+    if request.live:
+        _live_snapshot(record, request.name, "create")
+    elif record.get("provider") == "qemu":
         _snapshot_qemu(record, request.name)
     elif record.get("provider") == "virtualbox":
         _snapshot_virtualbox(record, request.name, request.description)
     else:
         raise HTTPException(status_code=400, detail="Unsupported VM provider")
     snapshot = {"name": request.name, "description": request.description, "created_at": utc_now()}
+    if request.live:
+        snapshot["live"] = True
     record.setdefault("snapshots", []).append(snapshot)
     record["last_snapshot"] = snapshot
     record["updated_at"] = snapshot["created_at"]
     return snapshot
 
 
-def restore_snapshot(name: str, snapshot_name: str, vms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def restore_snapshot(name: str, snapshot_name: str, vms: Dict[str, Dict[str, Any]], *, live: bool = False) -> Dict[str, Any]:
     record = _resolve_vm(vms, name)
-    if record.get("provider") == "qemu":
+    known = next((snap for snap in record.get("snapshots", []) if snap.get("name") == snapshot_name), {})
+    if live:
+        _live_snapshot(record, snapshot_name, "restore")
+    elif record.get("provider") == "qemu":
+        if known.get("live"):
+            raise HTTPException(409, "Start a compatible VM and request a live restore for this snapshot")
         _snapshot_qemu_restore(record, snapshot_name)
     elif record.get("provider") == "virtualbox":
         _snapshot_virtualbox_restore(record, snapshot_name)
@@ -813,9 +918,11 @@ def restore_snapshot(name: str, snapshot_name: str, vms: Dict[str, Dict[str, Any
     return record["last_snapshot_restore"]
 
 
-def delete_snapshot(name: str, snapshot_name: str, vms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def delete_snapshot(name: str, snapshot_name: str, vms: Dict[str, Dict[str, Any]], *, live: bool = False) -> Dict[str, Any]:
     record = _resolve_vm(vms, name)
-    if record.get("provider") == "qemu":
+    if live:
+        _live_snapshot(record, snapshot_name, "delete")
+    elif record.get("provider") == "qemu":
         _snapshot_qemu_delete(record, snapshot_name)
     elif record.get("provider") == "virtualbox":
         _snapshot_virtualbox_delete(record, snapshot_name)

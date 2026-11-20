@@ -1,6 +1,6 @@
 {
   "store": "vms",
-  "schema_version": "2",
+  "schema_version": "3",
   "record_type": "mapping",
   "fields": [
     "name",
@@ -36,6 +36,7 @@
     "last_start_at",
     "last_stop_at",
     "pid_file",
+    "qmp_socket",
     "saved_states",
     "service_name"
   ],

@@ -173,6 +173,7 @@ const state = {
     },
     vmSnapshot: {
       name: "",
+      live: false,
     },
     containerSnapshot: {
       name: "",
@@ -1278,6 +1279,7 @@ function resetFirewallWizard(mode = "open") {
 function resetVmSnapshotWizard(vmName) {
   state.wizard.vmSnapshot = {
     name: "",
+    live: false,
   };
   state.wizard.context.vm = vmName || null;
 }
@@ -3315,6 +3317,16 @@ function renderFirewallPreview(node) {
   `;
 }
 
+function vmSnapshotEntries(vm) {
+  return (Array.isArray(vm?.snapshots) ? vm.snapshots : [])
+    .map((snapshot) => typeof snapshot === "string" ? { name: snapshot } : snapshot)
+    .filter((snapshot) => typeof snapshot?.name === "string" && snapshot.name);
+}
+
+function vmCanTakeLiveSnapshot(vm) {
+  return vm?.live_snapshots === true && normalizeStatus(vm.status || vm.state) === "running";
+}
+
 function renderVmsPreview(node) {
   if (state.vmsLoading) {
     elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>Loading VMs...</div>`;
@@ -3331,15 +3343,15 @@ function renderVmsPreview(node) {
             const vmName = escapeHtml(vm.name);
             const configurationIssue = vm.validation?.valid === false;
             const nodeId = escapeHtml(node.id);
-            const snapshotButtons =
-              Array.isArray(vm.snapshots) && vm.snapshots.length
-                ? vm.snapshots
-                    .map(
-                      (snap) =>
-                        `<button class="action ghost" data-action-id="vm-restore" data-vm="${vmName}" data-snapshot="${escapeHtml(snap)}" data-node-id="${nodeId}">Restore ${escapeHtml(snap)}</button>`
-                    )
-                    .join("")
-                : "";
+            const snapshotRows = vmSnapshotEntries(vm).map((snapshot) => {
+              const name = escapeHtml(snapshot.name);
+              return `
+                <div class="card-actions">
+                  <span>${name}${snapshot.live ? " (live)" : ""}</span>
+                  <button class="action ghost" data-action-id="vm-restore" data-vm="${vmName}" data-snapshot="${name}" data-node-id="${nodeId}">Restore</button>
+                  <button class="action danger ghost" data-action-id="vm-snapshot-delete" data-vm="${vmName}" data-snapshot="${name}" data-node-id="${nodeId}">Delete</button>
+                </div>`;
+            }).join("");
             return `
           <div class="event-item">
             <div><strong>${vmName}</strong> — ${escapeHtml(vm.profile || vm.provider || "vm")}</div>
@@ -3355,8 +3367,8 @@ function renderVmsPreview(node) {
               <button class="action ghost" data-action-id="vm-stop" data-vm="${vmName}" data-node-id="${nodeId}">Stop</button>
               <button class="action ghost" data-action-id="vm-status" data-vm="${vmName}" data-node-id="${nodeId}">Status</button>
               <button class="action ghost" data-action-id="vm-snapshot" data-vm="${vmName}" data-node-id="${nodeId}">Snapshot</button>
-              ${snapshotButtons}
             </div>
+            ${snapshotRows}
           </div>
         `;
           })
@@ -4796,6 +4808,8 @@ function renderWizard() {
     }
   } else if (wizard.mode === "vm-snapshot") {
     const vmName = wizard.context.vm || "";
+    const vm = state.vms.find((entry) => entry.name === vmName);
+    const canTakeLiveSnapshot = vmCanTakeLiveSnapshot(vm);
     steps = ["Snapshot", "Confirm"];
     if (wizard.step === 0) {
       bodyMarkup = `
@@ -4804,6 +4818,12 @@ function renderWizard() {
           <label for="wiz-vm-snap-name">Snapshot name</label>
           <input id="wiz-vm-snap-name" name="name" data-wizard-group="vmSnapshot" value="${escapeHtml(wizard.vmSnapshot.name)}" placeholder="checkpoint-1" />
         </div>
+        ${canTakeLiveSnapshot ? `
+          <div class="wizard-field">
+            <label for="wiz-vm-snap-live">Include running VM memory</label>
+            <input id="wiz-vm-snap-live" type="checkbox" name="live" data-wizard-group="vmSnapshot" ${wizard.vmSnapshot.live ? "checked" : ""} />
+          </div>
+          <div>Stop the VM for a disk-only snapshot.</div>` : ""}
       `;
     } else {
       nextLabel = wizard.busy ? "Creating..." : "Create";
@@ -4818,6 +4838,7 @@ function renderWizard() {
             <strong>Name</strong>
             <span>${escapeHtml(wizard.vmSnapshot.name || "(missing)")}</span>
           </div>
+          ${wizard.vmSnapshot.live ? "<div><strong>Mode</strong><span>Live snapshot including VM memory</span></div>" : ""}
         </div>
       `;
     }
@@ -7906,18 +7927,26 @@ async function handleAction(actionId, node, params = {}) {
     return;
   }
 
-  if (actionId === "vm-restore") {
+  if (actionId === "vm-restore" || actionId === "vm-snapshot-delete") {
     const name = params.vm;
     const snapshot = params.snapshot;
     if (!name || !snapshot) {
       logEvent("error", "VM and snapshot are required");
       return;
     }
-    const response = await apiRequest(`/api/vms/${encodeURIComponent(name)}/snapshots/${encodeURIComponent(snapshot)}/restore`, {
-      method: "POST",
-      body: JSON.stringify({}),
+    const vm = state.vms.find((entry) => entry.name === name);
+    const restore = actionId === "vm-restore";
+    const savedWithMemory = vmSnapshotEntries(vm).some((entry) => entry.name === snapshot && entry.live === true);
+    const live = restore ? savedWithMemory : vmCanTakeLiveSnapshot(vm);
+    const prompt = restore
+      ? `Restore ${name} to snapshot ${snapshot}? This rewinds the disk${savedWithMemory ? " and VM memory" : ""}.`
+      : `Delete snapshot ${snapshot} for ${name}?`;
+    if (!window.confirm(prompt)) return;
+    const path = `/api/vms/${encodeURIComponent(name)}/snapshots/${encodeURIComponent(snapshot)}`;
+    const response = await apiRequest(`${path}${restore ? "/restore" : ""}${live ? "?live=true" : ""}`, {
+      method: restore ? "POST" : "DELETE",
     });
-    logEvent("success", response.message || `Snapshot ${snapshot} restored for ${name}`);
+    logEvent("success", response.message || `Snapshot ${snapshot} ${restore ? "restored" : "deleted"} for ${name}`);
     await loadVms();
     return;
   }
@@ -8592,9 +8621,11 @@ async function handleWizardAction(action, payload = {}) {
         if (!snapName) {
           throw new Error("Snapshot name is required");
         }
+        const payload = { name: snapName };
+        if (state.wizard.vmSnapshot.live === true) payload.live = true;
         const response = await apiRequest(`/api/vms/${encodeURIComponent(vmName)}/snapshots`, {
           method: "POST",
-          body: JSON.stringify({ snapshot_name: snapName }),
+          body: JSON.stringify(payload),
         });
         logEvent("success", response.message || `Snapshot ${snapName} created for ${vmName}`);
         state.wizard.active = false;

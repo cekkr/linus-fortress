@@ -185,6 +185,45 @@ class VMLifecycleTests(VMRootMixin, unittest.TestCase):
 
     @mock.patch("fortress.vms.shutil.which", side_effect=_which)
     @mock.patch("fortress.vms.run_command", return_value="")
+    def test_managed_monitor_path_is_private_and_never_serialized(self, run_command, _which_mock):
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="vm-qmp-") as root, mock.patch.dict(
+            os.environ, {"FORTRESS_VM_ROOT": root}
+        ):
+            vms = {}
+            self._create(vms)
+            vms_mod.start_vm("web", vms_mod.VMStartRequest(), vms)
+            record = vms["web"]
+            directory = Path(root).resolve() / vms_mod.QMP_DIRECTORY
+            socket_path = directory / record["qmp_socket"]
+            command = run_command.call_args.args[0]
+            self.assertEqual(command[command.index("-qmp") + 1], f"unix:{socket_path},server=on,wait=off")
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            self.assertNotIn("qmp_socket", vms_mod.sanitize_vm_record(record))
+            for path in (directory, socket_path):
+                with self.assertRaises(HTTPException):
+                    vms_mod.validate_vm_dir(str(path))
+
+            socket_path.symlink_to(directory / "elsewhere")
+            with self.assertRaises(HTTPException) as error:
+                vms_mod._stored_qmp_socket(record)
+            self.assertEqual(error.exception.status_code, 409)
+            with self.assertRaises(HTTPException):
+                vms_mod._stored_qmp_socket({**record, "qmp_socket": "../other.sock"})
+
+    @mock.patch("fortress.vms.os.kill")
+    def test_bad_pid_file_blocks_start_stop_and_disk_snapshot(self, kill):
+        pid_file = Path(self.root) / "web.pid"
+        pid_file.write_text("-1")
+        record = {"name": "web", "pid_file": str(pid_file), "provider": "qemu"}
+        self.assertEqual(vms_mod._status_qemu_vm(record), "unknown")
+        with self.assertRaises(HTTPException):
+            vms_mod.stop_vm("web", vms_mod.VMStopRequest(), {"web": record})
+        with self.assertRaises(HTTPException):
+            vms_mod._require_qemu_stopped(record, "creating")
+        kill.assert_not_called()
+
+    @mock.patch("fortress.vms.shutil.which", side_effect=_which)
+    @mock.patch("fortress.vms.run_command", return_value="")
     def test_create_rejects_bad_input_before_any_command(self, run_command, _which_mock):
         for overrides in (
             {"qemu_binary": "/bin/sh"},
@@ -461,6 +500,55 @@ class HostVMRouteTests(VMRootMixin, unittest.TestCase):
         self.assertTrue(all(not result[name]["valid"] for name in records if name != "current"))
         self.assertNotIn("example-private-value", report.text)
         self.assertEqual(store.read_bytes(), original)
+
+    def test_live_snapshot_api_permissions_and_audited_registry_updates(self):
+        disk = os.path.join(self.root, "web.qcow2")
+        self.module.save_vms(self.module.VMS_DB, {"web": {
+            "name": "web", "provider": "qemu", "state": "running", "disk_path": disk,
+            "qmp_socket": "0" * 32 + ".sock",
+        }})
+        manager = {"X-User-Token": "tok-vm-manage"}
+        viewer = {"X-User-Token": "tok-vm-read"}
+        self.module.update_api_users(lambda users: users.update({
+            "tok-vm-manage": {"username": "vm-operator", "permissions": ["vm_manage"]},
+        }))
+        endpoint = "/vms/web/snapshots"
+        checkpoint = f"{endpoint}/checkpoint"
+        with mock.patch("fortress.vms._stored_qmp_socket", return_value="private.sock"), mock.patch(
+            "fortress.vms.run_snapshot"
+        ) as run:
+            payload = {"name": "checkpoint", "live": True}
+            self.assertEqual(self.client.post(endpoint, json=payload, headers=viewer).status_code, 403)
+            run.assert_not_called()
+            run.side_effect = HTTPException(409, "QEMU job failed")
+            failed = self.client.post(endpoint, json=payload, headers=manager)
+            self.assertEqual(failed.status_code, 409, failed.text)
+            self.assertNotIn("snapshots", self._store("VMS_DB")["web"])
+            self.assertIn(("error",), self._audit_rows("vms_snapshots_create"))
+            run.side_effect = None
+            with mock.patch.object(self.module, "save_vms", side_effect=OSError("write failed")):
+                failed_write = self.client.post(endpoint, json=payload, headers=manager)
+            self.assertEqual(failed_write.status_code, 500, failed_write.text)
+            self.assertNotIn("snapshots", self._store("VMS_DB")["web"])
+
+            created = self.client.post(endpoint, json=payload, headers=manager)
+            self.assertEqual(created.status_code, 200, created.text)
+            summary = self.client.get("/vms", headers=viewer).json()["vms"][0]
+            self.assertEqual(summary["snapshots"], [created.json()["snapshot"]])
+            self.assertTrue(summary["live_snapshots"])
+            detail = self.client.get("/vms/web", headers=viewer).json()["vm"]
+            self.assertNotIn("qmp_socket", detail)
+            self.assertEqual(self.client.post(f"{checkpoint}/restore", headers=manager).status_code, 409)
+            for method, path in (("POST", f"{checkpoint}/restore?live=true"), ("DELETE", f"{checkpoint}?live=true")):
+                response = self.client.request(method, path, headers=manager)
+                self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(self.client.get(endpoint, headers=viewer).json(), {"snapshots": []})
+            self.assertEqual(run.call_args_list[-3:], [
+                mock.call("private.sock", "web", disk, action, "checkpoint")
+                for action in ("create", "restore", "delete")
+            ])
+        for action in ("create", "restore", "delete"):
+            self.assertIn(("success",), self._audit_rows(f"vms_snapshots_{action}"))
 
     def test_host_probe_merges_into_current_record(self):
         self.client.post("/hosts", json={"name": "edge1", "ssh": {"host": "edge1.example", "username": "ops"}}, headers=self.master)

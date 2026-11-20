@@ -80,6 +80,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Align app deck UX closer to legacy Lizard: fixed-height rectangular app buttons, row-level dark-fiber more-info expansion, and active-button bottom-extension animation without resizing sibling cards.
 - Done: Add stage-level app-home fallbacks for leaf/fullscreen app views so opening main apps without child cards never renders a blank stage.
 - Done: Add richer per-item app-home actions for main ops (route refresh/delete, site deploy/backup, VM start/stop/snapshot).
+- Done: VM Labs can create live QEMU snapshots, display saved snapshots, and confirm restore and deletion. Puppeteer verifies the wizard and session proxy, including cancellation and refresh after mutations.
 - Done: Add Puppeteer-based visual regression coverage for all top-level app homes using deterministic screenshot hashes.
 - Done: Add Puppeteer interaction coverage for app-card bridge open/close sequencing, row-edge alignment, and sibling non-interference during collapse.
 - Done: Rework bridge/tab/panel animation geometry to use live card coordinates + shared background width/offset variables so the expanded app card, bridge, and info area render as one continuous unibody surface.
@@ -238,7 +239,8 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Done: Validate SSH host/username/port/key_path (ssh option-injection → host command execution), add `--` before the ssh destination, and validate env names and provision profile names in `fortress.remote`.
 - Done: Constrained VM inputs so `vm_manage` no longer implies command execution: `qemu_binary` allowlist (bare names), `extra_args` option/value allowlist, `bridge_name` pattern (no `,helper=`), `vm_dir`/`disk_path` confined to `FORTRESS_VM_ROOT` (purge refuses paths outside it), `.iso`-only `iso_path`, bounded resources; re-validated before start so legacy records can't bypass it.
 - Done: QEMU snapshot create/restore/delete return 409 while the VM is running (found on AlmaLinux: `qemu-img` can't take the write lock and restore would corrupt a live disk).
-- Next: Live QEMU snapshots via QMP `savevm` (would need a guarded monitor socket).
+- Done: Opt-in live QEMU snapshot creation, restore, and deletion through a private per-launch QMP socket, with managed disk verification, job outcome checks, and audited API and CLI operations. Stopped QEMU disk snapshots still use `qemu-img`.
+- Done: Booted the supplied AlmaLinux 10.2 ISO in QEMU and verified that a live snapshot restored the installer boot menu to its saved selection. Ran the same operations from Chromium through Lizard UI and the real Fortress API, then matched the browser request IDs to their SQLite audit entries.
 - Done: Add an opt-in configuration report to the VM list and surface invalid stored settings in VM Labs. Check the records without executing a hypervisor or modifying the VM store.
 - Done: Write authenticated chunked container backups with private staging and collision-resistant filenames. Read legacy Fernet archives, support offline verification and scoped stored restores, and restrict uploaded archives to trusted recovery operators.
 - Done: Add a local restic workflow for off-host snapshots of Fortress host state and verified staged recovery, including a rebuild and isolation runbook.

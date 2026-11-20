@@ -128,7 +128,7 @@ export function buildDemoData() {
   ];
 
   const vms = [
-    { name: "alma-lab", provider: "qemu", status: "running", profile: "fedora", memory_mb: 4096, cpus: 2, disk_gb: 30, snapshots: ["clean-install", "pre-upgrade"], validation: { valid: true } },
+    { name: "alma-lab", provider: "qemu", status: "running", profile: "fedora", memory_mb: 4096, cpus: 2, disk_gb: 30, live_snapshots: true, snapshots: [{ name: "clean-install" }, { name: "pre-upgrade", live: true }], validation: { valid: true } },
     { name: "ubuntu-lab", provider: "qemu", status: "stopped", profile: "ubuntu", memory_mb: 2048, cpus: 2, disk_gb: 20, snapshots: ["boot"], validation: { valid: false, message: "disk_path must be inside FORTRESS_VM_ROOT" } },
   ];
 

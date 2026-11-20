@@ -2062,7 +2062,12 @@ def _load_vm_store() -> Dict[str, Dict[str, Any]]:
     return load_vms(VMS_DB)
 
 def _vm_store_op(endpoint: str, target: Optional[str], operation, persist: bool = True):
-    return _locked_store_operation(VMS_DB, load_vms, save_vms, endpoint, target, operation, persist=persist)
+    try:
+        return _locked_store_operation(VMS_DB, load_vms, save_vms, endpoint, target, operation, persist=persist)
+    except OSError as exc:
+        error = HTTPException(500, "Could not complete the VM operation due to a host file error")
+        _audit_store_error(endpoint, target, error)
+        raise error from exc
 
 @app.get("/vms")
 def list_vms(
@@ -2153,21 +2158,21 @@ def get_vm_snapshots(name: str, x_api_key: Optional[str] = Header(default=None),
 def create_vm_snapshot(name: str, payload: VMSnapshotRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("vms_snapshots_create", "vm_manage", x_api_key, x_user_token)
     snapshot = _vm_store_op("vms_snapshots_create", name, lambda vms: create_snapshot(name, payload, vms))
-    audit_api("vms_snapshots_create", target=name, details={"snapshot": payload.name})
+    audit_api("vms_snapshots_create", target=name, details={"snapshot": payload.name, "live": payload.live})
     return {"message": f"Snapshot {payload.name} created", "snapshot": snapshot}
 
 @app.post("/vms/{name}/snapshots/{snapshot_name}/restore")
-def restore_vm_snapshot(name: str, snapshot_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+def restore_vm_snapshot(name: str, snapshot_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None), live: bool = False):
     authorize("vms_snapshots_restore", "vm_manage", x_api_key, x_user_token)
-    restored = _vm_store_op("vms_snapshots_restore", name, lambda vms: restore_snapshot(name, snapshot_name, vms))
-    audit_api("vms_snapshots_restore", target=name, details={"snapshot": snapshot_name})
+    restored = _vm_store_op("vms_snapshots_restore", name, lambda vms: restore_snapshot(name, snapshot_name, vms, live=live))
+    audit_api("vms_snapshots_restore", target=name, details={"snapshot": snapshot_name, "live": live})
     return {"message": f"Snapshot {snapshot_name} restored", "restore": restored}
 
 @app.delete("/vms/{name}/snapshots/{snapshot_name}")
-def delete_vm_snapshot(name: str, snapshot_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+def delete_vm_snapshot(name: str, snapshot_name: str, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None), live: bool = False):
     authorize("vms_snapshots_delete", "vm_manage", x_api_key, x_user_token)
-    result = _vm_store_op("vms_snapshots_delete", name, lambda vms: delete_snapshot(name, snapshot_name, vms))
-    audit_api("vms_snapshots_delete", target=name, details={"snapshot": snapshot_name})
+    result = _vm_store_op("vms_snapshots_delete", name, lambda vms: delete_snapshot(name, snapshot_name, vms, live=live))
+    audit_api("vms_snapshots_delete", target=name, details={"snapshot": snapshot_name, "live": live})
     return {"message": f"Snapshot {snapshot_name} deleted", "result": result}
 
 @app.post("/vms/{name}/provision")
