@@ -8,6 +8,7 @@ commands mocked.
 import importlib.util
 import json
 import os
+import struct
 import sys
 import tempfile
 import threading
@@ -29,6 +30,13 @@ MASTER = "integration-master-key"
 
 def _which(name):
     return f"/usr/bin/{name}"
+
+
+def _recovery_disk_header(backing_offset=0, features=0):
+    header = bytearray(104)
+    struct.pack_into(">4sIQIIQI", header, 0, b"QFI\xfb", 3, backing_offset, 0, 16, 1024 ** 3 + 512, 0)
+    struct.pack_into(">Q", header, 72, features)
+    return header
 
 
 class VMRootMixin:
@@ -457,6 +465,66 @@ class HostVMRouteTests(VMRootMixin, unittest.TestCase):
             self.assertEqual([vm["name"] for vm in listing.json()["vms"]], ["web"])
             self.assertEqual(self.client.delete("/vms/web", headers=self.master).status_code, 200)
             self.assertEqual(self.client.get("/vms/web", headers=self.master).status_code, 404)
+
+    @mock.patch("fortress.vms.shutil.which", side_effect=_which)
+    @mock.patch("fortress.vms.run_command", return_value="")
+    def test_existing_disk_recovery_checks_permission_and_registers_once(self, command, _which_mock):
+        disk = Path(self.root, "recovered.qcow2")
+        disk.write_bytes(_recovery_disk_header())
+        common = {"provider": "qemu", "disk_path": str(disk), "use_existing_disk": True, "extra_args": ["-accel", "tcg"]}
+        Path(self.module.API_USERS_DB).write_text(json.dumps({
+            "manage": {"username": "manager", "permissions": ["vm_manage"]},
+            "recover": {"username": "operator", "permissions": ["vm_manage", "vm_import"]},
+        }))
+        denied = self.client.post("/vms", json={"name": "denied", **common}, headers={"X-User-Token": "manage"})
+        self.assertEqual(denied.status_code, 403, denied.text)
+        command.assert_not_called()
+        headers = {"X-User-Token": "recover"}
+        restored = self.client.post("/vms", json={"name": "lab", **common}, headers=headers)
+        self.assertEqual(restored.status_code, 200, restored.text)
+        record = self._store("VMS_DB")["lab"]
+        self.assertEqual(record["state"], "stopped")
+        self.assertEqual(record["disk_gb"], 2)
+        self.assertNotIn("use_existing_disk", record)
+        self.assertEqual(disk.read_bytes(), _recovery_disk_header())
+        duplicate = self.client.post("/vms", json={"name": "duplicate", **common}, headers=headers)
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        command.assert_called_once_with(["qemu-img", "check", "-f", "qcow2", str(disk)])
+        self.assertEqual(set(self._store("VMS_DB")), {"lab"})
+        self.assertIn(("error",), self._audit_rows("vms_create"))
+
+        vm_dir = Path(record["vm_dir"])
+        self.assertFalse(vm_dir.exists())
+
+        def launch(args):
+            self.assertEqual(Path(args[args.index("-pidfile") + 1]).parent, vm_dir)
+            self.assertTrue(vm_dir.is_dir())
+            self.assertNotIn("-enable-kvm", args)
+
+        command.side_effect = launch
+        exists = os.path.exists
+        with mock.patch("fortress.vms.os.path.exists", side_effect=lambda path: path == "/dev/kvm" or exists(path)):
+            started = self.client.post("/vms/lab/start", json={}, headers=headers)
+        self.assertEqual(started.status_code, 200, started.text)
+
+    @mock.patch("fortress.vms.shutil.which", side_effect=_which)
+    @mock.patch("fortress.vms.run_command")
+    def test_recovery_rejects_missing_dependent_and_failed_disks(self, command, _which_mock):
+        disk = Path(self.root, "recovered.qcow2")
+        payload = {"name": "lab", "provider": "qemu", "disk_path": str(disk), "use_existing_disk": True}
+        for header in (None, b"not qcow2", _recovery_disk_header(backing_offset=104), _recovery_disk_header(features=4)):
+            with self.subTest(header=header):
+                if header is not None:
+                    disk.write_bytes(header)
+                result = self.client.post("/vms", json=payload, headers=self.master)
+                self.assertEqual(result.status_code, 404 if header is None else 400, result.text)
+        command.assert_not_called()
+        disk.write_bytes(_recovery_disk_header())
+        command.side_effect = HTTPException(500, "fixture command stderr")
+        result = self.client.post("/vms", json=payload, headers=self.master)
+        self.assertEqual(result.status_code, 400, result.text)
+        self.assertNotIn("fixture command stderr", result.text)
+        self.assertEqual(self._store("VMS_DB"), {})
 
     def test_vm_configuration_report_is_read_only_and_does_not_echo_invalid_values(self):
         store = Path(self.module.VMS_DB)

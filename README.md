@@ -59,7 +59,7 @@ The system assumes capable adversaries and focuses on least privilege, scoped cr
 ## Authentication
 
 - `X-API-Key`: optional centralized master key with unrestricted access, best used only during bootstrap (set `FORTRESS_API_KEY` or `API_SECRET_KEY`). Disable it long-term to reduce blast radius.
-- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `restore_external_backup`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `sites_deploy_local`, `migration_admin`, `terminal_host`, `terminal_container`, optional `terminal_root`, optional `terminal_impersonate`) and optional `allowed_containers` scope.
+- `X-User-Token`: delegated token created via `/api-users` endpoints. Each token carries its own permissions (`manage_containers`, `manage_routing`, `access_control`, `user_management`, `connectivity`, `manage_backups`, `restore_container`, `restore_external_backup`, `api_user_admin`, `firewall_admin`, `package_manage`, `recipes_manage`, `recipes_apply`, `read_status`, `vm_read`, `vm_manage`, `vm_import`, `host_read`, `host_manage`, `sites_read`, `sites_manage`, `sites_deploy_local`, `migration_admin`, `terminal_host`, `terminal_container`, optional `terminal_root`, optional `terminal_impersonate`) and optional `allowed_containers` scope.
 - Either header grants access; if both are provided the master key takes precedence. Tokens scoped to containers must match the container(s) referenced by the request payload.
 - Delegated tokens may carry an expiry (`expires_at`, set at creation with `ttl_seconds`/`expires_at` or later via `PUT /api-users/{token}`). Tokens without one never expire; a record with an unparseable `expires_at` is treated as expired.
 - Status codes: **401** (with `WWW-Authenticate`) = no credential, unknown credential, or expired token — re-authenticate; **403** = authenticated, but the token lacks the permission or the container is outside `allowed_containers`.
@@ -149,6 +149,7 @@ If systemd fails to start the UI due to a Node.js path (common when `node` point
 Host assumptions:
 - Linux distro with `apt`, `dnf`, or `yum` (Ubuntu/Debian or AlmaLinux/RHEL-like).
 - `nginx` plus `ufw` (apt) or `firewalld` (dnf/yum) for routing and firewall ops.
+- nginx must include `/etc/nginx/sites-enabled/*` in its HTTP configuration. On an AlmaLinux host with the stock `conf.d/*.conf` include, put `include /etc/nginx/sites-enabled/*;` in a file under `/etc/nginx/conf.d/`, then run `nginx -t` before reloading. Check the site's route through nginx after setup.
 - `lxc`/`lxd` for container APIs; on AlmaLinux the script installs LXD via snap (snapd) when missing and ensures `/snap/bin` is reachable for service/screen runs. `run-server.sh` now auto-runs `lxd init --auto` when needed and auto-heals the `default` profile root disk device/pool so container creation avoids `No root device could be found` failures.
 - If Snap reports a SquashFS mount failure and the `snappy` SELinux policy is missing, the script prints the AlmaLinux minor release. Install the matching signed `snapd`, `snap-confine`, and `snapd-selinux` RPMs from that EPEL minor stream, then rerun the script with SELinux enabled.
 - `certbot` for automated Let's Encrypt issuance/renewal (the script attempts to install it when possible).
@@ -394,7 +395,8 @@ Body:
   "tls": {"mode": "manual", "cert_path": "/etc/ssl/certs/app.pem", "key_path": "/etc/ssl/private/app.key"}
 }
 ```
-- Creates the site record, configures routing/TLS, and provisions DB credentials when enabled (requires `database.password`).
+- Creates the site record and configures routing/TLS. `create_database` and `create_user` independently control local database provisioning. Account creation requires a username and uses the supplied password or a generated one.
+- Database provisioning accepts a local, non-system database name of 1–64 letters, digits, underscores, dollar signs, or hyphens. Omitted site routing values use `eth0`, container port `80`, listen address `0.0.0.0`, HTTP port `80`, and TLS port `443` when TLS is enabled.
 - Use an absolute `docroot` below `/`. The site directory itself must be a directory path without a final symlink.
 - `database.root_password` is optional and used to provision DB users/databases when root authentication requires a password.
 - When `runtime.php_ini_overrides` is provided, Fortress writes a per-site ini file inside the container and restarts PHP-FPM.
@@ -408,7 +410,7 @@ Site deploy, backup, rollback, update, delete, and service restart requests for 
 
 Deploy and rollback keep a private copy of the document root in the container while replacing its contents. The checkpoint includes hidden files, symlinks, and permissions. Deploy keeps existing top-level dotfiles unless the deployment overwrites them. Rollback replaces the entire tree with the selected backup. Use separate document roots for sites and leave space for the checkpoint and staged input under `/tmp`. A document root can be a mount. A nested mount within the document root blocks replacement.
 
-If file replacement, a post-deploy command, database import, or a requested restart fails, Fortress restores the previous files. A failed file recovery preserves the checkpoint in `/tmp/fortress-site-…/previous-docroot` inside the container. Look up `site_docroot_checkpoint`, `site_docroot_restored`, and `site_docroot_restore_failed` using the API request ID. Database changes and side effects outside the document root require separate recovery.
+If file replacement, a post-deploy command, database import, or a requested restart fails, Fortress restores the previous files. A failed file recovery preserves the checkpoint in `/tmp/fortress-site-…/previous-docroot` inside the container. Look up `site_docroot_checkpoint`, `site_docroot_restored`, and `site_docroot_restore_failed` using the API request ID. Changes made by deploy hooks outside the document root require separate recovery.
 
 #### `PUT /sites/{site_id}` / `DELETE /sites/{site_id}` (permission `sites_manage`)
 - Updates or removes a website definition.
@@ -435,9 +437,14 @@ Body:
 #### `POST /sites/{site_id}/backup` (permission `sites_manage`)
 - Creates a site-level backup (files plus optional database).
 - Returns a unique `backup_id`. The optional label must be printable and omit path separators.
+- Database backups record the database name. Keep these archives readable only by trusted operators.
 
 #### `POST /sites/{site_id}/rollback` (permission `sites_manage`)
 - Restores a backup listed for the site by `GET /sites/{site_id}/backups`. A missing archive or mismatched backup metadata returns `404`. A malformed identifier returns `400`.
+- For backups containing a database dump, stop application writes and schema changes before rollback. Use a dedicated local MySQL or MariaDB database and an account with a direct `ALL PRIVILEGES` grant on it. The account also needs to be able to dump its routines, events, and triggers. Leave space under `/tmp` for both the staged backup and the recovery checkpoint.
+- Fortress checks the current database binding against backups that record a database name. It rejects a changed binding, a shared database registered to another site in the same container, or missing database-wide privileges with `409`. Legacy archives use the current binding.
+- Fortress checkpoints the database before replacing site files. If the SQL import or a requested service restart fails, it restores the previous database and attempts file recovery independently. If the database was absent before rollback, recovery removes the one created by the failed operation.
+- If database recovery fails, the API returns `500` with `detail.database_checkpoint` pointing to the owner-only `previous-database.sql` inside the retained container staging directory. Preserve that file before clearing temporary storage. After fixing the database error, replay the checkpoint using the site's database account. Its SQL recreates the previous schema or restores its previous absence. Find `site_database_checkpoint`, `site_database_restored`, and `site_database_restore_failed` by API request ID.
 
 #### `GET /sites/{site_id}/logs` (permission `sites_read`)
 - Query params: `service` (`apache|nginx|php-fpm|app`), `lines` (default `200`), optional `since` timestamp.
@@ -529,6 +536,7 @@ Body (excerpt):
 }
 ```
 - QEMU uses `qemu-img` + `qemu-system-*`, VirtualBox uses `VBoxManage`. UTM is treated as QEMU.
+- `use_existing_disk: true` also requires `vm_import`. Pass the staged disk's absolute `disk_path` under `FORTRESS_VM_ROOT`. Fortress checks a self-contained, unencrypted QCOW2 file, derives `disk_gb` from its virtual size, and registers a stopped VM. Use a unique VM name and disk path. See [Client-side recovery over SSH](#client-side-recovery-over-ssh).
 - `ssh` is validated on create/update and before every SSH call: `username` must match `[A-Za-z_][A-Za-z0-9._-]{0,63}`, `host` must be a hostname or IP literal, `port` 1–65535, `key_path` absolute (`400` otherwise).
 - Input constraints (create, update, and again before start/purge, so older records cannot bypass them; violations are `400` and audited):
   - `qemu_binary`: bare name from the allowlist `qemu-system-{x86_64,aarch64,i386,arm,riscv64,ppc64,s390x}` or `qemu-kvm` (resolved via `PATH`; `qemu-kvm` also via `/usr/libexec/qemu-kvm` as shipped on AlmaLinux/RHEL). Unset = `qemu-system-x86_64`, falling back to `qemu-kvm`. Paths are rejected.
@@ -540,6 +548,7 @@ Body (excerpt):
 
 #### `POST /vms/{name}/start` + `POST /vms/{name}/stop` (permission `vm_manage`)
 - Start/stop VMs, optionally booting from ISO on start.
+- An explicit QEMU accelerator in `extra_args` takes precedence over automatically enabling KVM.
 
 #### `GET /vms/{name}/status` (permission `vm_read`)
 - Returns `running`/`stopped` based on provider status checks.
@@ -1105,12 +1114,48 @@ sqlite3 -header -column /var/lib/fortress/command_log.db \
 Run recovery commands from a trusted operator shell. Install [restic](https://restic.readthedocs.io/en/stable/) and initialize a dedicated off-host repository. Configure `RESTIC_REPOSITORY` and a protected password source such as `RESTIC_PASSWORD_FILE`. Keep recovery credentials outside the Fortress host. Use server-side retention or append-only backup credentials so a compromised host account cannot delete the recovery history.
 
 1. Export LXD instances and wait for `backup_complete` before taking the host snapshot. Quiesce databases or take application-consistent dumps first. Export LXD custom storage volumes separately and include those exports in the snapshot. Shut down Fortress and Lizard UI writers and any QEMU/VirtualBox guests whose disk files will be copied.
-2. Run `bash scripts/host-recovery.sh backup`. It includes `/etc/fortress`, `/var/lib/fortress` (the audit DB, Fortress stores, backups, shared storage and VM disks in the default location), and available nginx, Let's Encrypt, firewall and Fortress service configuration. Pass any non-default locations as additional absolute paths, including an overridden audit DB, external VM disks, UI admin stores or custom volume exports. Check the exit status and record the snapshot ID off-host. Restic can retain an incomplete snapshot when the backup exits with code 3.
+2. Run `bash scripts/host-recovery.sh backup`. It includes `/etc/fortress`, `/var/lib/fortress` (the audit DB, Fortress stores, backups, shared storage and VM disks in the default location), the checkout's `schemas/`, and available nginx, Let's Encrypt, firewall and Fortress service configuration. Set `FORTRESS_SCHEMA_DIR` to the absolute path used by the running API if you override its schema location. Pass other non-default locations as additional absolute paths, including an overridden audit DB, external VM disks, UI admin stores or custom volume exports. Check the exit status and record the snapshot ID off-host. Restic can retain an incomplete snapshot when the backup exits with code 3.
 3. Run `bash scripts/host-recovery.sh snapshots` to list tagged snapshots. Run `bash scripts/host-recovery.sh verify` to read and check the repository data. For a drill or an incident, use a clean recovery machine and run `bash scripts/host-recovery.sh restore SNAPSHOT_ID /path/to/trusted/staging-parent`. This restores with verification into a new private directory. Use the stated directory only after a successful exit. On Linux, check command outcomes with `journalctl -t fortress-recovery`.
 4. Rebuild the host from trusted OS and Fortress versions, then review the recovered state before installing it. Preserve ownership and permissions, restore SELinux labels where applicable, and check nginx and firewall configuration before enabling services. After a compromise, use a known-good snapshot and rotate restored credentials and signing keys before reopening network access. Keep old backup passwords in offline custody for historical archives.
 5. Restore LXD profiles, networks, storage pools and volumes before importing instances. Verify encrypted exports locally with `fortress-cli backup verify`. Import a test copy into isolated networking, check application data and health, then restore production routing. VM disks require their matching hypervisor configuration and an isolated boot test. Keep OS images or other bare-metal recovery media separately.
 
 Collect persistent OS, SSH, application and LXD logs from the host and guests and forward them to a separately administered collector for incident investigation. The Fortress register covers work through the control plane. OS login activity, processes started independently inside guests and commands typed into interactive terminals need their own telemetry.
+
+#### Client-side recovery over SSH
+
+Keep the restic repository, its recovery credentials, schema copies and VM creation JSON on the operator computer. Configure an OpenSSH host alias for the recovery server with key authentication and a verified `known_hosts` entry. The client needs restic with `restore --verify --sparse` and GNU tar or bsdtar. The SSH account needs Bash, tar and write access to a trusted staging parent on the server.
+
+To verify a snapshot locally and send the recovered tree over SSH, run the following on the client. Set `RESTIC_REPOSITORY` and its password source in the client environment first. Provide an explicit snapshot ID from `host-recovery.sh snapshots`.
+
+```bash
+bash scripts/host-recovery.sh restore-ssh SNAPSHOT_ID "$HOME/recovery" \
+  fortress-recovery /srv/recovery-staging
+```
+
+The command keeps a verified local copy and prints the remote staging directory after transfer. Remote staging creates a new private directory and uses the SSH account's ownership and permissions. Use the restic snapshot for original ownership and extended metadata. Review the recovered configuration against the matching trusted Fortress revision, then follow the host recovery steps above to install it with the required permissions and SELinux labels.
+
+To recover a single QEMU VM, extract or verify its stopped disk on the client, then transfer the directory containing the QCOW2 disk alone. This keeps the configuration and schema files on the client. The remote parent must already exist inside `FORTRESS_VM_ROOT`. Stage as an SSH account that can provide the Fortress API service user with access to the staged disk. Use the path printed by the command to locate the disk.
+
+```bash
+bash scripts/host-recovery.sh stage-ssh "$HOME/recovery/selected-disk" \
+  fortress-recovery /var/lib/fortress/vms/recovery
+```
+
+Use the configured HTTPS API connection or open an SSH tunnel to the VM manager. In the latter case, set the CLI's `server_url` to the local tunnel port using a hostname covered by the API certificate and the trusted CA. Keep the tunnel open during the import.
+
+```bash
+ssh -N -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=yes \
+  -L 127.0.0.1:18443:127.0.0.1:8443 fortress-recovery
+```
+
+Give the operator `vm_manage` and `vm_import`. Use a local VM creation JSON object with a new `name`, `provider` set to `qemu` and the saved hardware settings. Remove obsolete paths and select an unused SSH forwarding port if needed. Pass the server-side path to the staged disk when registering it.
+
+```bash
+python fortress-cli.py vms create --json-file "$HOME/recovery/vm-config.json" \
+  --use-existing-disk --disk-path /var/lib/fortress/vms/recovery/fortress-recovery.EXAMPLE/files/disk.qcow2
+```
+
+Register only a trusted standalone QCOW2 disk from a stopped VM. Flatten disk chains on a trusted recovery machine first. The staged disk becomes the VM's working disk, so retain the client copy. The new record starts stopped. Start and test the recovered guest on isolated networking before opening access. The existing method for VirtualBox is the reviewed host recovery procedure above. A one-disk import leaves the source VM's snapshot registry in the backup.
 
 ## Deployment Notes
 

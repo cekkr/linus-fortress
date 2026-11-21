@@ -145,6 +145,41 @@ def validate_site_name(name: str) -> None:
         raise HTTPException(status_code=400, detail="Site name must be 1-64 chars using letters, digits, ., _, or -")
 
 
+def local_site_database_name(database: Dict[str, Any]) -> str:
+    name = database.get("name")
+    if (
+        not isinstance(name, str)
+        or not re.fullmatch(r"[A-Za-z0-9_$-]{1,64}", name)
+        or name.lower() in {"mysql", "sys", "information_schema", "performance_schema"}
+        or database.get("host") not in (None, "", "localhost", "127.0.0.1", "::1")
+        or database.get("port") not in (None, 3306)
+    ):
+        raise HTTPException(400, "Site database operations require a local, non-system database with a valid name")
+    return name
+
+
+def build_database_provisioning_sql(database: Dict[str, Any], *, create_database: bool, create_user: bool) -> str:
+    name = local_site_database_name(database)
+    statements = []
+    if create_database:
+        statements.append(f"CREATE DATABASE IF NOT EXISTS `{name}`")
+    if create_user:
+        user, password = database.get("username"), database.get("password")
+        if not user or not password or not user.isprintable() or not password.isprintable():
+            raise HTTPException(400, "Site database provisioning requires a printable username and password")
+        # Match the server's quoting to this session's SQL mode. Escape the
+        # grant target as an identifier and as a database-level grant pattern.
+        account = "'" + user.replace("'", "''") + "'@'%'"
+        secret = "'" + password.replace("'", "''") + "'"
+        grant_name = name.replace("_", r"\_")
+        statements.extend([
+            "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'",
+            f"CREATE USER IF NOT EXISTS {account} IDENTIFIED BY {secret}",
+            f"GRANT ALL PRIVILEGES ON `{grant_name}`.* TO {account}",
+        ])
+    return "; ".join(statements)
+
+
 def load_sites(path: str) -> Dict[str, Dict[str, Any]]:
     return load_json_dict(path, label="Site")
 

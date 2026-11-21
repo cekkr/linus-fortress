@@ -100,7 +100,7 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 | `/var/lib/fortress/recipe_health_history.json` | server.py | capped by `FORTRESS_RECIPE_HEALTH_HISTORY_MAX` |
 | `/var/lib/fortress/routes.json` | server.py routing | + nginx files in `/etc/nginx/sites-{available,enabled}` |
 | `/var/lib/fortress/sites.json`, `sites.json.locks/`, `site_backups/` | `fortress.sites` + server.py | Per-site mutation locks and owner-only backup archives with ownership metadata |
-| `/tmp/fortress-site-…/` inside a target container | server.py site operations | Private staging and document-root checkpoint. Retained when file recovery fails. |
+| `/tmp/fortress-site-…/` inside a target container | server.py site operations | Private staging, document-root checkpoint, and `previous-database.sql` for DB-bearing rollbacks. Retained when recovery fails. |
 | `/var/lib/fortress/hosts.json`, `vms.json`, `vms/` | `fortress.hosts`, `fortress.vms` | SSH passwords stored; redacted on output |
 | `FORTRESS_VM_ROOT/.fortress-qmp/` | `fortress.vms` | Owner-only directory of per-launch Unix monitor sockets; registry basenames are private |
 | `/var/lib/fortress/monitoring_history.json` | `fortress.monitoring` | ring buffer (`history_limit`) |
@@ -245,8 +245,9 @@ Recipe models, dependency resolution, template rendering, versioning/history, bu
 
 Website (PHP site) Pydantic models and record helpers; execution lives in server.py.
 
-- **Key functions and subparts:** `SiteRecord`, `SiteRuntime`, `SiteFpmPoolTuning`, `SiteDatabase`, `SiteTls`, `SiteRouting`, request models (`SiteCreateRequest`, `SiteUpdateRequest`, `SiteDeployRequest`, `SiteBackupRequest`, `SiteRollbackRequest`, `SiteServiceActionRequest`); `create_site_record` (generates DB password), `update_site_record`, `delete_site_record`, `sanitize_site_record` (masks `*password*` keys), `build_service_names`, `build_site_backup_id`.
-- **Tests:** [`tests/test_sites.py`](tests/test_sites.py).
+- **Key functions and subparts:** `SiteRecord`, `SiteRuntime`, `SiteFpmPoolTuning`, `SiteDatabase`, `SiteTls`, `SiteRouting`, request models (`SiteCreateRequest`, `SiteUpdateRequest`, `SiteDeployRequest`, `SiteBackupRequest`, `SiteRollbackRequest`, `SiteServiceActionRequest`); `create_site_record` (generates DB password), `update_site_record`, `delete_site_record`, `sanitize_site_record` (masks `*password*` keys), `local_site_database_name`, `build_database_provisioning_sql`, `build_service_names`, `build_site_backup_id`.
+- **Tests:** [`tests/test_sites.py`](tests/test_sites.py), [`tests/test_site_recovery.py`](tests/test_site_recovery.py).
+- **Database operations:** use the container's local socket and stream credentials and provisioning SQL through the LXD file API to an owner-only staging file. Unlink the input before starting the client. Do not expose SQL client stderr through the API or audit log. During rollback, the database must be dedicated to the site and quiescent. Database and document-root recovery are attempted independently.
 - **Common mistakes:** always return `sanitize_site_record(...)` from routes, never the raw record.
 
 ### [`py/fortress/migrations.py`](py/fortress/migrations.py)
@@ -299,6 +300,7 @@ Standalone client. Stores credentials in `~/.fortress-cli/config.json` encrypted
 - **Key functions and subparts:** `setup_command` (keys, server URL, TLS mode/CA bundle), `CredentialContext.get_secret`, `FortressClient.request` / `stream_download` (`FORTRESS_API_KEY` / `FORTRESS_USER_TOKEN` env override stored secrets), `build_parser` (subcommands: `setup`, `info`, `call`, `status`, `api-users list|create|expire|delete` (`--ttl 30d` / `--expires-at` / `--never`, via `parse_duration_seconds`), `backup list|trigger|download|verify|decrypt`, `recipes`, `firewall`, `sites`, `migrations`, `system upgrade|update-reload`, `tls renew`, `terminal open|read|write|resize|close`, `vms`, `hosts`), per-group `*_command` handlers.
 - **Tests:** [`tests/test_cli_crypto.py`](tests/test_cli_crypto.py), [`tests/test_cli_terminal.py`](tests/test_cli_terminal.py), [`tests/test_cli_api_users.py`](tests/test_cli_api_users.py).
 - **Common mistakes:** a new API route needs a CLI handler *and* parser entry; container lifecycle, routing, packages, and monitoring are only reachable via `call`.
+- **Client VM recovery:** `vms create --json-file ... --use-existing-disk --disk-path ...` reads configuration on the client and registers an already staged server-side QCOW2 disk. `--disk-path` overrides the JSON path in this mode. The API requires `vm_manage` and `vm_import` and registers the VM stopped after checking its disk.
 
 ### [`ui/server.js`](ui/server.js)
 
@@ -360,7 +362,7 @@ Create a non-root service user and install the sudoers entry allowing only `run-
 
 ### [`scripts/host-recovery.sh`](scripts/host-recovery.sh)
 
-Local operator commands for restic backup, snapshot listing, verification, and verified restore into a new private staging directory. Standard paths are listed in [Host recovery](README.md#host-recovery). Operators quiesce writers and supply repository credentials and custom data paths. Review staged data on a clean system before installing it.
+Operator commands for restic backup, snapshot listing, verification, and verified restore. Backups include the checkout's `schemas/` or the absolute `FORTRESS_SCHEMA_DIR` override. `restore-ssh` verifies a client-side snapshot before using SSH, and `stage-ssh` transfers an existing client-side directory. Both preserve sparse files and use an owner-only, unique staging directory on the SSH host. Key-based SSH uses the operator's known hosts. Review staged data on a clean system before installing it. See [Host recovery](README.md#host-recovery).
 
 ### [`scripts/provision/`](scripts/provision/)
 
@@ -464,7 +466,8 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 - **Behavior:** site records bound to a container/docroot/runtime/DB/TLS/routing; deploy from archive, backup/rollback (files + DB dump), logs, health, service restart, php.ini overrides, PHP-FPM pool tuning, TLS status.
 - **Flow and owners:** site routes + helpers in [`py/server.py`](py/server.py) → models in [`py/fortress/sites.py`](py/fortress/sites.py) → `lxc exec`, routing helpers.
 - **Concurrency:** Site mutations lock the site across API threads and processes. Update and delete acquire site locks before the JSON store lock. Check container scope again after acquiring the locks. Each deploy, backup, and rollback that stages files uses a distinct container directory. Site rollback checks backup ownership before touching the container.
-- **Recovery:** Deploy and rollback require an absolute document root below `/` without a final symlink or nested mounts. The site lock covers checkpoint, replacement, and file recovery. Keep the staging directory after failed recovery and audit its path. Database changes and side effects outside the document root have separate recovery requirements.
+- **Recovery:** Deploy and rollback require an absolute document root below `/` without a final symlink or nested mounts. For DB-bearing rollback, checkpoint the site's dedicated local database before replacing its files. The database account must have a direct database-wide grant. Recover database and files independently after an import or restart failure. The site lock covers both checkpoints and recoveries. Keep staging after failed recovery and audit its path. Quiesce database writers before rollback. Side effects of deploy hooks outside the document root have separate recovery requirements.
+- **Database credentials:** Use the recorded account for dump and restore. Suppress SQL, client arguments, and client stderr in route errors and argument previews. Site provisioning treats account strings as SQL data, escapes grant patterns, and honors the database and user creation flags. Rollback rejects system databases, remote bindings, shared recorded bindings, and mismatched database names in new backup metadata.
 - **Permissions:** Deploys that read any host file require `sites_manage`, `sites_deploy_local` and unrestricted container scope. Git/HTTP(S) sources run inside the guest and their argument previews are omitted from the audit register.
 - **Tests and gaps:** [`tests/test_sites.py`](tests/test_sites.py), [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py), and [`tests/test_site_recovery.py`](tests/test_site_recovery.py) cover site records, permissions, serialization, backup ownership and document-root recovery. TLS renewal failure history is pending.
 
@@ -499,6 +502,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 ### SSH hosts and test VMs — Shipped
 
 - **Behavior:** registries with provision/probe/saved states. VMs add QEMU/VirtualBox start/stop/status/snapshots. `GET /vms?include_validation=true` uses `check_vm_configuration` to report invalid stored settings without modifying the record or calling the hypervisor. VM Labs requests this report and lists flagged records first.
+- **Recovery:** `POST /vms` with `use_existing_disk` requires `vm_manage` and `vm_import`. The explicit path must be a standalone, unencrypted QCOW2 disk under `FORTRESS_VM_ROOT`. Check the header before invoking `qemu-img check`. Register it stopped without creating a disk or persisting the request flag. The runtime directory may differ from the staged disk directory. On start, honor explicit accelerator options before enabling KVM automatically.
 - **Owners:** [`py/fortress/hosts.py`](py/fortress/hosts.py), [`py/fortress/vms.py`](py/fortress/vms.py), [`py/fortress/remote.py`](py/fortress/remote.py), [`scripts/provision/`](scripts/provision/). **Tests:** [`tests/test_hosts_vms.py`](tests/test_hosts_vms.py), [`tests/test_qmp.py`](tests/test_qmp.py). Live QEMU snapshot smoke uses a disposable AlmaLinux 10.2 installer guest. **Gaps:** VirtualBox unit tests use mocks; SSH passwords still use `sshpass`.
 
 ### Lizard UI — Shipped (several sub-apps Experimental/scaffold)

@@ -965,6 +965,12 @@ def vms_command(args: argparse.Namespace) -> None:
                     "key_path": args.ssh_key,
                     "password": args.ssh_password,
                 }
+        if args.use_existing_disk:
+            if not isinstance(payload, dict):
+                raise FortressCLIError("VM recovery configuration must be a JSON object")
+            payload["use_existing_disk"] = True
+            if args.disk_path:
+                payload["disk_path"] = args.disk_path
         result = client.request("POST", "/vms", json_body=payload, auth_override=auth_override)
         print(json.dumps(result, indent=2))
         return
@@ -1736,6 +1742,7 @@ def build_parser() -> argparse.ArgumentParser:
     vms_create.add_argument("--memory", type=int, default=2048)
     vms_create.add_argument("--disk", type=int, default=20)
     vms_create.add_argument("--disk-path")
+    vms_create.add_argument("--use-existing-disk", action="store_true", help="Register an existing server-side QCOW2 disk")
     vms_create.add_argument("--iso")
     vms_create.add_argument("--os-type")
     vms_create.add_argument("--vm-dir")

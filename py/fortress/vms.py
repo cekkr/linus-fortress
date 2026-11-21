@@ -5,6 +5,7 @@ import re
 import shutil
 import signal
 import stat
+import struct
 import time
 import uuid
 from datetime import datetime
@@ -289,6 +290,7 @@ class VMCreateRequest(BaseModel):
     labels: Dict[str, str] = Field(default_factory=dict)
     notes: Optional[str] = None
     installed: bool = False
+    use_existing_disk: bool = False
 
 
 class VMUpdateRequest(BaseModel):
@@ -457,6 +459,57 @@ def _create_qemu_disk(record: Dict[str, Any]) -> None:
     run_command(["qemu-img", "create", "-f", "qcow2", record["disk_path"], f"{record['disk_gb']}G"])
 
 
+def _check_recovery_disk(path: str, vm_dir: str, vms: Dict[str, Dict[str, Any]]) -> int:
+    for vm in vms.values():
+        existing = vm.get("disk_path")
+        if isinstance(existing, str) and existing:
+            existing = os.path.realpath(existing)
+            if existing == path or _is_within(existing, vm_dir):
+                raise HTTPException(409, "Recovery disk or VM directory overlaps an existing VM disk")
+        other_dir = vm.get("vm_dir")
+        if isinstance(other_dir, str) and other_dir:
+            other_dir = os.path.realpath(other_dir)
+            if (
+                vm_dir == other_dir
+                or _is_within(vm_dir, other_dir)
+                or _is_within(other_dir, vm_dir)
+                or _is_within(path, other_dir)
+            ):
+                raise HTTPException(409, "Recovery disk or VM directory overlaps an existing VM directory")
+
+    try:
+        # Nonblocking open lets us reject special files without waiting for a writer.
+        descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as disk:
+            file_info = os.fstat(disk.fileno())
+            if not stat.S_ISREG(file_info.st_mode) or file_info.st_nlink != 1:
+                raise _bad_request("Recovery disk must be a regular file without hard links")
+            header = disk.read(104)
+    except FileNotFoundError:
+        raise HTTPException(404, "Recovery disk was not found") from None
+    except OSError:
+        raise _bad_request("Recovery disk must be readable and writable by Fortress") from None
+
+    # Check the QCOW2 header before allowing QEMU to interpret any image metadata.
+    # Reject dependencies so the image cannot open a backing or external data file.
+    if len(header) < 72:
+        raise _bad_request("Recovery disk must be a QCOW2 image")
+    magic, version, backing_offset, _, _, virtual_size, encryption = struct.unpack_from(">4sIQIIQI", header)
+    if magic != b"QFI\xfb" or version not in (2, 3) or (version == 3 and len(header) < 104):
+        raise _bad_request("Recovery disk must be a QCOW2 image")
+    external_data = version == 3 and bool(struct.unpack_from(">Q", header, 72)[0] & (1 << 2))
+    if backing_offset or encryption or external_data:
+        raise _bad_request("Recovery disk must be a self-contained, unencrypted QCOW2 image")
+    gibibyte = 1024 ** 3
+    if not 0 < virtual_size <= MAX_DISK_GB * gibibyte:
+        raise _bad_request("Recovery disk has an unsupported virtual size")
+    try:
+        run_command(["qemu-img", "check", "-f", "qcow2", path])
+    except HTTPException:
+        raise _bad_request("Recovery disk failed the QEMU consistency check") from None
+    return (virtual_size + gibibyte - 1) // gibibyte
+
+
 def _create_virtualbox_disk(record: Dict[str, Any]) -> None:
     if os.path.exists(record["disk_path"]):
         raise HTTPException(status_code=409, detail="Disk path already exists")
@@ -594,7 +647,12 @@ def _start_qemu_vm(record: Dict[str, Any], request: VMStartRequest) -> None:
     binary = _ensure_qemu_tools(record)
     pid_file = _qemu_pid_file(record)
     iso_path = _ensure_iso_path(record, request.iso_path if request.use_iso else None)
+    ensure_parent_dir(pid_file)
     qmp_socket = _new_qmp_socket(record)
+    extra_args = record["extra_args"]
+    explicit_accelerator = "-accel" in extra_args or any(
+        arg == "-machine" and ",accel=" in extra_args[index + 1] for index, arg in enumerate(extra_args)
+    )
     cmd = [
         binary,
         "-name",
@@ -611,7 +669,7 @@ def _start_qemu_vm(record: Dict[str, Any], request: VMStartRequest) -> None:
         "-pidfile",
         pid_file,
     ]
-    if os.path.exists("/dev/kvm"):
+    if not explicit_accelerator and os.path.exists("/dev/kvm"):
         cmd.append("-enable-kvm")
     if request.headless:
         cmd.extend(["-display", "none"])
@@ -620,7 +678,7 @@ def _start_qemu_vm(record: Dict[str, Any], request: VMStartRequest) -> None:
     if qmp_socket:
         cmd.extend(["-qmp", f"unix:{qmp_socket},server=on,wait=off"])
     cmd.extend(_build_qemu_network(record))
-    cmd.extend(validate_extra_args(record.get("extra_args")))
+    cmd.extend(extra_args)
     run_command(cmd)
     _retire_qmp_socket(record)
     if qmp_socket:
@@ -759,21 +817,32 @@ def create_vm(payload: VMCreateRequest, vms: Dict[str, Dict[str, Any]]) -> Dict[
     if payload.name in vms:
         raise HTTPException(status_code=409, detail="VM already exists")
     record = payload.dict()
+    use_existing_disk = record.pop("use_existing_disk")
     if record.get("ssh"):
         validate_ssh_config(record["ssh"])
     record["provider"] = normalize_provider(payload.provider)
     record["provider_display"] = payload.provider
     validate_vm_record(record)
+    if use_existing_disk and (record["provider"] != "qemu" or not record["disk_path"]):
+        raise _bad_request("Existing disk recovery requires QEMU and an explicit disk_path")
     record["created_at"] = utc_now()
     record["updated_at"] = record["created_at"]
     record["state"] = "stopped"
     record["snapshots"] = []
     record["saved_states"] = []
-    _ensure_disk_path(record)
     _ensure_iso_path(record, record.get("iso_path"))
-    if record["provider"] == "qemu":
+    if use_existing_disk:
+        record["vm_dir"] = validate_vm_dir(_resolve_vm_dir(record))
+        vm_dir = record["vm_dir"]
+        if vm_dir == record["disk_path"] or (os.path.exists(vm_dir) and not os.path.isdir(vm_dir)):
+            raise _bad_request("Recovery VM requires a separate VM directory")
         _ensure_qemu_tools(record)
-        _create_qemu_disk(record)
+        record["disk_gb"] = _check_recovery_disk(record["disk_path"], record["vm_dir"], vms)
+    _ensure_disk_path(record)
+    if record["provider"] == "qemu":
+        if not use_existing_disk:
+            _ensure_qemu_tools(record)
+            _create_qemu_disk(record)
     elif record["provider"] == "virtualbox":
         _create_virtualbox_disk(record)
         _create_virtualbox_vm(record)

@@ -55,6 +55,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add automatic TLS issuance/renewal (Let's Encrypt) for routing entries.
 - Next: Schedule automated certbot renewals and alert on failures.
 - Next: Automate upstream refresh on IP change (polling or LXD DNS-based upstreams).
+- Next: Verify and configure the managed `sites-enabled` include during nginx bootstrap on RPM distributions.
 
 ## Path 8: Lizard UI (app-based web manager) (short term)
 - Done: Add UI auth flow with server-side sessions backed by delegated tokens (no tokens in the browser).
@@ -236,7 +237,9 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Done: Checkpoint and recover the previous document root when a deploy or rollback fails. Include dotfiles, symlinks and permissions, retain the private checkpoint after failed compensation, and audit recovery outcomes. Report genuine service restart failures.
 - Done: Require a separate trusted host-file permission for local site deploy sources. Omit source URLs and post-deploy command arguments from audit previews.
 - Done: Booted the supplied AlmaLinux 10.2 ISO kernel and installer initramfs in QEMU. Verified checkpoint recovery, bind-mounted document roots, nested mount protection, and GNU tar's database dump exclusion.
-- Next: Make database recovery during site rollback independently recoverable and test a full deployment and recovery against real LXD and MariaDB.
+- Done: Checkpoint the site database before rollback and recover it independently of the files after a partial SQL import or required restart failure. Preserve the private recovery artifact if database compensation fails. Verify the database binding for new backups and use the site account for imports.
+- Done: Fix site routing defaults for omitted fields and quote database provisioning inputs. Verify real deployment, backup, and recovery with nginx, LXD, and MariaDB on the AlmaLinux 10.2 QEMU guest, including successful restoration of a missing database and cleanup when that restoration fails.
+- Next: Persist rollback progress across API worker or host termination and give operators a way to locate interrupted recoveries. Serialize database binding changes against an active rollback.
 - Done: Fixed schema registry gaps that made migrations park live fields under `_legacy` (api_users `terminal_host`/`terminal_container`, recipes `version`/`history`/timestamps, VM lifecycle fields); schemas bumped to v2, `_promote_legacy_fields` restores already-parked fields, and `SchemaFieldCoverageTests` guards new fields.
 - Done: Validate SSH host/username/port/key_path (ssh option-injection → host command execution), add `--` before the ssh destination, and validate env names and provision profile names in `fortress.remote`.
 - Done: Constrained VM inputs so `vm_manage` no longer implies command execution: `qemu_binary` allowlist (bare names), `extra_args` option/value allowlist, `bridge_name` pattern (no `,helper=`), `vm_dir`/`disk_path` confined to `FORTRESS_VM_ROOT` (purge refuses paths outside it), `.iso`-only `iso_path`, bounded resources; re-validated before start so legacy records can't bypass it.
@@ -246,6 +249,7 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Done: Add an opt-in configuration report to the VM list and surface invalid stored settings in VM Labs. Check the records without executing a hypervisor or modifying the VM store.
 - Done: Write authenticated chunked container backups with private staging and collision-resistant filenames. Read legacy Fernet archives, support offline verification and scoped stored restores, and restrict uploaded archives to trusted recovery operators.
 - Done: Add a local restic workflow for off-host snapshots of Fortress host state and verified staged recovery, including a rebuild and isolation runbook.
+- Done: Include migration schema definitions in host snapshots. Restore a verified snapshot from a client-held restic repository into SSH staging, or transfer an existing local recovery directory. Register a checked, restored QEMU disk from a client-held VM configuration with `vm_import` permission.
 - Next: Automate off-host backup scheduling, retention and backup-age alerts, and run a clean-host recovery drill with real LXD and a stopped VM disk.
 - Done: Record separate macOS arm64 Chromium visual baselines for the app homes and dark surfaces while retaining the existing default baselines.
 - Done: Validated the Python suite, cross-process `update_json` locking, and real firewalld partial-failure revert on an AlmaLinux 10.2 x86_64 QEMU VM; fixed firewalld 2.x rich-rule parsing (attribute order) found there.

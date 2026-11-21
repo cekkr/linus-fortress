@@ -102,6 +102,7 @@ from fortress.sites import (
     SiteBackupRequest,
     SiteRollbackRequest,
     SiteServiceActionRequest,
+    build_database_provisioning_sql,
     build_site_backup_id,
     build_site_summary,
     build_service_names,
@@ -109,6 +110,7 @@ from fortress.sites import (
     delete_site_record,
     extract_service_targets,
     load_sites,
+    local_site_database_name,
     sanitize_site_record,
     save_sites,
     update_site_record,
@@ -2114,9 +2116,15 @@ def get_vm(name: str, x_api_key: Optional[str] = Header(default=None), x_user_to
 
 @app.post("/vms")
 def create_vm_record(payload: VMCreateRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("vms_create", "vm_manage", x_api_key, x_user_token)
+    auth_context = authorize("vms_create", "vm_manage", x_api_key, x_user_token)
+    if payload.use_existing_disk:
+        try:
+            require_permission(auth_context["permissions"], "vm_import")
+        except HTTPException as exc:
+            _audit_store_error("vms_create", payload.name, exc)
+            raise
     record = _vm_store_op("vms_create", payload.name, lambda vms: create_vm(payload, vms))
-    audit_api("vms_create", target=payload.name, details={"provider": payload.provider})
+    audit_api("vms_create", target=payload.name, details={"provider": payload.provider, "use_existing_disk": payload.use_existing_disk})
     return {"message": f"VM {payload.name} created", "vm": sanitize_vm_record(record)}
 
 @app.put("/vms/{name}")
@@ -3160,7 +3168,7 @@ def _site_staging_dir(container_name: str):
     keep_checkpoint = False
     try:
         yield path
-    except _SiteDocrootRecoveryFailed:
+    except _SiteRecoveryFailed:
         keep_checkpoint = True
         raise
     finally:
@@ -3171,7 +3179,7 @@ def _site_staging_dir(container_name: str):
                 logging.warning("Could not clean up site staging directory in container %s", container_name)
 
 
-class _SiteDocrootRecoveryFailed(HTTPException):
+class _SiteRecoveryFailed(HTTPException):
     pass
 
 
@@ -3249,7 +3257,7 @@ else
 fi
 """)
         yield
-    except BaseException:
+    except BaseException as failure:
         try:
             run_docroot(_SITE_DOCROOT_CLEAR + r"""
 if [ -L "$root" ] || { [ -e "$root" ] && [ ! -d "$root" ]; }; then
@@ -3267,9 +3275,14 @@ fi
 """)
         except BaseException:
             audit_internal("site_docroot_restore_failed", target=site_id, details={"staging_path": staging}, status="error")
-            raise _SiteDocrootRecoveryFailed(
+            detail = {"message": "Could not recover the site document root", "staging_path": staging}
+            if isinstance(failure, _SiteRecoveryFailed):
+                detail.update(failure.detail)
+                detail["message"] = "Could not recover the site database and document root"
+                detail["document_root_recovery_failed"] = True
+            raise _SiteRecoveryFailed(
                 status_code=500,
-                detail={"message": "Could not recover the site document root", "staging_path": staging},
+                detail=detail,
             ) from None
         audit_internal("site_docroot_restored", target=site_id)
         raise
@@ -3710,7 +3723,10 @@ def _apply_site_routing(site: Dict[str, Any], previous_domain: Optional[str] = N
     tls_config = site.get("tls") or {}
     tls_payload = None
     tls_mode = tls_config.get("mode", "manual")
-    routing = site.get("routing") or {}
+    tls_port = tls_config.get("listen_port")
+    if tls_port is None:
+        tls_port = 443
+    routing = {key: value for key, value in (site.get("routing") or {}).items() if value is not None}
     normalized_domains = normalize_domains(site["primary_domain"], site.get("domains") or [])
     domain_aliases = [name for name in normalized_domains if name != site["primary_domain"]]
     routes = load_routes()
@@ -3733,7 +3749,7 @@ def _apply_site_routing(site: Dict[str, Any], previous_domain: Optional[str] = N
             "cert_path": tls_config.get("cert_path"),
             "key_path": tls_config.get("key_path"),
             "chain_path": tls_config.get("chain_path"),
-            "listen_port": tls_config.get("listen_port", 443),
+            "listen_port": tls_port,
             "redirect_http": tls_config.get("redirect_http", True),
         }
     elif tls_mode == "disabled":
@@ -3766,7 +3782,7 @@ def _apply_site_routing(site: Dict[str, Any], previous_domain: Optional[str] = N
             "cert_path": cert_paths["cert_path"],
             "key_path": cert_paths["key_path"],
             "chain_path": cert_paths.get("chain_path"),
-            "listen_port": tls_config.get("listen_port", 443),
+            "listen_port": tls_port,
             "redirect_http": tls_config.get("redirect_http", True),
         }
         site["tls"] = tls_payload
@@ -3794,13 +3810,6 @@ def _apply_site_routing(site: Dict[str, Any], previous_domain: Optional[str] = N
     if previous_domain and previous_domain != site["primary_domain"]:
         _remove_nginx_route(previous_domain)
 
-def _run_db_command(container_name: str, sql: str, database: Optional[str] = None, username: Optional[str] = None, password: Optional[str] = None) -> None:
-    user = username or "root"
-    db_flag = f" {shlex.quote(database)}" if database else ""
-    pwd_prefix = f"MYSQL_PWD={shlex.quote(password)} " if password else ""
-    command = f"{pwd_prefix}mysql -u {shlex.quote(user)}{db_flag} -e {shlex.quote(sql)}"
-    exec_in_container(container_name, ["sh", "-c", command])
-
 def _backup_site_files(container_name: str, docroot: str, archive_path: str, backup_path: str, dump_path: Optional[str]) -> None:
     cmd = ["tar", "-czf", archive_path, "-C", docroot, "."]
     if dump_path:
@@ -3819,29 +3828,138 @@ def _extract_site_archive(
         extract_args.extend(["--anchored", "--no-wildcards", f"--exclude={dump_name}"])
     exec_in_container(container_name, extract_args)
 
-def _restore_site_db(container_name: str, database: Dict[str, Any], dump_path: str) -> None:
-    if not database.get("name") or not database.get("username"):
-        return
-    root_password = database.get("root_password")
-    if root_password:
-        _run_db_command(
-            container_name,
-            f"CREATE DATABASE IF NOT EXISTS `{database['name']}`",
-            username="root",
-            password=root_password,
-        )
+def _site_rollback_database(
+    sites: Dict[str, Dict[str, Any]], record: Dict[str, Any], site_id: str
+) -> Dict[str, Any]:
+    database = record.get("database") or {}
+    name = local_site_database_name(database)
+    if not database.get("username"):
+        raise HTTPException(400, "Database rollback requires a site database account")
+    for other_id, other in sites.items():
+        other_name = (other.get("database") or {}).get("name")
+        if (
+            other_id != site_id
+            and other.get("container_name") == record["container_name"]
+            and isinstance(other_name, str)
+            and other_name.casefold() == name.casefold()
+        ):
+            raise HTTPException(409, "Database rollback requires a database dedicated to this site")
+    return database
+
+
+def _run_site_db_client(
+    container_name: str, database: Dict[str, Any], client: str, args: List[str],
+    *, staging: str, error: str, sql: str = "", input_path: Optional[str] = None, output_path: Optional[str] = None,
+) -> str:
+    user = database["username"]
+    password = database.get("password") or (database.get("root_password") if user == "root" else None)
+    # The file API finishes transmitting stdin before the container command starts.
+    # Unlink the private input before starting the client, retaining only its open descriptor.
+    client_input = f"{staging}/database-client.input"
+    encoded_password = base64.b64encode((password or "").encode()).decode("ascii")
+    setup = r'''
+input=$1
+shift
+exec 3< "$input"
+rm -f -- "$input"
+IFS= read -r encoded <&3
+MYSQL_PWD=$(printf '%s' "$encoded" | base64 -d && printf '.')
+export MYSQL_PWD=${MYSQL_PWD%.}
+'''
+    command = [client, "--protocol=socket", f"--user={user}", *args]
+    if input_path:
+        script = setup + 'dump=$1; shift; exec "$@" < "$dump" 3<&-'
+        command.insert(0, input_path)
+    elif output_path:
+        script = setup + 'umask 077; dump=$1; shift; "$@" > "$dump" 3<&-; test -s "$dump"'
+        command.insert(0, output_path)
     else:
-        _run_db_command(
-            container_name,
-            f"CREATE DATABASE IF NOT EXISTS `{database['name']}`",
-            username=database.get("username"),
-            password=database.get("password"),
+        script = setup + 'exec "$@" <&3 3<&-'
+    try:
+        run_command(
+            ["lxc", "file", "push", "--mode=0600", "--", "-", f"{container_name}{client_input}"],
+            input_text=f"{encoded_password}\n{sql}",
         )
-    import_user = database.get("username") or "root"
-    import_password = database.get("password") if database.get("password") else root_password
-    pwd_prefix = f"MYSQL_PWD={shlex.quote(import_password)} " if import_password else ""
-    cmd = f"{pwd_prefix}mysql -u {shlex.quote(import_user)} {shlex.quote(database['name'])} < {shlex.quote(dump_path)}"
-    exec_in_container(container_name, ["sh", "-c", cmd])
+        return exec_in_container(
+            container_name, ["sh", "-ec", script, "fortress-site-db", client_input, *command], audit_arguments=False,
+        )
+    except (HTTPException, OSError):
+        try:
+            exec_in_container(container_name, ["rm", "-f", "--", client_input])
+        except (HTTPException, OSError):
+            logging.warning("Could not clean up private database input in container %s", container_name)
+        # Client stderr may include a statement from the dump or account credentials.
+        raise HTTPException(500, error) from None
+
+
+def _checkpoint_site_db(container_name: str, database: Dict[str, Any], path: str) -> None:
+    name = database["name"]
+    staging = posixpath.dirname(path)
+    batch_args = ["--batch", "--raw", "--skip-column-names"]
+    grants = _run_site_db_client(
+        container_name, database, "mysql", [*batch_args, "--execute=SHOW GRANTS"],
+        staging=staging, error="Could not check site database recovery privileges",
+    )
+    escaped_name = name.replace("_", r"\_")
+    prefixes = tuple(f"GRANT ALL PRIVILEGES ON {target} TO " for target in ("*.*", f"`{name}`.*", f"`{escaped_name}`.*"))
+    if not any(line.startswith(prefixes) for line in grants.splitlines()):
+        raise HTTPException(409, "Database rollback requires a direct ALL PRIVILEGES grant on the site database")
+    exists = _run_site_db_client(
+        container_name, database, "mysql", [
+            *batch_args, "--execute=SELECT EXISTS(SELECT 1 FROM information_schema.SCHEMATA "
+            f"WHERE SCHEMA_NAME = '{name}')",
+        ], staging=staging, error="Could not check whether the site database exists",
+    )
+    if exists == "0":
+        # Replaying this checkpoint restores the original absence of the database.
+        exec_in_container(container_name, [
+            "sh", "-ec", 'umask 077; printf "%s\n" "$1" > "$2"',
+            "fortress-site-db", f"DROP DATABASE IF EXISTS `{name}`;", path,
+        ])
+        return
+    if exists != "1":
+        raise HTTPException(500, "Could not determine whether the site database exists")
+    _run_site_db_client(
+        container_name, database, "mysqldump",
+        ["--skip-force", "--single-transaction", "--quick", "--routines", "--events", "--triggers",
+         "--add-drop-database", "--databases", "--", name],
+        staging=staging, error="Could not checkpoint the site database", output_path=path,
+    )
+
+
+def _restore_site_db(container_name: str, database: Dict[str, Any], dump_path: str, *, checkpoint: bool = False) -> None:
+    args = ["--binary-mode", "--local-infile=0", "--skip-force", "--skip-reconnect"]
+    staging = posixpath.dirname(dump_path)
+    # The checkpoint recreates and selects the database itself.
+    if not checkpoint:
+        name = database["name"]
+        _run_site_db_client(
+            container_name, database, "mysql", [f"--execute=CREATE DATABASE IF NOT EXISTS `{name}`"],
+            staging=staging, error="Could not prepare the site database for import",
+        )
+        args.append(f"--database={name}")
+    _run_site_db_client(
+        container_name, database, "mysql", args, staging=staging,
+        error="Could not import the site database", input_path=dump_path,
+    )
+
+
+@contextmanager
+def _site_database_change(container_name: str, database: Dict[str, Any], checkpoint: str, site_id: str):
+    try:
+        yield
+    except BaseException:
+        try:
+            _restore_site_db(container_name, database, checkpoint, checkpoint=True)
+        except BaseException:
+            audit_internal("site_database_restore_failed", target=site_id, details={"checkpoint": checkpoint}, status="error")
+            raise _SiteRecoveryFailed(500, {
+                "message": "Could not recover the site database",
+                "staging_path": posixpath.dirname(checkpoint),
+                "database_checkpoint": checkpoint,
+            }) from None
+        audit_internal("site_database_restored", target=site_id)
+        raise
 
 def _restart_site_services(container_name: str, runtime: Dict[str, Any], services: Optional[List[str]]) -> Dict[str, Any]:
     service_sets = build_service_names(runtime)
@@ -3895,6 +4013,12 @@ def _create_site(payload: SiteCreateRequest):
     sites = _load_site_store()
     record = create_site_record(payload, sites)
     record["docroot"] = _validate_site_docroot(record["docroot"])
+    database = record.get("database")
+    database_sql = None
+    if database and (payload.create_database or payload.create_user):
+        database_sql = build_database_provisioning_sql(
+            database, create_database=payload.create_database, create_user=payload.create_user,
+        )
     runtime = record.get("runtime") or {}
     user, group = _resolve_runtime_identity(payload.container_name, runtime)
     runtime.setdefault("user", user)
@@ -3917,37 +4041,13 @@ def _create_site(payload: SiteCreateRequest):
                 restart_targets.add("php-fpm")
     if restart_targets:
         runtime_changes["restart"] = _restart_site_services(payload.container_name, runtime, sorted(restart_targets))
-    if record.get("database") and (payload.create_database or payload.create_user):
-        database = record["database"]
-        if not database.get("name") or not database.get("username"):
-            raise HTTPException(status_code=400, detail="database.name and database.username are required for provisioning")
-        if not database.get("password"):
-            raise HTTPException(status_code=400, detail="database.password is required for provisioning")
-        root_password = database.get("root_password")
-        _run_db_command(
-            payload.container_name,
-            f"CREATE DATABASE IF NOT EXISTS `{database.get('name')}`",
-            username="root" if root_password else None,
-            password=root_password,
-        )
-        _run_db_command(
-            payload.container_name,
-            f"CREATE USER IF NOT EXISTS '{database.get('username')}'@'%' IDENTIFIED BY '{database.get('password')}'",
-            username="root" if root_password else None,
-            password=root_password,
-        )
-        _run_db_command(
-            payload.container_name,
-            f"GRANT ALL PRIVILEGES ON `{database.get('name')}`.* TO '{database.get('username')}'@'%'",
-            username="root" if root_password else None,
-            password=root_password,
-        )
-        _run_db_command(
-            payload.container_name,
-            "FLUSH PRIVILEGES",
-            username="root" if root_password else None,
-            password=root_password,
-        )
+    if database_sql and database:
+        with _site_staging_dir(payload.container_name) as staging:
+            _run_site_db_client(
+                payload.container_name, {"username": "root", "password": database.get("root_password")}, "mysql",
+                ["--binary-mode", "--skip-force", "--skip-reconnect"], staging=staging,
+                error="Could not provision the site database", sql=f"{database_sql};\n",
+            )
     _apply_site_routing(record)
     save_sites(SITES_DB, sites)
     audit_api("sites_create", target=record["name"], details={"domain": record["primary_domain"]})
@@ -4116,10 +4216,12 @@ def backup_site(site_id: str, payload: SiteBackupRequest, x_api_key: Optional[st
             dump_path = None
             database = record.get("database") or {}
             if payload.include_database and database.get("name") and database.get("username"):
+                name = local_site_database_name(database)
                 dump_path = f"{staging}/{backup_id}.sql"
-                pwd_prefix = f"MYSQL_PWD={shlex.quote(database['password'])} " if database.get("password") else ""
-                dump_cmd = f"{pwd_prefix}mysqldump -u {shlex.quote(database['username'])} {shlex.quote(database['name'])} > {shlex.quote(dump_path)}"
-                exec_in_container(container_name, ["sh", "-c", dump_cmd])
+                _run_site_db_client(
+                    container_name, database, "mysqldump", ["--skip-force", "--", name],
+                    staging=staging, error="Could not back up the site database", output_path=dump_path,
+                )
             partial_path = os.path.join(partial_dir, "archive.tar.gz")
             _backup_site_files(container_name, docroot, f"{staging}/archive.tar.gz", partial_path, dump_path)
             os.chmod(partial_path, 0o600)
@@ -4130,6 +4232,7 @@ def backup_site(site_id: str, payload: SiteBackupRequest, x_api_key: Optional[st
                     "site_id": site_id,
                     "container_name": container_name,
                     "include_database": bool(dump_path),
+                    **({"database_name": database["name"]} if dump_path else {}),
                     "dump_path": dump_path,
                     "created_at": datetime.utcnow().isoformat(),
                 })
@@ -4142,7 +4245,7 @@ def backup_site(site_id: str, payload: SiteBackupRequest, x_api_key: Optional[st
 @app.post("/sites/{site_id}/rollback")
 def rollback_site(site_id: str, payload: SiteRollbackRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     auth_context = authorize("sites_rollback", "sites_manage", x_api_key, x_user_token)
-    with _site_mutation("sites_rollback", auth_context, site_id) as (_, record):
+    with _site_mutation("sites_rollback", auth_context, site_id) as (sites, record):
         container_name = record["container_name"]
         backup_path, meta_path = _site_backup_paths(payload.backup_id)
         meta = load_json_dict(meta_path, label="Site backup metadata")
@@ -4154,16 +4257,26 @@ def rollback_site(site_id: str, payload: SiteRollbackRequest, x_api_key: Optiona
             raise HTTPException(status_code=404, detail="Backup not found")
         docroot = _validate_site_docroot(record["docroot"])
         dump_name = f"{payload.backup_id}.sql" if meta.get("include_database") else None
-        database = record.get("database")
+        database = _site_rollback_database(sites, record, site_id) if dump_name else None
+        if database and meta.get("database_name", database["name"]) != database["name"]:
+            raise HTTPException(409, "Site backup database does not match the current site binding")
         with _site_staging_dir(container_name) as staging:
             archive_path = f"{staging}/archive.tar.gz"
+            input_dump = f"{staging}/restore-database.sql"
+            checkpoint = f"{staging}/previous-database.sql"
             run_command(["lxc", "file", "push", backup_path, f"{container_name}{archive_path}"])
             if dump_name and database:
-                exec_in_container(container_name, ["tar", "-xzf", archive_path, "-C", staging, "--", dump_name])
-            with _site_docroot_change(container_name, docroot, staging, site_id):
+                exec_in_container(container_name, [
+                    "sh", "-ec", 'umask 077; tar -xOzf "$1" -- "$2" > "$3"; test -s "$3"',
+                    "fortress-site-db", archive_path, dump_name, input_dump,
+                ])
+                _checkpoint_site_db(container_name, database, checkpoint)
+                audit_internal("site_database_checkpoint", target=site_id, details={"checkpoint": checkpoint})
+            with _site_docroot_change(container_name, docroot, staging, site_id), ExitStack() as recovery:
                 _extract_site_archive(container_name, archive_path, docroot, dump_name=dump_name)
-                if dump_name and database:
-                    _restore_site_db(container_name, database, f"{staging}/{dump_name}")
+                if database:
+                    recovery.enter_context(_site_database_change(container_name, database, checkpoint, site_id))
+                    _restore_site_db(container_name, database, input_dump)
                 restart_result = _restart_site_after_publish(container_name, record.get("runtime") or {}, payload.restart_services)
         audit_api("sites_rollback", target=site_id, details={"backup_id": payload.backup_id})
         return {"message": "Rollback complete", "restart": restart_result}

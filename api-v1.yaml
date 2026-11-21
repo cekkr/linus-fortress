@@ -288,6 +288,11 @@ paths:
     post:
       summary: Create a VM record and provider resources
       tags: [VMs]
+      description: |
+        Requires vm_manage. To register a QEMU disk staged by an SSH operator, set
+        use_existing_disk and supply its absolute disk_path under FORTRESS_VM_ROOT.
+        This also requires vm_import. Fortress checks the disk and registers it stopped.
+        The host recovery restore-ssh and stage-ssh commands transfer files over OpenSSH.
       requestBody:
         required: true
         content:
@@ -301,6 +306,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+        "400":
+          description: Invalid VM configuration or unusable recovery disk
+        "403":
+          description: Missing VM management or import permission
+        "404":
+          description: Recovery disk is missing
+        "409":
+          description: VM name or disk conflicts with an existing VM or disk
   /vms/{name}:
     get:
       summary: Fetch a VM record
@@ -376,6 +389,7 @@ paths:
     post:
       summary: Start a VM
       tags: [VMs]
+      description: QEMU uses an explicit accelerator from the VM's extra_args when supplied.
       parameters:
         - in: path
           name: name
@@ -724,7 +738,10 @@ paths:
     post:
       summary: Create a managed website
       tags: [Sites]
-      description: The document root must be an absolute directory below / without a final symlink.
+      description: |
+        The document root must be an absolute directory below / without a final symlink.
+        Database provisioning uses a local socket and honors the independent create_database and
+        create_user flags. Omitted or null routing fields and TLS listen ports use the site defaults.
       requestBody:
         required: true
         content:
@@ -931,9 +948,11 @@ paths:
       tags: [Sites]
       description: |
         Restores an archive with metadata matching the site. Same-site mutations are serialized.
-        On failure Fortress restores the previous document root. A failed file recovery leaves the
-        checkpoint in a private container directory and includes its staging path in the error.
-        Database changes require separate recovery.
+        For a database-bearing backup, quiesce the dedicated local database before rollback.
+        Fortress requires a direct database-wide grant and checkpoints the database before file
+        replacement. An import or restart failure triggers independent database and file recovery.
+        Recovery preserves the pre-rollback state of an absent database. If compensation fails,
+        the error includes the retained staging path and the SQL checkpoint path when applicable.
       parameters:
         - in: path
           name: site_id
@@ -954,11 +973,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/Message"
         "400":
-          description: Malformed backup identifier or invalid document root
+          description: Malformed backup identifier, invalid document root, or unsupported database binding
         "404":
           description: Site or matching backup not found
+        "409":
+          description: Changed or shared database binding, or insufficient database recovery privileges
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
-          description: Rollback, required restart, or document root recovery failed
+          description: Rollback, required restart, or recovery failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    oneOf:
+                      - type: string
+                      - type: object
+                        required: [message]
+                        properties:
+                          message:
+                            type: string
+                          staging_path:
+                            type: string
+                          database_checkpoint:
+                            type: string
+                          document_root_recovery_failed:
+                            type: boolean
+                        additionalProperties: true
   /sites/{site_id}/logs:
     get:
       summary: Fetch website logs
@@ -4042,6 +4087,10 @@ components:
         installed:
           type: boolean
           default: false
+        use_existing_disk:
+          type: boolean
+          default: false
+          description: Register a staged, self-contained, unencrypted QCOW2 disk. Requires an explicit disk_path and the vm_import permission. The disk's virtual size overrides disk_gb.
     VMUpdate:
       type: object
       properties:
@@ -4831,9 +4880,11 @@ components:
         create_database:
           type: boolean
           default: true
+          description: Create the named local database when a database binding is supplied.
         create_user:
           type: boolean
           default: true
+          description: Create the bound database account and grant access to the named database.
     SiteUpdateRequest:
       type: object
       properties:
