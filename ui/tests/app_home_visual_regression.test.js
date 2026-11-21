@@ -613,20 +613,22 @@ test("visual regression for all top-level app homes and per-item actions", async
       await page.waitForSelector(".app-card[data-node-id=\"containers\"] .card-icon-button", { visible: true });
     }
 
-    if (UPDATE_VISUAL_BASELINES) {
-      writeVisualBaselines(VISUAL_BASELINE_FILE, observedHashes);
-      return;
-    }
+    await t.test("platform screenshot hashes", () => {
+      if (UPDATE_VISUAL_BASELINES) {
+        writeVisualBaselines(VISUAL_BASELINE_FILE, observedHashes);
+        return;
+      }
 
-    const baselines = readVisualBaselines(VISUAL_BASELINE_FILE);
-    for (const app of TOP_LEVEL_APPS) {
-      const expectedHashes = normalizeExpectedHashes(baselines[app.id]);
-      assert.ok(expectedHashes.length > 0, `Missing visual baseline for ${app.id}. Run with UPDATE_VISUAL_BASELINES=1.`);
-      assert.ok(
-        expectedHashes.includes(observedHashes[app.id]),
-        `Visual regression detected for ${app.id} home. Run with UPDATE_VISUAL_BASELINES=1 if change is expected.`
-      );
-    }
+      const baselines = readVisualBaselines(VISUAL_BASELINE_FILE);
+      for (const app of TOP_LEVEL_APPS) {
+        const expectedHashes = normalizeExpectedHashes(baselines[app.id]);
+        assert.ok(expectedHashes.length > 0, `Missing visual baseline for ${app.id}. Run with UPDATE_VISUAL_BASELINES=1.`);
+        assert.ok(
+          expectedHashes.includes(observedHashes[app.id]),
+          `Visual regression detected for ${app.id} home. Run with UPDATE_VISUAL_BASELINES=1 if change is expected.`
+        );
+      }
+    });
   } finally {
     if (browser) {
       await browser.close();

@@ -150,6 +150,7 @@ Host assumptions:
 - Linux distro with `apt`, `dnf`, or `yum` (Ubuntu/Debian or AlmaLinux/RHEL-like).
 - `nginx` plus `ufw` (apt) or `firewalld` (dnf/yum) for routing and firewall ops.
 - `lxc`/`lxd` for container APIs; on AlmaLinux the script installs LXD via snap (snapd) when missing and ensures `/snap/bin` is reachable for service/screen runs. `run-server.sh` now auto-runs `lxd init --auto` when needed and auto-heals the `default` profile root disk device/pool so container creation avoids `No root device could be found` failures.
+- If Snap reports a SquashFS mount failure and the `snappy` SELinux policy is missing, the script prints the AlmaLinux minor release. Install the matching signed `snapd`, `snap-confine`, and `snapd-selinux` RPMs from that EPEL minor stream, then rerun the script with SELinux enabled.
 - `certbot` for automated Let's Encrypt issuance/renewal (the script attempts to install it when possible).
 - The script checks for missing OS packages on each run and installs them when possible.
 - On SELinux-enforcing hosts (AlmaLinux/RHEL), systemd may need proper file contexts; if you run as a service from `/root` or `/home`, consider moving the repo to `/opt/linus-fortress` or relabeling it.
@@ -1162,10 +1163,12 @@ By default TLS certificates are verified; pass `--insecure` during `setup` only 
 
 ## Testing
 
+- Install Python test dependencies with `python -m pip install -r requirements-test.txt` in your development virtual environment.
 - `python -m unittest discover -s tests`
 - `python -m unittest discover -s tests -p 'test_permissions_matrix.py'` for route-level permission matrix checks.
 - Permission matrix coverage includes recipes, system upgrade, system update-reload, routing, sites, firewall, and terminal endpoint sequences.
-- UI tests: `cd ui && npm install && npm test` (Puppeteer suites self-skip when Chromium is unavailable; regenerate visual baselines only intentionally with `UPDATE_VISUAL_BASELINES=1`).
+- Run UI tests with `cd ui && npm ci && npm test -- --test-concurrency=1`. If dependency install scripts are disabled, install Chromium from `ui/` with `npm exec --no -- puppeteer browsers install chrome`. Regenerate visual baselines only intentionally with `UPDATE_VISUAL_BASELINES=1` or `UPDATE_DARK_SURFACE_BASELINES=1`.
+- The [GitHub Actions workflow](.github/workflows/tests.yml) runs Python 3.9 and 3.12 tests and Chromium interaction tests on pushes and pull requests targeting `main`. Run the platform-specific screenshot hash checks locally with the full UI command above.
 - UI screenshots for docs: `cd ui && npm run screenshots` (captures every screen into `docs/screenshots/` as WebP), `npm run screenshots -- --only deck-home,monitoring` for a subset, `-- --list` to see shot names, `-- --format png` for PNG. The script runs `ui/server.js` against the read-only demo API in `ui/scripts/demo-api.mjs` and a throwaway UI admin in a temp dir; it never contacts a real Fortress API.
 - AI agents: see `AGENTS.md` for the file-by-file ownership map, critical contracts, and known gaps.
 

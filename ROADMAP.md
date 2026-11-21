@@ -91,7 +91,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add copy/export controls for debug payloads in the UI Debug panel (copy latest/all, JSON export with key redaction, last 20 errors, clear).
 - Done: Add `npm run screenshots` (`ui/scripts/capture-screenshots.mjs` + read-only demo API) that captures key Lizard UI screens into `docs/screenshots/`, plus a README Screenshots section.
 - Done: Fix phone-width horizontal overflow (single grid column is now `minmax(0, 1fr)`) and inactive sites being counted/rendered as active.
-- Next: Add a screenshot-freshness check (re-run `npm run screenshots` in CI and flag large diffs) once CI exists.
+- Next: Add a screenshot-freshness check that reruns `npm run screenshots` in CI and flags large diffs.
 - Done: Escape wizard input values, option labels, textarea contents, and summary text. Puppeteer verifies quoted names and literal markup, and recipe parameter blocks are excluded from saved progress.
 - Done: Check app-card bridge and tab alignment with Puppeteer at desktop, tablet, and phone widths.
 - Next: Continue expanding app-home dashboards with richer per-item actions (route/site/VM quick controls), container sub-app homes, and visual regression coverage for stage rendering.
@@ -108,7 +108,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add `run-client.sh` helper for CLI/WebUI connection setup against remote APIs.
 - Done: Add first-run delegated token prompts (server + client) with copy/paste helpers for UI/CLI bootstrap.
 - Done: On a freshly installed AlmaLinux 10.2 QEMU guest, initialize LXD 5.21.9 and verify the normal Lizard UI delegated-token sign-in with SELinux enforcing. Use signed snapd RPMs from the 10.2 EPEL stream because the newer policy from the default EPEL stream failed to load.
-- Next: Detect the AlmaLinux minor release during Snap bootstrap and surface an actionable error when the installed snapd SELinux policy is incompatible.
+- Done: Report the detected AlmaLinux minor release when Snap reports a SquashFS mount failure and the SELinux policy is missing. Keep Snap's exit status and direct the operator to matching signed EPEL packages.
 - Next: add CLI config crypto-versioning + re-encrypt stored secrets when hashing/crypto algorithms evolve.
 
 ## Path 10: Production HTTP hosting readiness (near term)
@@ -251,7 +251,8 @@ Discovered while rebuilding `AGENTS.md` against the code.
 - Done: Validated the Python suite, cross-process `update_json` locking, and real firewalld partial-failure revert on an AlmaLinux 10.2 x86_64 QEMU VM; fixed firewalld 2.x rich-rule parsing (attribute order) found there.
 - Done: Validated token expiry, the 401/403 split, cross-process `update_json` locking (4 uvicorn workers, 40 concurrent `/api-users` creates), the api_users v1→v2 migration with `_legacy` promotion, SSH option-injection rejection, and a real-ssh host probe on an AlmaLinux 10.2 x86_64 QEMU VM (FastAPI 0.162 / Starlette 1.10 / Pydantic 2.14 / Python 3.12).
 - Done: Validated VM hardening and store locking on an AlmaLinux 10.2 x86_64 QEMU VM (Python 3.12, FastAPI 0.162 / Starlette 1.10 / Pydantic 2.14): full suite green; via the real API under 4 uvicorn workers, injection attempts (`qemu_binary` path, `-netdev …script=`, `-monitor`, `bridge_name ,helper=`, disks outside the VM root) are rejected and audited, a VM is created with real `qemu-img` and started through auto-detected `/usr/libexec/qemu-kvm` (RHEL has no `qemu-system-*` on PATH — `qemu-kvm` support was added because of this), legacy unsafe records are refused at start/purge, and 40 concurrent `/hosts` creates all persist.
-- Next: Pin `requirements.txt` versions (fresh installs already resolve FastAPI 0.162 / Starlette 1.10, which changed router internals) and add a CI lane running Python and UI tests.
+- Done: Add GitHub Actions jobs for Python 3.9 and 3.12 and for Lizard UI on Node 24 with Chromium. Keep platform screenshot hash comparisons in the full local suite.
+- Next: Pin `requirements.txt` versions across supported Python runtimes.
 - Done: Focused tests for `fortress.tls` and `fortress.remote` (`tests/test_remote_tls.py`) and `fortress.monitoring` (`tests/test_monitoring.py`); monitoring history appends moved onto locked `update_json` (concurrent samples were being dropped).
 - Done: Focused tests for `fortress.hosts`/`fortress.vms` lifecycle and VM hardening (`tests/test_hosts_vms.py`).
 - Done: Add focused HTTP tests for scoped container lifecycle, snapshots, logs, exec, and connectivity, with coverage of audit redaction and port-exposure rollback. Use LXD's restart command and snapshot API for those operations.

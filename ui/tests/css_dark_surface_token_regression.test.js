@@ -388,30 +388,32 @@ test("dark surface visual regression stays stable for row-more panel and wizard"
       wizard_dark_surface: sha256(wizardPng),
     };
 
-    if (UPDATE_BASELINES) {
-      writeVisualBaselines(BASELINE_FILE, observed);
-      return;
-    }
+    await t.test("platform screenshot hashes", () => {
+      if (UPDATE_BASELINES) {
+        writeVisualBaselines(BASELINE_FILE, observed);
+        return;
+      }
 
-    const baselines = readVisualBaselines(BASELINE_FILE);
-    assert.ok(
-      baselines.row_more_dark_surface,
-      "Missing row_more_dark_surface baseline. Run with UPDATE_DARK_SURFACE_BASELINES=1."
-    );
-    assert.ok(
-      baselines.wizard_dark_surface,
-      "Missing wizard_dark_surface baseline. Run with UPDATE_DARK_SURFACE_BASELINES=1."
-    );
-    assert.equal(
-      observed.row_more_dark_surface,
-      baselines.row_more_dark_surface,
-      "Row-more dark surface visual regression detected."
-    );
-    assert.equal(
-      observed.wizard_dark_surface,
-      baselines.wizard_dark_surface,
-      "Wizard dark surface visual regression detected."
-    );
+      const baselines = readVisualBaselines(BASELINE_FILE);
+      assert.ok(
+        baselines.row_more_dark_surface,
+        "Missing row_more_dark_surface baseline. Run with UPDATE_DARK_SURFACE_BASELINES=1."
+      );
+      assert.ok(
+        baselines.wizard_dark_surface,
+        "Missing wizard_dark_surface baseline. Run with UPDATE_DARK_SURFACE_BASELINES=1."
+      );
+      assert.equal(
+        observed.row_more_dark_surface,
+        baselines.row_more_dark_surface,
+        "Row-more dark surface visual regression detected."
+      );
+      assert.equal(
+        observed.wizard_dark_surface,
+        baselines.wizard_dark_surface,
+        "Wizard dark surface visual regression detected."
+      );
+    });
   } finally {
     if (browser) {
       await browser.close();

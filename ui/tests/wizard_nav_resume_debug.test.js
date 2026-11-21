@@ -503,7 +503,7 @@ test("resuming an upgrade reruns preflight and requires fresh backup confirmatio
 
     const next = '#wizard [data-wizard-action="next"]';
     const resume = '#fast-actions [data-action-id="wizard-resume"]';
-    await page.click("#wiz-upgrade-full");
+    await page.locator("#wiz-upgrade-full").click();
     await page.click(next);
     await page.waitForFunction(() => document.querySelector("#wizard .wizard-step.active .wizard-step-label")?.textContent === "Preflight");
     await page.click(next);

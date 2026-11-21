@@ -315,6 +315,12 @@ detect_os_id() {
   fi
 }
 
+detect_os_version() {
+  if [[ -f /etc/os-release ]]; then
+    ( . /etc/os-release && printf '%s' "${VERSION_ID:-}" )
+  fi
+}
+
 maybe_add_snap_path() {
   if [[ -d /snap/bin && ":${PATH}:" != *":/snap/bin:"* ]]; then
     export PATH="/snap/bin:${PATH}"
@@ -455,6 +461,23 @@ ensure_snapd() {
   maybe_add_snap_path
 }
 
+report_snap_selinux_failure() {
+  local output=$1
+  [[ "$output" == *"cannot mount squashfs image"* ]] || return 0
+  command -v getenforce >/dev/null 2>&1 && command -v semodule >/dev/null 2>&1 || return 0
+  local mode modules release
+  mode=$(getenforce 2>/dev/null) || return 0
+  [[ "$mode" == "Enforcing" || "$mode" == "Permissive" ]] || return 0
+  modules=$(semodule -l 2>/dev/null) || return 0
+  if grep -Eq '^snappy([[:space:]]|$)' <<< "$modules"; then
+    return 0
+  fi
+  release=$(detect_os_version)
+  [[ "$release" =~ ^[0-9]+\.[0-9]+$ ]] || return 0
+  log "Snap could not mount SquashFS and the snappy SELinux policy is missing on AlmaLinux $release." >&2
+  log "Install matching signed snapd, snap-confine, and snapd-selinux RPMs from EPEL $release, then rerun run-server.sh." >&2
+}
+
 ensure_snap_lxd() {
   if command -v lxc >/dev/null 2>&1 && command -v lxd >/dev/null 2>&1; then
     return 0
@@ -467,7 +490,15 @@ ensure_snap_lxd() {
     return 0
   fi
   log "Installing LXD via snap."
-  snap install lxd
+  local output status
+  if output=$(LC_ALL=C snap install lxd 2>&1); then
+    [[ -z "$output" ]] || printf '%s\n' "$output"
+  else
+    status=$?
+    printf '%s\n' "$output" >&2
+    report_snap_selinux_failure "$output"
+    return "$status"
+  fi
   maybe_add_snap_path
   if ! command -v lxc >/dev/null 2>&1; then
     log "Warning: lxc not found in PATH; log out and back in to refresh snap paths."
@@ -1471,4 +1502,6 @@ main() {
   start_api_foreground
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

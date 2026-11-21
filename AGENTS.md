@@ -4,7 +4,7 @@ Fast-access operational reference for AI agents working in this repository. Read
 
 **Linus' Fortress** is a single-host control plane for LXD-based servers: a FastAPI service ([`py/server.py`](py/server.py)) that automates container lifecycle, nginx domain routing with TLS, encrypted container backups, delegated API tokens, monitoring/anomaly detection, an SQLite audit register, "nix-like" install recipes, firewall/anti-DDoS rules, package management (`apt`/`dnf`/`yum`), PHP site lifecycle, JSON-store migrations, PTY terminal sessions, SSH host provisioning, and QEMU/VirtualBox test VMs. It ships with an encrypted-credential CLI ([`fortress-cli.py`](fortress-cli.py)) and an optional Node/Express web UI called **Lizard UI** ([`ui/`](ui/)).
 
-- **Maturity:** actively developed, single-maintainer project; features are functional but not yet production-hardened (see [Current Status and Known Gaps](#current-status-and-known-gaps)). No CI exists in the repository.
+- **Maturity:** actively developed, single-maintainer project; features are functional but not yet production-hardened (see [Current Status and Known Gaps](#current-status-and-known-gaps)). GitHub Actions runs the Python and UI test lanes.
 - **Not to be confused with:**
   - **Lizardim** — the legacy PHP/jQuery control panel vendored under [`dev_samples/lizardim-main/`](dev_samples/lizardim-main/) as *visual/UX inspiration only*. It is not part of the product, is not served, and MUST NOT be edited as if it were Lizard UI.
   - **"VPS Fortress Manager"** — the FastAPI `title` string in `py/server.py`; same product, legacy name.
@@ -344,6 +344,8 @@ Node ESM package `fortress-lizard-ui`: deps `express`, `undici`, `web-streams-po
 
 Host bootstrap and launcher (~1.5k lines bash). Detects apt/dnf/yum, installs missing OS packages every run, creates `.venv`, installs LXD (snap on AlmaLinux), runs `lxd init --auto` and heals the default profile root disk, writes `/etc/fortress/fortress.env`, optionally hardens SSH, opens firewall ports for non-loopback binds, offers relocation to `/opt/linus-fortress` for systemd, and starts API (+ optional UI) in foreground, `screen`, or systemd mode. Flags: `--mode`, `--foreground`, `--screen`, `--service`, `--skip-ui`, `--enable-ui`, `--debug-enable`, `--debug-disable`, `--configure`, `--reset`. **Mutates the host; requires root.**
 
+On AlmaLinux, a Snap SquashFS mount failure with SELinux enabled and the `snappy` policy missing adds guidance for the detected EPEL minor stream. The script preserves Snap's error output and exit status. [`tests/test_run_server.py`](tests/test_run_server.py) exercises this path with mocked commands.
+
 ### [`restart.sh`](restart.sh)
 
 Restarts API/UI in `auto|service|screen|process` mode, optionally `git pull` first (`--no-pull` to skip), with `--env` and `--dry-run`. Invoked by `/system/update-reload`. Logs to `.restart-api.log`/`.restart-ui.log`.
@@ -375,6 +377,8 @@ OpenAPI 3.0.3 description of the HTTP API. Update it with every route change.
 ### [`requirements.txt`](requirements.txt)
 
 Unpinned Python deps: `fastapi`, `uvicorn[standard]`, `pydantic`, `cryptography`, `python-multipart`, `requests`.
+
+Install [`requirements-test.txt`](requirements-test.txt) for local tests. It includes the runtime dependencies plus the HTTP test client and YAML parser.
 
 ### [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py)
 
@@ -561,7 +565,7 @@ python3 -m venv .venv
 ```
 
 ```bash
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements-test.txt
 ```
 
 ```bash
@@ -575,7 +579,7 @@ python3 -m venv .venv
 UI (from `ui/`; Puppeteer suites download Chromium on install and self-skip if unavailable):
 
 ```bash
-cd ui && npm install && npm test
+cd ui && npm ci && npm test -- --test-concurrency=1
 ```
 
 Regenerate README screenshots (demo API only; writes `docs/screenshots/*.webp`):
@@ -620,7 +624,9 @@ diff <(grep -hoE '@(app|router)\.(get|post|put|delete)\("[^"]+"' py/server.py py
 git diff --check
 ```
 
-Release: there is no packaging, versioning, or CI. Servers update via `git pull` (`/system/update-reload` or `restart.sh`), followed by `POST /migrations/apply` when schemas change.
+The [GitHub Actions workflow](.github/workflows/tests.yml) runs Python 3.9 and 3.12 tests and Chromium interaction tests on pushes and pull requests targeting `main`. The full local UI command also checks the platform-specific screenshot hashes.
+
+Release: servers update via `git pull` (`/system/update-reload` or `restart.sh`), followed by `POST /migrations/apply` when schemas change.
 
 ## Test Ownership Map
 
@@ -678,14 +684,14 @@ Release: there is no packaging, versioning, or CI. Servers update via `git pull`
 - **Concurrency:** API users, routes, recipe health history, and monitoring history use `update_json`. Recipes and site creation use `_holds_store_lock`. Site deploy, backup, rollback, update, delete, and restart use `_site_mutation`. Hosts and VMs use `_locked_store_operation` and merge provision/probe results through `_long_store_operation`. Terminal sessions and UI sessions are in-process memory.
 - **Visual baselines:** screenshot hashes depend on the browser and platform. Tests select a macOS arm64 variant where available and retain the default hashes for other environments.
 - **Dependencies:** `requirements.txt` is unpinned (a fresh AlmaLinux 10 install pulled FastAPI 0.162 / Starlette 1.10 vs 0.128 / 0.49 on the dev venv — newer FastAPI no longer flattens included routers into `app.routes`, so enumerate routes via `app.openapi()`); code uses Pydantic v1-style `.dict()`.
-- **No CI** and no real-LXD integration test lane.
+- **LXD coverage:** CI uses mocked LXD commands. Real LXD smoke tests are run separately in the QEMU lab.
 
 ### Near-Term Priorities
 
 Detailed sequencing lives in [`ROADMAP.md`](ROADMAP.md). Highest-leverage next steps:
 
 1. Close the remaining Known Gaps above (tracked in ROADMAP Path 11).
-2. Path 11: pin `requirements.txt` and add a CI lane running Python + UI tests.
+2. Path 11: pin `requirements.txt` across the supported Python runtimes.
 3. Path 7 / production checklist: scheduled certbot renewals with failure alerts; automatic upstream refresh on container IP change.
 4. Path 10.5: register remaining JSON stores (firewall state) in schemas/migrations.
 
