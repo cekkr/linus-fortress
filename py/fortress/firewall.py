@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException
 
@@ -29,12 +29,14 @@ def _iptables_available() -> bool:
 def _nft_available() -> bool:
     return shutil.which("nft") is not None
 
-def detect_connlimit_backend() -> Optional[str]:
+def _available_connlimit_backends() -> Iterator[str]:
     if _iptables_available():
-        return "iptables"
+        yield "iptables"
     if _nft_available():
-        return "nftables"
-    return None
+        yield "nftables"
+
+def detect_connlimit_backend() -> Optional[str]:
+    return next(_available_connlimit_backends(), None)
 
 def _connlimit_rule_args(protocol: str, port: int, limit: int) -> List[str]:
     return [
@@ -109,21 +111,21 @@ def _build_nft_rule_tag(kind: str, port: int, limit: Optional[int] = None, sourc
 def _nft_chain_output() -> str:
     return run_command(["nft", "-a", "list", "chain", NFT_DDOS_TABLE_FAMILY, NFT_DDOS_TABLE, NFT_DDOS_CHAIN])
 
-def _nft_find_rule_handles(rule_tag: str) -> List[str]:
-    try:
-        output = _nft_chain_output()
-    except HTTPException:
-        return []
-    handles: List[str] = []
+def _parse_nft_rule_handles(output: str) -> Dict[str, List[str]]:
+    handles: Dict[str, List[str]] = {}
     pattern = re.compile(r'comment "([^"]+)".*# handle (\d+)')
     for line in output.splitlines():
         match = pattern.search(line)
-        if not match:
-            continue
-        if match.group(1) != rule_tag:
-            continue
-        handles.append(match.group(2))
+        if match:
+            tag, handle = match.groups()
+            handles.setdefault(tag, []).append(handle)
     return handles
+
+def _nft_find_rule_handles(rule_tag: str) -> List[str]:
+    try:
+        return _parse_nft_rule_handles(_nft_chain_output()).get(rule_tag, [])
+    except HTTPException:
+        return []
 
 def _nft_rule_exists(rule_tag: str) -> bool:
     return bool(_nft_find_rule_handles(rule_tag))
@@ -544,6 +546,72 @@ def get_ddos_policy(policy_path: str) -> Dict[str, Any]:
         return {"enabled": False, "profile": "baseline"}
     with open(policy_path, "r") as fh:
         return json.load(fh)
+
+
+def _inspect_iptables_rule(rule: Dict[str, Any]) -> str:
+    if rule["kind"] == "allow":
+        args = _connlimit_allowlist_rule_args("tcp", rule["port"], rule["source"])
+    else:
+        args = _connlimit_rule_args("tcp", rule["port"], rule["limit"])
+    try:
+        run_command(["iptables", "-C", "INPUT"] + args)
+    except HTTPException as exc:
+        if "does a matching rule exist in that chain?" in str(exc.detail):
+            return "missing"
+        return "unknown"
+    except OSError:
+        return "unknown"
+    return "present"
+
+
+def _inspect_nft_connlimit_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    try:
+        handles_by_tag = _parse_nft_rule_handles(_nft_chain_output())
+        absent_status = "missing"
+    except (HTTPException, OSError) as exc:
+        handles_by_tag = {}
+        absent_status = (
+            "missing"
+            if isinstance(exc, HTTPException) and "No such file or directory" in str(exc.detail)
+            else "unknown"
+        )
+    results = []
+    for rule in rules:
+        tag = _build_nft_rule_tag(rule["kind"], rule["port"], limit=rule.get("limit"), source=rule.get("source"))
+        handles = [int(handle) for handle in handles_by_tag.get(tag, [])]
+        results.append({**rule, "status": "present" if handles else absent_status, "handles": handles})
+    return results
+
+
+def inspect_connlimit_policy(policy: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    available = list(_available_connlimit_backends())
+    report = {"preferred_backend": available[0] if available else None, "backends": []}
+    if policy is None:
+        return {**report, "status": "policy_unreadable"}
+    if not policy.get("enabled"):
+        return {**report, "status": "disabled"}
+    if not policy.get("conn_limit"):
+        return {**report, "status": "not_configured"}
+    if policy.get("protocol", "tcp") != "tcp":
+        return {**report, "status": "unsupported_protocol"}
+    if not available:
+        return {**report, "status": "unavailable"}
+
+    rules = []
+    for port in dict.fromkeys(int(port) for port in (policy.get("ports") or [80, 443])):
+        for source in dict.fromkeys(policy.get("allowlist") or []):
+            rules.append({"kind": "allow", "port": port, "source": source})
+        rules.append({"kind": "connlimit", "port": port, "limit": int(policy["conn_limit"])})
+
+    backends = []
+    if "iptables" in available:
+        backends.append({
+            "name": "iptables",
+            "rules": [{**rule, "status": _inspect_iptables_rule(rule)} for rule in rules],
+        })
+    if "nftables" in available:
+        backends.append({"name": "nftables", "rules": _inspect_nft_connlimit_rules(rules)})
+    return {**report, "status": "configured", "backends": backends}
 
 
 def update_ddos_policy(policy: Dict[str, Any], policy_path: str) -> Dict[str, Any]:

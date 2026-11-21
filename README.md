@@ -873,6 +873,7 @@ Common body:
 
 #### `GET /firewall/status`
 - Returns firewall backend (`ufw`/`firewalld`), active state, defaults, and rule counts.
+- `connlimit` reports the saved anti-DDoS connection-limit policy state and the backend Fortress would select today. For an enabled TCP limit, each available backend reports the expected cap and allowlist rules as `present`, `missing`, or `unknown` if inspection failed. nftables reports the handles of all rules with matching Fortress tags. Lizard UI shows the same diagnostics in Firewall. Inspection leaves the rules and policy unchanged.
 
 #### `GET /firewall/rules`
 - Optional query params: `port`, `protocol`, `source`.

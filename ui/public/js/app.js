@@ -3264,6 +3264,46 @@ function renderSparkline(samples, key, label) {
   `;
 }
 
+function renderConnlimitDiagnostics(report) {
+  if (!report) return "";
+  const messages = {
+    disabled: "Anti-DDoS policy is disabled.",
+    not_configured: "No connection limit is configured.",
+    unsupported_protocol: "Connection limits require TCP.",
+    unavailable: "iptables and nftables are unavailable.",
+    policy_unreadable: "The saved anti-DDoS policy could not be read.",
+  };
+  const backends = (report.backends || []).map(({ name, rules }) => `
+    <div class="event-item">
+      <strong>${escapeHtml(name)}</strong>
+      ${rules.map((rule) => {
+        const label = rule.kind === "allow"
+          ? `Allow ${rule.source} on ${rule.port}/tcp`
+          : `${rule.port}/tcp · limit ${rule.limit}`;
+        const handles = rule.handles?.length
+          ? `<span class="pill">Handles ${escapeHtml(rule.handles.join(", "))}</span>`
+          : "";
+        const badge = rule.status === "present" ? "running" : rule.status === "missing" ? "danger" : "soon";
+        const status = { present: "Present", missing: "Missing", unknown: "Could not inspect" }[rule.status];
+        return `<div class="card-meta">
+          <span>${escapeHtml(label)}</span>
+          <span class="pill ${badge}">${escapeHtml(status || "Unknown")}</span>
+          ${handles}
+        </div>`;
+      }).join("")}
+    </div>
+  `).join("");
+  const message = messages[report.status];
+  return `
+    <section class="event-item" aria-label="Connection limit diagnostics">
+      <strong>Connection limit diagnostics</strong>
+      <div class="card-meta"><span>Preferred backend</span><span class="pill">${escapeHtml(report.preferred_backend || "None")}</span></div>
+      ${message ? `<div>${message}</div>` : ""}
+      ${backends}
+    </section>
+  `;
+}
+
 function renderFirewallPreview(node) {
   if (state.firewallLoading) {
     elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>Loading firewall...</div>`;
@@ -3300,6 +3340,7 @@ function renderFirewallPreview(node) {
       <span class="pill">${rules.length} rules</span>
       <span class="pill">${Math.max(rules.length - prevCount, 0)} new since last refresh</span>
     </div>
+    ${renderConnlimitDiagnostics(fw.connlimit)}
     ${
       diffAdded.length || diffRemoved.length
         ? `
@@ -7266,6 +7307,7 @@ async function loadMonitoring(options = {}) {
 
 async function loadFirewall(options = {}) {
   state.firewallLoading = true;
+  state.firewall.connlimit = null;
   state.firewallPreviousRules = Array.isArray(state.firewall.rules) ? state.firewall.rules.slice() : [];
   renderPreview();
   try {
@@ -7278,6 +7320,7 @@ async function loadFirewall(options = {}) {
     state.firewall = {
       backend: statusPayload.backend || null,
       active: statusPayload.active,
+      connlimit: statusPayload.connlimit,
       rules: (rulesPayload && rulesPayload.rules) || [],
       added: diffPayload.added || [],
       removed: diffPayload.removed || [],

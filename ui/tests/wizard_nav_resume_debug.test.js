@@ -46,6 +46,7 @@ function startStubApi(port) {
   const vmSnapshotRequests = [];
   const snapshots = [];
   let failPreflight = false;
+  let failFirewallStatus = false;
   const server = createServer(async (req, res) => {
     const pathname = new URL(req.url || "/", `http://127.0.0.1:${port}`).pathname;
     if (pathname === "/status") {
@@ -87,6 +88,33 @@ function startStubApi(port) {
       jsonResponse(res, { backups: ["web-01-backup.enc"] });
       return;
     }
+    if (pathname === "/firewall/status") {
+      res.setHeader("X-Fortress-Request-ID", "fixture-firewall-status");
+      if (failFirewallStatus) {
+        jsonResponse(res, { detail: "Firewall status unavailable" }, 503);
+        return;
+      }
+      jsonResponse(res, {
+        backend: "firewalld", active: true, connlimit: {
+          status: "configured", preferred_backend: "iptables",
+          backends: [
+            { name: "iptables", rules: [
+              { kind: "allow", port: 443, source: "203.0.113.0/24", status: "missing" },
+              { kind: "connlimit", port: 443, limit: 25, status: "unknown" },
+            ] },
+            { name: "nftables", rules: [
+              { kind: "allow", port: 443, source: "203.0.113.0/24", status: "present", handles: [7, 12] },
+              { kind: "connlimit", port: 443, limit: 25, status: "missing", handles: [] },
+            ] },
+          ],
+        },
+      });
+      return;
+    }
+    if (pathname === "/firewall/rules" || pathname === "/firewall/rules/diff") {
+      jsonResponse(res, { rules: [], added: [], removed: [] });
+      return;
+    }
     if (pathname === "/vms") {
       const url = new URL(req.url, `http://127.0.0.1:${port}`);
       vmQueries.push(url.searchParams.get("include_validation"));
@@ -126,6 +154,7 @@ function startStubApi(port) {
       vmQueries,
       vmSnapshotRequests,
       setPreflightFailure: (enabled) => { failPreflight = enabled; },
+      setFirewallStatusFailure: () => { failFirewallStatus = true; },
     }));
     server.on("error", reject);
   });
@@ -172,6 +201,43 @@ async function loadPuppeteer(t) {
     return null;
   }
 }
+
+test("Firewall displays live connection-limit diagnostics from the session proxy", async (t) => {
+  const puppeteer = await loadPuppeteer(t);
+  if (!puppeteer) return;
+  const harness = await launchHarness();
+  let browser;
+  try {
+    browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 930 });
+    await page.goto(`http://127.0.0.1:${harness.uiPort}`, { waitUntil: "domcontentloaded" });
+    await login(page);
+    const response = page.waitForResponse((res) => new URL(res.url()).pathname === "/api/firewall/status");
+    await page.locator('.app-card[data-node-id="firewall"] .card-icon-button').click();
+    assert.equal((await response).headers()["x-fortress-request-id"], "fixture-firewall-status");
+
+    const panel = '#preview [aria-label="Connection limit diagnostics"]';
+    await page.waitForSelector(panel, { visible: true });
+    const diagnostics = await page.$eval(panel, (el) => el.innerText.replace(/\s+/g, " "));
+    assert.match(diagnostics, /Preferred backend iptables/i);
+    assert.match(diagnostics, /Allow 203\.0\.113\.0\/24 on 443\/tcp Present Handles 7, 12/i);
+    assert.match(diagnostics, /443\/tcp · limit 25 Missing/i);
+    assert.match(diagnostics, /443\/tcp · limit 25 Could not inspect/i);
+    await page.setViewport({ width: 390, height: 844 });
+    assert.equal(await page.$eval(panel, (el) => el.getBoundingClientRect().right <= innerWidth), true);
+    harness.api.setFirewallStatusFailure();
+    const failure = page.waitForResponse((res) => new URL(res.url()).pathname === "/api/firewall/status");
+    await page.locator('#app-grid [data-action-id="firewall-refresh"]').click();
+    assert.equal((await failure).status(), 503);
+    await page.waitForFunction(() => !document.querySelector("#preview")?.textContent.includes("Loading firewall"));
+    assert.equal(await page.$(panel), null);
+  } finally {
+    if (browser) await browser.close();
+    harness.proc.kill("SIGTERM");
+    harness.api.server.close();
+  }
+});
 
 test("VM Labs creates, restores, and deletes a live snapshot through the proxy", async (t) => {
   const puppeteer = await loadPuppeteer(t);

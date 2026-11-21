@@ -107,6 +107,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Auto-heal LXD bootstrap in scripts (`lxd init --auto`, storage-pool detection, and default profile root disk device/pool assignment) to prevent `Failed getting root disk` container-launch errors.
 - Done: Add `run-client.sh` helper for CLI/WebUI connection setup against remote APIs.
 - Done: Add first-run delegated token prompts (server + client) with copy/paste helpers for UI/CLI bootstrap.
+- Done: On a freshly installed AlmaLinux 10.2 QEMU guest, initialize LXD 5.21.9 and verify the normal Lizard UI delegated-token sign-in with SELinux enforcing. Use signed snapd RPMs from the 10.2 EPEL stream because the newer policy from the default EPEL stream failed to load.
+- Next: Detect the AlmaLinux minor release during Snap bootstrap and surface an actionable error when the installed snapd SELinux policy is incompatible.
 - Next: add CLI config crypto-versioning + re-encrypt stored secrets when hashing/crypto algorithms evolve.
 
 ## Path 10: Production HTTP hosting readiness (near term)
@@ -125,8 +127,8 @@ Done:
 - Add conn-limit enforcement via iptables when available.
 - Add nftables conn-limit fallback with allowlist-aware ordering for anti-DDoS profiles.
 - Revert already-applied rules when a later rule in `/firewall/rules/apply` fails (structured 500 + error audit).
-Next:
-- Expose conn-limit backend/rule-handle diagnostics in firewall API/WebUI status views for troubleshooting.
+- Expose connection-limit backend preference, live rule presence, and matching nftables handles in the firewall API and Lizard UI. Cover permission enforcement, unreadable rules, and status rendering.
+- Install AlmaLinux 10.2 x86_64 from its minimal ISO onto a fresh QEMU disk and boot from the installed system. Verify the connection-limit allowlist and cap against real firewalld and nftables, remove the cap to check drift reporting, and confirm the result and request ID in Chromium at desktop and phone widths.
 
 ### Path 10.2: LAMP recipes (container-ready)
 Milestones:

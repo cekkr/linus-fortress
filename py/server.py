@@ -67,6 +67,7 @@ from fortress.firewall import (
     detect_connlimit_backend,
     get_ddos_policy,
     get_firewall_status,
+    inspect_connlimit_policy,
     list_firewall_rules,
     remove_ddos_policy,
     rollback_firewall_rules,
@@ -1711,8 +1712,18 @@ def close_firewall(rule: FirewallRule, x_api_key: Optional[str] = Header(default
 def firewall_status(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("firewall_status", "firewall_admin", x_api_key, x_user_token)
     status = get_firewall_status()
-    audit_api("firewall_status", details={"backend": status.get("backend"), "active": status.get("active")})
-    return status
+    try:
+        policy = DdosPolicyRequest.parse_obj(get_ddos_policy(FIREWALL_DDOS_POLICY_PATH)).dict()
+    except (OSError, ValueError):
+        policy = None
+    connlimit = inspect_connlimit_policy(policy)
+    audit_api("firewall_status", details={
+        "backend": status.get("backend"),
+        "active": status.get("active"),
+        "connlimit_status": connlimit["status"],
+        "connlimit_backend": connlimit["preferred_backend"],
+    })
+    return {**status, "connlimit": connlimit}
 
 @app.get("/firewall/rules")
 def firewall_rules(

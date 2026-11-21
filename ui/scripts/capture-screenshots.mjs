@@ -251,7 +251,7 @@ const SHOTS = [
   {
     id: "firewall",
     title: "Firewall",
-    caption: "Firewall backend status and rule inventory (ufw/firewalld).",
+    caption: "Firewall backend, rule inventory, and connection-limit diagnostics.",
     viewport: DESKTOP,
     prepare: (page) => openApp(page, "firewall"),
   },

@@ -209,8 +209,23 @@ export function startDemoApi(port, options = {}) {
     if (p === "/recipes" && method === "GET") return jsonResponse(res, { recipes: data.recipes });
     if (p === "/recipes/health-history") return jsonResponse(res, data.recipeHealthHistory);
     if (p === "/monitoring/resources") return jsonResponse(res, data.monitoring);
-    if (p === "/firewall/status") return jsonResponse(res, { backend: "ufw", active: true, default_incoming: "deny" });
-    if (p === "/firewall/rules") return jsonResponse(res, { backend: "ufw", rules: data.firewallRules });
+    if (p === "/firewall/status") return jsonResponse(res, {
+      backend: "firewalld",
+      active: true,
+      default_inbound: "unknown",
+      connlimit: {
+        status: "configured",
+        preferred_backend: "nftables",
+        backends: [{
+          name: "nftables",
+          rules: [
+            { kind: "allow", port: 443, source: "10.0.0.0/8", status: "present", handles: [5] },
+            { kind: "connlimit", port: 443, limit: 80, status: "present", handles: [6] },
+          ],
+        }],
+      },
+    });
+    if (p === "/firewall/rules") return jsonResponse(res, { backend: "firewalld", rules: data.firewallRules });
     if (p === "/firewall/rules/diff") return jsonResponse(res, { added: [], removed: [], unchanged: data.firewallRules });
     if (p === "/firewall/ddos") return jsonResponse(res, { enabled: true, profile: "standard", conn_limit: 80, allowlist: ["10.0.0.0/8"] });
     if (p === "/hosts") return jsonResponse(res, { hosts: data.hosts });

@@ -219,7 +219,7 @@ Certbot HTTP-01 integration: `ensure_certbot_available`, `ensure_acme_challenge_
 
 Firewall driver abstraction over ufw and firewalld plus anti-DDoS conn-limit rules via iptables or nftables.
 
-- **Key functions and subparts:** `detect_firewall_backend`, `apply_firewall_rule` (single open/close incl. firewalld rich rules), parsers `_parse_ufw_status`, `_parse_ufw_rules`, `_parse_firewalld_ports`, `_parse_firewalld_rich_rules`, `get_firewall_status`, `list_firewall_rules`, `apply_firewall_rules` (merge/replace diff + rollback file), `rollback_firewall_rules`, DDoS policy `get/update/apply/remove_ddos_policy`, conn-limit backends `detect_connlimit_backend`, `_apply_connlimit_rule` (iptables), `_apply_nft_connlimit_rule` + `_ensure_nft_ddos_chain` (nftables).
+- **Key functions and subparts:** `detect_firewall_backend`, `apply_firewall_rule` (single open/close incl. firewalld rich rules), parsers `_parse_ufw_status`, `_parse_ufw_rules`, `_parse_firewalld_ports`, `_parse_firewalld_rich_rules`, `get_firewall_status`, `list_firewall_rules`, `apply_firewall_rules` (merge/replace diff + rollback file), `rollback_firewall_rules`, DDoS policy `get/update/apply/remove_ddos_policy`, conn-limit backends `detect_connlimit_backend`, `_apply_connlimit_rule` (iptables), `_apply_nft_connlimit_rule` + `_ensure_nft_ddos_chain` (nftables). `inspect_connlimit_policy` reports the backend preference and live rule checks without modifying either backend.
 - **Called by:** firewall routes in [`py/server.py`](py/server.py); `/containers/expose` allowlists.
 - **Tests:** [`tests/test_firewall.py`](tests/test_firewall.py).
 - **Common mistakes:** parser changes must keep both ufw and firewalld output shapes working, including firewalld attribute order differences (`port port=".." protocol=".."` on firewalld 2.x / AlmaLinux 10) — `_parse_firewalld_rich_rules` parses attributes order-independently and skips `forward-port`/`source-port`. `apply_firewall_rules` reverts already-applied changes (reverse order, via `_revert_firewall_changes`) when a later rule fails and raises `HTTPException(500)` with a structured `detail`; keep that contract when adding new rule actions.
@@ -468,7 +468,8 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 - **Behavior:** open/close, status, rule inventory, diff, merge/replace apply with rollback IDs, rollback, DDoS policy with conn-limit caps and allowlists.
 - **Flow and owners:** firewall routes ([`py/server.py`](py/server.py)) → [`py/fortress/firewall.py`](py/fortress/firewall.py) → `ufw`/`firewall-cmd`, `iptables`/`nft`.
-- **Tests and gaps:** [`tests/test_firewall.py`](tests/test_firewall.py), matrix; conn-limit diagnostics not exposed.
+- **Diagnostics:** `GET /firewall/status` includes `connlimit`. For an enabled TCP limit, each available backend reports the expected allowlist and cap rules as present, missing, or unknown when a read fails. nftables includes all matching handles. Lizard UI displays the report and the current backend preference.
+- **Tests:** [`tests/test_firewall.py`](tests/test_firewall.py), permission matrix, and [`ui/tests/wizard_nav_resume_debug.test.js`](ui/tests/wizard_nav_resume_debug.test.js).
 
 ### Monitoring — Shipped
 

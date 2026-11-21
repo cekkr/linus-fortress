@@ -1579,8 +1579,9 @@ paths:
                 $ref: "#/components/schemas/Message"
   /firewall/status:
     get:
-      summary: Inspect firewall backend and defaults
+      summary: Inspect firewall backend, defaults, and connection-limit rules
       tags: [Firewall]
+      description: Requires `firewall_admin`. Checks the saved connection-limit policy against the available backends without applying any rules.
       responses:
         "200":
           description: Firewall status
@@ -4277,6 +4278,56 @@ components:
           type: integer
         last_updated:
           type: string
+        connlimit:
+          $ref: "#/components/schemas/FirewallConnlimitDiagnostics"
+    FirewallConnlimitDiagnostics:
+      type: object
+      required: [status, preferred_backend, backends]
+      properties:
+        status:
+          type: string
+          enum: [configured, disabled, not_configured, unsupported_protocol, unavailable, policy_unreadable]
+          description: Policy state. A configured policy may have missing or unreadable rules.
+        preferred_backend:
+          type: string
+          nullable: true
+          enum: [iptables, nftables, null]
+          description: Backend Fortress would currently select when applying the policy.
+        backends:
+          type: array
+          items:
+            type: object
+            required: [name, rules]
+            properties:
+              name:
+                type: string
+                enum: [iptables, nftables]
+              rules:
+                type: array
+                items:
+                  type: object
+                  required: [kind, port, status]
+                  properties:
+                    kind:
+                      type: string
+                      enum: [allow, connlimit]
+                    port:
+                      type: integer
+                    source:
+                      type: string
+                      description: Configured source for an allowlist rule.
+                    limit:
+                      type: integer
+                      description: Configured threshold for a connection-limit rule.
+                    status:
+                      type: string
+                      enum: [present, missing, unknown]
+                      description: Result of checking for a matching iptables rule or a tagged nftables rule. Unknown indicates the check failed.
+                    handles:
+                      type: array
+                      description: Handles of all matching tagged rules. Present for nftables only.
+                      items:
+                        type: integer
     FirewallRuleEntry:
       allOf:
         - $ref: "#/components/schemas/FirewallRule"

@@ -202,6 +202,88 @@ class FirewallConnLimitTests(unittest.TestCase):
         self.assertEqual(effective, [])
         self.assertEqual(warnings, ["conn_limit requires iptables or nftables"])
 
+    def test_diagnostics_check_both_backends_and_return_matching_nft_handles(self) -> None:
+        policy = {
+            "enabled": True,
+            "ports": [443, 443],
+            "conn_limit": 25,
+            "allowlist": ["203.0.113.0/24", "203.0.113.0/24"],
+        }
+        nft = [
+            'tcp dport 443 ip saddr 203.0.113.0/24 accept comment "fortress-ddos-allow-443-203_0_113_0_24" # handle 7',
+            'tcp dport 443 ip saddr 203.0.113.0/24 accept comment "fortress-ddos-allow-443-203_0_113_0_24" # handle 12',
+            'tcp dport 443 ct count over 40 reject comment "fortress-ddos-connlimit-443-40" # handle 99',
+        ]
+        outcomes = [
+            "",
+            firewall.HTTPException(500, "iptables: Bad rule (does a matching rule exist in that chain?)."),
+            "\n".join(nft),
+        ]
+        with (
+            mock.patch.object(firewall, "_iptables_available", return_value=True),
+            mock.patch.object(firewall, "_nft_available", return_value=True),
+            mock.patch.object(firewall, "run_command", side_effect=outcomes) as run,
+        ):
+            report = firewall.inspect_connlimit_policy(policy)
+        self.assertEqual(report["status"], "configured")
+        self.assertEqual(report["preferred_backend"], "iptables")
+        self.assertEqual(report["backends"], [
+            {"name": "iptables", "rules": [
+                {"kind": "allow", "port": 443, "source": "203.0.113.0/24", "status": "present"},
+                {"kind": "connlimit", "port": 443, "limit": 25, "status": "missing"},
+            ]},
+            {"name": "nftables", "rules": [
+                {"kind": "allow", "port": 443, "source": "203.0.113.0/24", "status": "present", "handles": [7, 12]},
+                {"kind": "connlimit", "port": 443, "limit": 25, "status": "missing", "handles": []},
+            ]},
+        ])
+        self.assertEqual(run.call_args_list, [
+            mock.call(["iptables", "-C", "INPUT"] + firewall._connlimit_allowlist_rule_args("tcp", 443, "203.0.113.0/24")),
+            mock.call(["iptables", "-C", "INPUT"] + firewall._connlimit_rule_args("tcp", 443, 25)),
+            mock.call(["nft", "-a", "list", "chain", "inet", "fortress", "input"]),
+        ])
+
+    def test_diagnostics_distinguish_unreadable_and_missing_rules(self) -> None:
+        policy = {"enabled": True, "conn_limit": 25, "ports": [443]}
+        rejected = firewall.HTTPException(500, "Could not fetch rule set: Permission denied")
+        missing = firewall.HTTPException(500, "Could not process rule: No such file or directory")
+        with (
+            mock.patch.object(firewall, "_iptables_available", return_value=True),
+            mock.patch.object(firewall, "_nft_available", return_value=True),
+            mock.patch.object(firewall, "run_command", side_effect=[rejected, missing]),
+        ):
+            iptables, nftables = firewall.inspect_connlimit_policy(policy)["backends"]
+        self.assertEqual(iptables["rules"][0]["status"], "unknown")
+        self.assertEqual(nftables["rules"][0]["status"], "missing")
+
+        with (
+            mock.patch.object(firewall, "_iptables_available", return_value=False),
+            mock.patch.object(firewall, "_nft_available", return_value=True),
+            mock.patch.object(firewall, "run_command", side_effect=rejected),
+        ):
+            report = firewall.inspect_connlimit_policy(policy)
+        self.assertEqual(report["preferred_backend"], "nftables")
+        self.assertEqual(report["backends"][0]["rules"][0]["status"], "unknown")
+
+    def test_diagnostics_skip_kernel_checks_without_an_applicable_policy(self) -> None:
+        with (
+            mock.patch.object(firewall, "_iptables_available", return_value=False),
+            mock.patch.object(firewall, "_nft_available", return_value=False),
+            mock.patch.object(firewall, "run_command") as run,
+        ):
+            for policy, status in (
+                (None, "policy_unreadable"),
+                ({"enabled": False, "conn_limit": 25}, "disabled"),
+                ({"enabled": True}, "not_configured"),
+                ({"enabled": True, "conn_limit": 25, "protocol": "udp"}, "unsupported_protocol"),
+                ({"enabled": True, "conn_limit": 25}, "unavailable"),
+            ):
+                with self.subTest(status=status):
+                    self.assertEqual(firewall.inspect_connlimit_policy(policy), {
+                        "status": status, "preferred_backend": None, "backends": [],
+                    })
+        run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2020,7 +2020,7 @@ app.get(
 app.get(
   "/api/firewall/status",
   asyncHandler(async (req, res) => {
-    const payload = await fortressRequestFor(req, "GET", "/firewall/status");
+    const payload = await fortressRequestFor(req, "GET", "/firewall/status", null, { clientResponse: res });
     res.json(payload);
   })
 );

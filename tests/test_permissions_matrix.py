@@ -407,6 +407,10 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
         ):
             status = self.module.firewall_status(x_api_key=None, x_user_token="token-firewall")
             self.assertEqual(status.get("backend"), "ufw")
+            self.assertEqual(status["connlimit"]["status"], "disabled")
+            with mock.patch.object(self.module, "get_ddos_policy", return_value={"ports": "invalid"}):
+                status = self.module.firewall_status(x_api_key=None, x_user_token="token-firewall")
+            self.assertEqual(status["connlimit"]["status"], "policy_unreadable")
 
             opened = self.module.open_firewall(
                 self.module.FirewallRule(port=443, protocol="tcp"),
