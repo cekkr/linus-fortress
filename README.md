@@ -12,7 +12,7 @@ Lizard UI, the optional web control deck, rendered against the demo API (placeho
 | **Control deck**: app cards, fast-actions bar, pages tree, and inspector (preview, operation, command log, debug). | **LAMP container**: per-container sub-apps (access, network, packages, recipes, backups, terminal) and lifecycle/snapshot controls. |
 | ![Create-container wizard with step strip and image catalog](docs/screenshots/create-container-wizard.webp) | ![Monitoring home with host metrics and container alerts](docs/screenshots/monitoring.webp) |
 | **Guided wizards**: full-stage slides with step breadcrumbs, validation, ← / → keys and swipe navigation, and resume after a page refresh. | **Monitoring**: host and container CPU/RAM/disk, threshold alerts, and CPU history. |
-| ![Sites home with TLS, runtime, database, and backups](docs/screenshots/sites.webp) | ![Recipes home with LAMP health-check trend](docs/screenshots/recipes.webp) |
+| ![Sites home with TLS renewal history, runtime, database, and backups](docs/screenshots/sites.webp) | ![Recipes home with LAMP health-check trend](docs/screenshots/recipes.webp) |
 | **PHP sites**: runtime, TLS status, database binding, and backups with rollback. | **Recipes**: versioned install recipes and LAMP health-check trends. |
 | ![Stored LXD backups with Download, Verify, and Restore actions](docs/screenshots/backups.webp) | |
 | **Container backups** with archive downloads, integrity checks, and guided restore. | |
@@ -358,8 +358,9 @@ Body:
 }
 ```
 - Renews Let's Encrypt certificates via certbot.
-- Provide `domain` to target a specific site/route; omit to renew all managed certs.
-- Optional `cert_name` overrides the certbot cert name when needed.
+- Provide `domain` to target a managed route or site. The token must cover the matching container and any other managed containers using the same certificate.
+- With unrestricted container scope, provide `cert_name` without a domain to target a Certbot certificate, or omit both to renew all certificates.
+- Fortress audits completed and failed calls. Calls that reach the named-certificate renewal step contribute to that certificate's history, including dry runs.
 
 ### Website Management
 
@@ -419,6 +420,8 @@ If file replacement, a post-deploy command, database import, or a requested rest
 
 #### `GET /sites/{site_id}/tls/status` (permission `sites_read`)
 - Returns live TLS renewal/certificate state (`valid`, `expiring_soon`, `expired`, `missing`, `error`, `disabled`) with `expires_at`, `days_remaining`, and `renewal_due`.
+- For Let's Encrypt sites, `renewal_history` lists up to ten named Fortress renewal attempts for the current certificate, newest first. Entries include a UTC timestamp, outcome, dry-run flag, and request ID. Lizard UI shows this history in the Sites preview. The field is `null` if the register is unavailable. The same data is available under `tls_status` in the site detail response.
+- Each entry records the result of a named `POST /tls/renew` call from the history-enabled release onward. A completed call can mean Certbot found the certificate was already current. Host-wide runs and Certbot timers have separate logs.
 
 #### `POST /sites/{site_id}/deploy` (permission `sites_manage`)
 Body:

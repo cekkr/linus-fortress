@@ -182,7 +182,7 @@ Master-key resolution, typed-token parsing, delegated-token verification, and co
 
 - **Called by / depends on:** instantiated once in [`py/server.py`](py/server.py) with `COMMAND_LOG_DB`.
 - **Tests:** [`tests/test_auth_audit.py`](tests/test_auth_audit.py) (`AuditLoggingTests`).
-- **Compatibility:** startup adds and indexes the nullable `request_id` column under a SQLite write transaction. Older records remain queryable. The table is append-only by convention.
+- **Compatibility:** startup adds and indexes the nullable `request_id` column under a SQLite write transaction. Older records remain queryable. The table is append-only by convention. `tls_renewal_history` reads up to ten recent named `tls_renew` outcomes using a partial index by certificate target, returning only timestamp, status, dry-run flag, and request ID.
 
 ### [`py/fortress/backups.py`](py/fortress/backups.py)
 
@@ -451,7 +451,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 ### Domain routing and TLS — Shipped
 
-- **Behavior:** nginx reverse proxy per domain with aliases/wildcards, conflict detection, manual or Let's Encrypt TLS (HTTP-01), `/routing/refresh` to re-resolve container IPs, `/tls/renew`.
+- **Behavior:** nginx reverse proxy per domain with aliases/wildcards, conflict detection, manual or Let's Encrypt TLS (HTTP-01), `/routing/refresh` to re-resolve container IPs, `/tls/renew`. Renewal by domain checks the scope of the matching container and other managed containers using the certificate. Renewal by certificate name or for all certificates requires unrestricted scope. Named attempts write the certificate target and success/error to the SQLite register.
 - **Flow and owners:** `add_domain_routing` ([`py/server.py`](py/server.py)) → [`py/fortress/routing.py`](py/fortress/routing.py) + [`py/fortress/tls.py`](py/fortress/tls.py) → `/etc/nginx`, `routes.json`.
 - **Tests and gaps:** [`tests/test_routing.py`](tests/test_routing.py), matrix; no scheduled renewals, no DNS-01/wildcard certs, IP drift needs a manual refresh.
 
@@ -469,7 +469,8 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 - **Recovery:** Deploy and rollback require an absolute document root below `/` without a final symlink or nested mounts. For DB-bearing rollback, checkpoint the site's dedicated local database before replacing its files. The database account must have a direct database-wide grant. Recover database and files independently after an import or restart failure. The site lock covers both checkpoints and recoveries. Keep staging after failed recovery and audit its path. Quiesce database writers before rollback. Side effects of deploy hooks outside the document root have separate recovery requirements.
 - **Database credentials:** Use the recorded account for dump and restore. Suppress SQL, client arguments, and client stderr in route errors and argument previews. Site provisioning treats account strings as SQL data, escapes grant patterns, and honors the database and user creation flags. Rollback rejects system databases, remote bindings, shared recorded bindings, and mismatched database names in new backup metadata.
 - **Permissions:** Deploys that read any host file require `sites_manage`, `sites_deploy_local` and unrestricted container scope. Git/HTTP(S) sources run inside the guest and their argument previews are omitted from the audit register.
-- **Tests and gaps:** [`tests/test_sites.py`](tests/test_sites.py), [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py), and [`tests/test_site_recovery.py`](tests/test_site_recovery.py) cover site records, permissions, serialization, backup ownership and document-root recovery. TLS renewal failure history is pending.
+- **TLS history:** Site detail and TLS status expose `tls_status.renewal_history` after the `sites_read` and container-scope checks. Lizard UI shows timestamped outcomes and request IDs for named Certbot attempts recorded by Fortress. History covers the current certificate and includes dry runs. Certbot timers and host-wide runs are tracked separately.
+- **Tests:** [`tests/test_sites.py`](tests/test_sites.py), [`tests/test_permissions_matrix.py`](tests/test_permissions_matrix.py), and [`tests/test_site_recovery.py`](tests/test_site_recovery.py) cover site records, permissions, serialization, TLS history, backup ownership and document-root recovery.
 
 ### Firewall and anti-DDoS — Shipped
 

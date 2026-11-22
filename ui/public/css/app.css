@@ -1631,6 +1631,10 @@ body {
   overflow-wrap: anywhere;
 }
 
+.site-renewal-receipt {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .terminal-preview {
   display: flex;
   flex-direction: column;

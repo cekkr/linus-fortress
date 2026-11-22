@@ -37,10 +37,43 @@ function waitForReady(proc) {
 }
 
 function startStubApi(port) {
+  const histories = new Map([
+    ["app", [
+      { status: "error", dry_run: true, timestamp: "2026-11-10T11:00:00Z", request_id: "<i>fixture-error</i>" },
+      { status: "success", dry_run: false, timestamp: "2026-11-09T10:00:00Z", request_id: "fixture-success" },
+    ]],
+    ["empty", []],
+    ["unavailable", null],
+    ["manual", undefined],
+  ]);
+  const sites = Array.from(histories.keys(), (id) => ({
+    id, primary_domain: `${id}.example.com`, container_name: "web", status: "active",
+  }));
   const server = createServer((req, res) => {
+    let payload;
     if (req.url === "/status") {
+      payload = { status: "ok", containers: [] };
+    } else if (req.url === "/sites") {
+      payload = { sites };
+    } else {
+      const [, resource, id, ...segments] = (req.url || "").split("/");
+      if (resource === "sites" && histories.has(id)) {
+        const tlsStatus = {
+          status: "valid", auto_renewal_supported: id !== "manual", renewal_history: histories.get(id),
+        };
+        const view = segments.join("/");
+        if (view === "tls/status") {
+          payload = { site_id: id, tls_status: tlsStatus };
+        } else if (view === "backups") {
+          payload = { backups: [] };
+        } else if (!view) {
+          payload = { site: sites.find((site) => site.id === id) };
+        }
+      }
+    }
+    if (payload) {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", containers: [] }));
+      res.end(JSON.stringify(payload));
       return;
     }
     res.writeHead(404, { "Content-Type": "application/json" });
@@ -104,6 +137,31 @@ test("leaf app renders stage home panel instead of blank grid", async (t) => {
 
     const emptyMessage = await page.$eval(".app-home-empty", (el) => el.textContent || "");
     assert.match(emptyMessage, /No containers found/i);
+
+    await t.test("site preview shows renewal outcomes and request IDs at phone width", async () => {
+      await page.setViewport({ width: 390, height: 844 });
+      await page.evaluate(() => window.selectNode("home"));
+      await page.click('.app-card[data-node-id="sites"] .card-icon-button');
+      const history = "#preview details[data-site-renewal-history]";
+      await page.waitForSelector(`${history} summary`, { visible: true });
+      assert.match(await page.$eval(`${history} summary`, (el) => el.textContent), /1 failed/);
+      await page.click(`${history} summary`);
+      await page.waitForSelector(`${history}[open] code`, { visible: true });
+
+      const attempts = await page.$$eval(`${history} .event-item`, (rows) => rows.map((row) => ({
+        text: row.textContent.replace(/\s+/g, " "),
+        requestId: row.querySelector("code").textContent,
+        elementsInRequestId: row.querySelector("code").children.length,
+      })));
+      assert.match(attempts[0].text, /Failed Dry run/);
+      assert.equal(attempts[0].requestId, "<i>fixture-error</i>");
+      assert.equal(attempts[0].elementsInRequestId, 0);
+      assert.match(attempts[1].text, /Completed Renewal/);
+      assert.equal(attempts[1].requestId, "fixture-success");
+      assert.deepEqual(await page.$$eval("#preview [data-site-renewal-history]:not(details)", (rows) =>
+        rows.map((el) => el.textContent)), ["No recorded renewal attempts", "Renewal history unavailable"]);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    });
   } finally {
     if (browser) {
       await browser.close();

@@ -237,9 +237,12 @@ const SHOTS = [
   {
     id: "sites",
     title: "PHP sites",
-    caption: "Site lifecycle: runtime, TLS status, database binding, backups and rollback.",
+    caption: "Site runtime, TLS renewal history, database binding, backups and rollback.",
     viewport: DESKTOP,
-    prepare: (page) => openApp(page, "sites"),
+    prepare: async (page) => {
+      await openApp(page, "sites");
+      await page.$eval("#preview details[data-site-renewal-history]", (history) => { history.open = true; });
+    },
   },
   {
     id: "recipes",

@@ -103,6 +103,70 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
             fn()
         self.assertEqual(exc.exception.status_code, 403)
 
+    def test_site_tls_history_records_only_named_attempts_and_respects_scope(self) -> None:
+        from fastapi.testclient import TestClient
+
+        self._write_users({
+            "renew": {"username": "operator", "permissions": ["manage_routing"], "allowed_containers": ["alpha"]},
+            "view": {"username": "viewer", "permissions": ["sites_read"], "allowed_containers": ["alpha"]},
+            "other": {"username": "other", "permissions": ["sites_read"], "allowed_containers": ["beta"]},
+        })
+        self._write_json(self.module.SITES_DB, {
+            "app": {
+                "name": "app", "primary_domain": "app.example.com", "container_name": "alpha",
+                "domains": ["www.app.example.com"], "tls": {"mode": "letsencrypt", "cert_name": "app-production"},
+            },
+            "other": {
+                "name": "other", "primary_domain": "other.example.com", "container_name": "beta",
+                "tls": {"mode": "letsencrypt"},
+            },
+        })
+        self._write_json(self.module.ROUTING_DB, {
+            "shared.example.com": {
+                "container_name": "beta", "tls": {"mode": "letsencrypt", "cert_name": "app-production"},
+            },
+        })
+        renewer = {"X-User-Token": "renew"}
+        viewer = {"X-User-Token": "view"}
+        master = {"X-API-Key": "integration-master-key"}
+        failure = HTTPException(500, detail="certbot stderr with private placeholder")
+        with TestClient(self.module.app) as client, mock.patch.object(self.module, "renew_letsencrypt") as renew:
+            url = "/sites/app/tls/status"
+            self.assertEqual(client.get(url, headers=viewer).json()["tls_status"]["renewal_history"], [])
+            self.assertEqual(client.get(url, headers={"X-User-Token": "other"}).status_code, 403)
+            self.assertEqual(client.get(url, headers=renewer).status_code, 403)
+            for payload in ({}, {"cert_name": "app-production"}, {"domain": "other.example.com"},
+                            {"domain": "www.app.example.com"}):
+                with self.subTest(payload=payload):
+                    self.assertEqual(client.post("/tls/renew", headers=renewer, json=payload).status_code, 403)
+            renew.assert_not_called()
+
+            self._write_json(self.module.ROUTING_DB, {})
+            renew.return_value = "Certbot completed"
+            success = client.post("/tls/renew", headers=renewer, json={"domain": "www.app.example.com"})
+            self.assertEqual(success.status_code, 200)
+            renew.assert_called_once_with("app-production", dry_run=False)
+            self.assertEqual(client.post("/tls/renew", headers=master, json={}).status_code, 200)
+            self.assertEqual(client.post("/tls/renew", headers=master, json={"cert_name": "other.example.com"}).status_code, 200)
+            renew.side_effect = failure
+            error = client.post("/tls/renew", headers=master, json={"cert_name": "app-production", "dry_run": True})
+            self.assertEqual(error.status_code, 500)
+
+            state = client.get(url, headers=viewer)
+            self.assertEqual(state.status_code, 200)
+            self.assertNotIn("private placeholder", state.text)
+            history = state.json()["tls_status"]["renewal_history"]
+            self.assertEqual(
+                [(entry["status"], entry["dry_run"], entry["request_id"]) for entry in history],
+                [("error", True, error.headers["X-Fortress-Request-ID"]),
+                 ("success", False, success.headers["X-Fortress-Request-ID"])],
+            )
+            for entry in history:
+                self.assertEqual(set(entry), {"timestamp", "status", "dry_run", "request_id"})
+                self.assertRegex(entry["timestamp"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+            site = client.get("/sites/app", headers=viewer).json()["site"]
+            self.assertEqual(site["tls_status"]["renewal_history"], history)
+
     def test_permission_matrix_recipes_endpoints(self) -> None:
         self._write_users(
             {

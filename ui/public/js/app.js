@@ -3421,6 +3421,38 @@ function renderVmsPreview(node) {
   `;
 }
 
+function renderSiteRenewalHistory(history) {
+  if (history === undefined) {
+    return "";
+  }
+  if (!Array.isArray(history) || !history.length) {
+    const message = Array.isArray(history) ? "No recorded renewal attempts" : "Renewal history unavailable";
+    return `<div data-site-renewal-history>${message}</div>`;
+  }
+  const rows = history.map((attempt) => {
+    const failed = attempt.status === "error";
+    const date = new Date(attempt.timestamp);
+    const timestamp = attempt.timestamp && Number.isFinite(date.getTime()) ? date.toLocaleString() : "Time unavailable";
+    return `
+      <div class="event-item">
+        <div class="card-meta">
+          <span class="pill ${failed ? "danger" : "running"}">${failed ? "Failed" : "Completed"}</span>
+          <span>${attempt.dry_run ? "Dry run" : "Renewal"}</span>
+          <span>${escapeHtml(timestamp)}</span>
+        </div>
+        ${attempt.request_id ? `<div class="preview-meta site-renewal-receipt"><div><strong>Request ID</strong><span><code>${escapeHtml(attempt.request_id)}</code></span></div></div>` : ""}
+      </div>
+    `;
+  }).join("");
+  const failed = history.filter((attempt) => attempt.status === "error").length;
+  return `
+    <details data-site-renewal-history>
+      <summary>Renewal history${failed ? ` · ${failed} failed` : ""}</summary>
+      ${rows}
+    </details>
+  `;
+}
+
 function renderSitesPreview(node) {
   if (state.sitesLoading) {
     elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>Loading sites...</div>`;
@@ -3461,7 +3493,7 @@ function renderSitesPreview(node) {
       }
       const tlsStatusMessage = tlsStatus.message ? String(tlsStatus.message) : "status unavailable";
       const tlsExpiryLabel = tlsStatus.expires_at ? new Date(tlsStatus.expires_at).toLocaleString() : "";
-      const tlsRenewalMode = tlsStatus.auto_renewal_supported ? "auto-renew enabled" : "manual renewal";
+      const tlsRenewalMode = tlsStatus.auto_renewal_supported ? "Via Certbot" : "manual renewal";
       const tlsDaysRemaining =
         tlsStatus.days_remaining !== null && tlsStatus.days_remaining !== undefined
           ? Number(tlsStatus.days_remaining)
@@ -3511,7 +3543,7 @@ function renderSitesPreview(node) {
             ${detailsLoading ? `<span class="pill">loading...</span>` : ""}
             ${site.runtime && site.runtime.php_version ? `<span class="pill">PHP ${site.runtime.php_version}</span>` : ""}
             <span class="pill">${domains.length ? `${domains.length + 1} domains` : "1 domain"}</span>
-            <span class="pill ${tlsStateClass}">TLS ${tlsState}</span>
+            <span class="pill ${tlsStateClass}">TLS ${escapeHtml(tlsState)}</span>
             ${tlsStatus.renewal_due ? `<span class="pill soon">renew soon</span>` : ""}
           </div>
           <div class="preview-meta">
@@ -3521,7 +3553,7 @@ function renderSitesPreview(node) {
             </div>
             <div>
               <strong>TLS</strong>
-              <span>${tlsLabel} • ${tlsStatusMessage}</span>
+              <span>${escapeHtml(tlsLabel)} • ${escapeHtml(tlsStatusMessage)}</span>
             </div>
             <div>
               <strong>TLS renewal</strong>
@@ -3548,6 +3580,7 @@ function renderSitesPreview(node) {
               <span>${dbLabel}</span>
             </div>
           </div>
+          ${renderSiteRenewalHistory(tlsStatus.renewal_history)}
           ${backupBlock}
           <div class="card-actions">
             <button class="action ghost" data-action-id="site-deploy" data-site="${site.id}" data-node-id="${node.id}">Deploy</button>

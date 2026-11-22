@@ -706,6 +706,11 @@ paths:
     post:
       summary: Renew Let's Encrypt certificates
       tags: [TLS]
+      description: |
+        Requires `manage_routing`. Renewal by domain checks container scope for the
+        matching entry and any other managed entries using its certificate. Renewal
+        by explicit certificate name or for all certificates requires unrestricted
+        container scope. Named Certbot attempts are recorded in certificate history.
       requestBody:
         required: true
         content:
@@ -719,6 +724,12 @@ paths:
             application/json:
               schema:
                 type: object
+        "403":
+          description: Permission or container scope denied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /sites:
     get:
       summary: List managed websites
@@ -828,6 +839,7 @@ paths:
     get:
       summary: Retrieve TLS renewal/certificate status for a website
       tags: [Sites]
+      description: Requires `sites_read` and site container scope. Includes recent named renewal attempts for Let's Encrypt sites.
       parameters:
         - in: path
           name: site_id
@@ -4800,6 +4812,26 @@ components:
         days_remaining:
           type: number
           nullable: true
+        renewal_history:
+          type: array
+          nullable: true
+          maxItems: 10
+          description: Newest named Fortress renewal attempts for this Let's Encrypt certificate. Null if the audit register is unavailable.
+          items:
+            type: object
+            required: [timestamp, status, dry_run, request_id]
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              status:
+                type: string
+                enum: [success, error]
+              dry_run:
+                type: boolean
+              request_id:
+                type: string
+                nullable: true
     SiteRouting:
       type: object
       properties:

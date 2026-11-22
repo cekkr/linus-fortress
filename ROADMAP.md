@@ -10,7 +10,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - [x] System upgrade endpoint (package updates + migrations) with dry-run planning.
 - [ ] Scheduled TLS renewals (systemd timer/cron) with alerting on failures.
 - [ ] DNS-01 wildcard support for Let's Encrypt.
-- [ ] WebUI surfaces TLS renewal status/health.
+- [x] WebUI surfaces site TLS certificate status and recent named renewal outcomes.
 
 ## Path 1: Core auth and storage modularization (short term)
 - Done: Extract auth/token utilities into `py/fortress/auth.py`.
@@ -182,12 +182,12 @@ Done:
 - Add Let's Encrypt automation to site TLS workflows.
 - Support php.ini override injection during site updates.
 - Show failed service restarts in the Lizard UI wizard and preserve structured site operation error messages from Fortress.
+- Show per-certificate TLS renewal history in Lizard UI. Record successful and failed named Certbot attempts in the audit register with request IDs and dry-run flags. Enforce container scope when renewing by domain.
+- Validate TLS history on AlmaLinux 10.2 x86_64 under QEMU with SELinux enforcing. Check a current certificate and a failed dry run with real Certbot, then match the audit request IDs to the Sites preview in desktop and phone Chromium.
 Progress:
 - WebUI surfaces per-site routing/TLS/runtime/database details and backup lists with rollback triggers.
 - Add TLS status/renewal state in WebUI (`tls_status` + `/sites/{site_id}/tls/status`).
 - Add PHP-FPM pool tuning during site updates (runtime `fpm_pool` controls in API + WebUI wizard).
-Next:
-- Add explicit TLS renewal failure history/audit cards in WebUI (not just latest cert status).
 
 ### Path 10.5: Auto-upgrade + migrations
 Milestones:

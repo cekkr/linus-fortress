@@ -147,7 +147,17 @@ export function buildDemoData() {
       runtime: { php_version: "8.3", fpm_pool: { pm: "dynamic", max_children: 12 } },
       routing: { listen_address: "0.0.0.0", listen_port: 80, container_interface: "eth0", container_port: 80 },
       tls: { mode: "letsencrypt", cert_name: "shop.example.com" },
-      tls_status: { status: "valid", expires_at: "2027-01-20T00:00:00Z", days_remaining: 70 },
+      tls_status: {
+        status: "valid",
+        message: "TLS certificate is valid",
+        expires_at: "2027-01-20T00:00:00Z",
+        days_remaining: 70,
+        auto_renewal_supported: true,
+        renewal_history: [
+          { timestamp: "2026-11-11T09:15:00Z", status: "error", dry_run: true, request_id: "a1b2c3d4e5f60123456789abcdef0123" },
+          { timestamp: "2026-11-10T10:30:00Z", status: "success", dry_run: false, request_id: "b2c3d4e5f6a10123456789abcdef0123" },
+        ],
+      },
       database: { engine: "mariadb", name: "shop", username: "shop_app", password: "********" },
     },
     blog: {
@@ -242,7 +252,7 @@ export function startDemoApi(port, options = {}) {
     }
     if (/^\/sites\/[^/]+\/tls\/status$/.test(p)) {
       const id = decodeURIComponent(p.split("/")[2]);
-      return jsonResponse(res, (data.siteDetails[id] || {}).tls_status || { status: "none" });
+      return jsonResponse(res, { site_id: id, tls_status: data.siteDetails[id]?.tls_status || { status: "disabled" } });
     }
     if (/^\/sites\/[^/]+$/.test(p)) {
       const id = decodeURIComponent(p.split("/")[2]);

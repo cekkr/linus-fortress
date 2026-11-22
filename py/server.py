@@ -1324,43 +1324,53 @@ def remove_domain_routing(domain: str, x_api_key: Optional[str] = Header(default
     return {"message": f"Routing removed for {domain}"}
 
 
+def _resolve_renewal_certificate(domain: str, auth_context: Dict[str, Any]) -> str:
+    validate_domain(domain)
+    entries = [(primary, record, "Route") for primary, record in load_routes().items()]
+    entries.extend((site["primary_domain"], site, "Site") for site in _load_site_store().values())
+    for primary, record, kind in entries:
+        names = normalize_domains(primary, record.get("domains") or [])
+        if not any(domains_conflict(domain, candidate) for candidate in names):
+            continue
+        enforce_container_scope(auth_context, record.get("container_name"))
+        tls = record.get("tls") or {}
+        if tls.get("mode") != "letsencrypt":
+            raise HTTPException(status_code=400, detail=f"{kind} TLS mode is not letsencrypt")
+        cert_name = tls.get("cert_name") or primary
+        if auth_context.get("allowed_containers"):
+            for other_primary, other, _ in entries:
+                other_tls = other.get("tls") or {}
+                if other_tls.get("mode") == "letsencrypt" and (other_tls.get("cert_name") or other_primary) == cert_name:
+                    enforce_container_scope(auth_context, other.get("container_name"))
+        return cert_name
+    raise HTTPException(status_code=404, detail="Domain not found for TLS renewal")
+
+
 @app.post("/tls/renew")
 def renew_tls(payload: TLSRenewRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
-    authorize("tls_renew", "manage_routing", x_api_key, x_user_token)
-    if payload.cert_name and not payload.domain:
-        output = renew_letsencrypt(payload.cert_name, dry_run=payload.dry_run)
-        audit_api("tls_renew", details={"cert_name": payload.cert_name, "dry_run": payload.dry_run})
-        return {"message": "TLS renewal complete", "cert_name": payload.cert_name, "output": output}
-    if payload.domain:
-        validate_domain(payload.domain)
-        routes = load_routes()
-        cert_name = None
-        for route_domain, record in routes.items():
-            route_domains = normalize_domains(route_domain, record.get("domains") or [])
-            if any(domains_conflict(payload.domain, candidate) for candidate in route_domains):
-                tls = record.get("tls") or {}
-                if tls.get("mode") != "letsencrypt":
-                    raise HTTPException(status_code=400, detail="Route TLS mode is not letsencrypt")
-                cert_name = tls.get("cert_name") or route_domain
-                break
-        if not cert_name:
-            sites = _load_site_store()
-            for site in sites.values():
-                site_domains = normalize_domains(site["primary_domain"], site.get("domains") or [])
-                if any(domains_conflict(payload.domain, candidate) for candidate in site_domains):
-                    tls = site.get("tls") or {}
-                    if tls.get("mode") != "letsencrypt":
-                        raise HTTPException(status_code=400, detail="Site TLS mode is not letsencrypt")
-                    cert_name = tls.get("cert_name") or site["primary_domain"]
-                    break
-        if not cert_name:
-            raise HTTPException(status_code=404, detail="Domain not found for TLS renewal")
+    auth_context = authorize("tls_renew", "manage_routing", x_api_key, x_user_token)
+    cert_name = None
+    details: Dict[str, Any] = {"dry_run": payload.dry_run}
+    try:
+        if payload.domain:
+            cert_name = _resolve_renewal_certificate(payload.domain, auth_context)
+            details["domain"] = payload.domain
+        elif auth_context.get("allowed_containers"):
+            raise HTTPException(status_code=403, detail="TLS renewal without a domain requires unrestricted container scope")
+        else:
+            cert_name = payload.cert_name or None
+        if cert_name:
+            details["cert_name"] = cert_name
         output = renew_letsencrypt(cert_name, dry_run=payload.dry_run)
-        audit_api("tls_renew", details={"cert_name": cert_name, "domain": payload.domain, "dry_run": payload.dry_run})
-        return {"message": "TLS renewal complete", "cert_name": cert_name, "output": output}
-    output = renew_letsencrypt(dry_run=payload.dry_run)
-    audit_api("tls_renew", details={"dry_run": payload.dry_run})
-    return {"message": "TLS renewal complete", "output": output}
+    except Exception as exc:
+        details["status_code"] = exc.status_code if isinstance(exc, HTTPException) else 500
+        audit_api("tls_renew", target=cert_name, details=details, status="error")
+        raise
+    audit_api("tls_renew", target=cert_name, details=details)
+    response = {"message": "TLS renewal complete", "output": output}
+    if cert_name:
+        response["cert_name"] = cert_name
+    return response
 
 # --- API USER MANAGEMENT ---
 
@@ -3326,6 +3336,8 @@ def _resolve_site_tls_status(site: Dict[str, Any]) -> Dict[str, Any]:
         "renewal_due": None,
         "status": "unknown",
     }
+    if mode == "letsencrypt" and cert_name:
+        status["renewal_history"] = command_logger.tls_renewal_history(cert_name)
     if mode == "disabled":
         status.update(
             {

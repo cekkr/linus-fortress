@@ -64,6 +64,25 @@ class AuditLoggingTests(unittest.TestCase):
             self.assertEqual(rows, [("previous_action", None), ("related_action", "request-1")])
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_tls_renewal_history_is_bounded_and_can_read_existing_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "command log #1.db"
+            logger = CommandLogger(str(path))
+            for i in range(12):
+                logger.log("operator", "tls_renew", "api", "tls_renew", "example.com",
+                           {"dry_run": True}, request_id=f"attempt-{i}")
+            logger.log("operator", "tls_renew", "internal", "tls_renew", "example.com", request_id="internal")
+            logger.log("operator", "tls_renew", "api", "tls_renew", request_id="all-certificates")
+
+            history = CommandLogger(str(path)).tls_renewal_history("example.com")
+            self.assertEqual([entry["request_id"] for entry in history], [f"attempt-{i}" for i in range(11, 1, -1)])
+            self.assertEqual(logger.tls_renewal_history("other.example.com"), [])
+
+            path.unlink()
+            with self.assertLogs(level="ERROR"):
+                self.assertIsNone(logger.tls_renewal_history("example.com"))
+            self.assertFalse(path.exists())
+
     def test_exec_in_container_audits_success(self) -> None:
         events = []
 
