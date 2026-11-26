@@ -47,6 +47,21 @@ paths:
                     type: string
                   containers:
                     type: string
+                  credential:
+                    type: object
+                    description: Metadata for the credential used on this request.
+                    required: [type, expires_at, can_list_tokens]
+                    properties:
+                      type:
+                        type: string
+                        enum: [delegated, master]
+                      expires_at:
+                        type: string
+                        format: date-time
+                        nullable: true
+                      can_list_tokens:
+                        type: boolean
+                        description: Whether the credential has the API user administration permission.
   /monitoring/resources:
     get:
       summary: Capture host and container resource usage with alert flags
@@ -1125,6 +1140,14 @@ paths:
     get:
       summary: List delegated API users
       tags: [API Users]
+      description: Requires `api_user_admin`.
+      parameters:
+        - in: query
+          name: expiry_summary
+          description: Return usernames, masked token hints, and expiry status.
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: List of API users
@@ -1136,7 +1159,9 @@ paths:
                   users:
                     type: array
                     items:
-                      $ref: "#/components/schemas/APIUserRecordWithToken"
+                      oneOf:
+                        - $ref: "#/components/schemas/APIUserRecordWithToken"
+                        - $ref: "#/components/schemas/APIUserExpirySummary"
   /api-users/{token}:
     put:
       summary: Update delegated API user permissions or scope
@@ -3274,12 +3299,29 @@ components:
       allOf:
         - $ref: "#/components/schemas/APIUserRecord"
         - type: object
+          required: [token]
           properties:
             token:
               type: string
             expired:
               type: boolean
               description: Present in `GET /api-users`; true once `expires_at` has passed.
+    APIUserExpirySummary:
+      type: object
+      required: [username, token_hint, expires_at, expired]
+      properties:
+        username:
+          type: string
+        token_hint:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Normalized UTC timestamp when available.
+        expired:
+          type: boolean
+          description: True for elapsed or malformed expiry values.
     TerminalAccessPolicy:
       type: object
       properties:

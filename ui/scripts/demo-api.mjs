@@ -219,7 +219,16 @@ export function startDemoApi(port, options = {}) {
     // Drain bodies; the demo API never acts on them.
     req.resume();
 
-    if (p === "/status") return jsonResponse(res, { status: "ok", containers: data.containers });
+    if (p === "/status") return jsonResponse(res, {
+      status: "ok", containers: data.containers,
+      credential: { type: "delegated", expires_at: "2026-12-11T09:30:00Z", can_list_tokens: true },
+    });
+    if (p === "/api-users" && url.searchParams.get("expiry_summary") === "true") {
+      return jsonResponse(res, { users: [
+        { username: "ops", token_hint: "demo...0001", expires_at: "2026-12-11T09:30:00Z", expired: false },
+        { username: "deployment", token_hint: "demo...0002", expires_at: "2026-11-10T16:00:00Z", expired: true },
+      ] });
+    }
     if (p === "/containers/images/popular" && method === "GET") return jsonResponse(res, data.images);
     if (p === "/routing") return jsonResponse(res, { routes: data.routes });
     if (p === "/recipes" && method === "GET") return jsonResponse(res, { recipes: data.recipes });

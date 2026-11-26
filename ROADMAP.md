@@ -34,7 +34,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Expand integration coverage to routing/sites/firewall endpoint sequences with fixture-backed state setup.
 - Done: Delegated-token expiry (`ttl_seconds`/`expires_at` on create/update, `expired` flag in listings, CLI `api-users create --ttl` / `api-users expire`) and a 401 (missing/unknown/expired credential, with `WWW-Authenticate`) vs 403 (insufficient permission/scope) split, with a route-level status matrix in `tests/test_auth_tokens.py`.
 - Done: Lizard UI preserves the expiry reason when prompting for credentials and keeps requests denied with 403 in the operation view.
-- Next: Sweep (or flag in the WebUI) expired delegated tokens, and surface `expires_at` in the Lizard UI token/session views.
+- Done: Show the current delegated token's expiry in Settings. Authorized operators can review masked token summaries with expired entries first. Verify permission checks and expiry refresh after a token update through desktop and phone Chromium against the AlmaLinux 10.2 QEMU guest.
 
 ## Path 5: Recipes lifecycle management (mid term)
 - Done: Add export/import bundles for recipes.
@@ -56,7 +56,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add an opt-in persistent systemd timer for Certbot renewal, validate and reload nginx after each run, and report the latest outcome in Lizard UI Monitoring with its audit run ID.
 - Done: Install AlmaLinux 10.2 x86_64 from the minimal ISO in QEMU and boot with SELinux enforcing. Verify the systemd timer, nginx configuration rejection, Certbot lock contention, and matching audit run IDs through desktop and phone Chromium. The browser lab uses an empty LXD inventory fixture.
 - Next: Automate upstream refresh on IP change (polling or LXD DNS-based upstreams).
-- Next: Verify and configure the managed `sites-enabled` include during nginx bootstrap on RPM distributions.
+- Done: Verify the managed `sites-enabled` include during RPM bootstrap. Install it through nginx's HTTP configuration and roll back if verification or reload fails. Verify that real nginx on AlmaLinux 10.2 QEMU with SELinux enforcing rejects a broken route, then serves an extensionless managed route after recovery.
 
 ## Path 8: Lizard UI (app-based web manager) (short term)
 - Done: Add UI auth flow with server-side sessions backed by delegated tokens (no tokens in the browser).

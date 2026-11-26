@@ -25,7 +25,7 @@ Lizard UI, the optional web control deck, rendered against the demo API (placeho
 | ![Domain routing](docs/screenshots/routing.webp) | ![Firewall rules](docs/screenshots/firewall.webp) |
 | **Domain routing**: nginx routes, TLS modes, wildcard domains. | **Firewall**: backend status and rule inventory. |
 | ![VM labs](docs/screenshots/vms.webp) | ![Settings](docs/screenshots/settings.webp) |
-| **VM labs**: QEMU/VirtualBox VMs with start/stop/snapshot and configuration checks. | **Settings**: update + reload, system upgrade, and named fast-action profiles. |
+| **VM labs**: QEMU/VirtualBox VMs with start/stop/snapshot and configuration checks. | **Settings** shows delegated token expiry and includes update + reload, system upgrade, and named fast-action profiles. |
 | ![App card details panel](docs/screenshots/app-card-details.webp) | ![Admin sign-in overlay](docs/screenshots/admin-login.webp) |
 | **App card details**: the more-info panel opened from a card title. | **Admin sign-in**: UI admin gate (password policy, lockout, optional TOTP). |
 | ![Containers home with image catalog](docs/screenshots/containers.webp) | <img src="docs/screenshots/mobile-deck.webp" alt="Mobile layout" width="260"> |
@@ -139,6 +139,8 @@ The UI shows permission denials as operation errors. If Fortress rejects an expi
 ## Run Server Script
 
 `run-server.sh` bootstraps the host, writes `/etc/fortress/fortress.env`, and starts the API (and optional UI) in foreground, `screen`, or systemd service mode.
+
+On RPM-based hosts, bootstrap verifies that nginx reads Fortress site files from `/etc/nginx/sites-enabled/`. If needed, it configures the include in `/etc/nginx/conf.d/fortress-sites.conf` and reloads a running nginx. The main nginx configuration must include `conf.d/*.conf` inside its HTTP block for this to work. A failed verification or reload removes the new include.
 Use `--reset` to delete the saved env file and re-run the first-run configuration prompts. If an existing Fortress process or service is detected, the script will prompt to stop it before starting.
 When the API/UI bind to a non-loopback address, the script opens the corresponding ports via firewalld (RHEL/AlmaLinux) or ufw (Ubuntu) if the firewall is active.
 If `--mode service` is selected and the repo lives under `/root` or `/home` (or on a `noexec` mount), the script offers to relocate the clone to `/opt/linus-fortress` to avoid systemd/SELinux execution failures.
@@ -265,6 +267,7 @@ All endpoints require either `X-API-Key` or `X-User-Token`. Typed tokens (`api-k
 #### `GET /status` (permission `read_status`)
 - No body or query params; returns `{status, ram, disk, containers}` strings from `free`, `df`, and `lxc list --format json`.
 - For tokens with a non-empty `allowed_containers`, `containers` only lists in-scope containers (unparseable `lxc` output becomes `"[]"` for scoped tokens).
+- The `credential` object identifies the current credential's type, UTC `expires_at` (or `null`), and ability to list API users. Lizard UI shows delegated token expiry in Settings and refreshes it when syncing the deck.
 - Example: `fortress-cli status`
 
 #### `GET /monitoring/resources` (permission `read_status`)
@@ -686,6 +689,7 @@ Body:
 
 #### `GET /api-users` (permission `api_user_admin`)
 - Lists every token with `username`, `permissions`, scope, `created_at`, `expires_at`, and a computed `expired` flag.
+- Use `?expiry_summary=true` to retrieve usernames, masked token hints, expiry timestamps, and expired flags. Settings uses this summary to list expired tokens first. An invalid stored expiry appears as expired with an unavailable date.
 
 #### `PUT /api-users/{token}` (permission `api_user_admin`)
 Body may include:

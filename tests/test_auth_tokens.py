@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -191,6 +192,40 @@ class TokenLifecycleRouteTests(unittest.TestCase):
         users = {u["username"]: u for u in self.client.get("/api-users", headers=self.master).json()["users"]}
         self.assertTrue(users["old"]["expired"])
         self.assertFalse(users["reader"]["expired"])
+
+    def test_expiry_summary_omits_secrets_and_requires_token_admin(self):
+        records = {
+            "demo-legacy-secret": {"username": "broken", "expires_at": {"secret": "malformed"}},
+            "demo-future-secret": {"username": "future", "expires_at": "2099-01-01T14:00:00+02:00"},
+            "demo-expired-secret": {"username": "expired", "expires_at": "2001-01-01T00:00:00Z"},
+            **self._users_store(),
+        }
+        self.module.save_json(self.module.API_USERS_DB, records)
+        route = "/api-users?expiry_summary=true"
+        self.assertEqual(self.client.get(route, headers={"X-User-Token": "tok-reader"}).status_code, 403)
+        response = self.client.get(route, headers=self.master)
+        self.assertEqual(response.status_code, 200, response.text)
+        users = {user["username"]: user for user in response.json()["users"]}
+        self.assertEqual(users["broken"], {"username": "broken", "token_hint": "demo...cret", "expires_at": None, "expired": True})
+        self.assertEqual(users["future"]["expires_at"], "2099-01-01T12:00:00Z")
+        self.assertFalse(users["future"]["expired"])
+        self.assertTrue(users["expired"]["expired"])
+        self.assertFalse(users["reader"]["expired"])
+        self.assertNotIn("demo-future-secret", response.text)
+        self.assertNotIn("malformed", response.text)
+
+    def test_status_includes_only_the_callers_credential_metadata(self):
+        updated = self.client.put("/api-users/tok-reader", json={"expires_at": "2099-01-01T00:00:00Z"}, headers=self.master)
+        self.assertEqual(updated.status_code, 200, updated.text)
+        with mock.patch.object(self.module, "run_command", side_effect=["ram", "disk", "[]"] * 2):
+            response = self.client.get("/status", headers={"X-User-Token": "tok-reader"})
+            master = self.client.get("/status", headers=self.master)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("tok-reader", response.text)
+        self.assertEqual(response.json()["credential"], {
+            "type": "delegated", "expires_at": "2099-01-01T00:00:00Z", "can_list_tokens": False,
+        })
+        self.assertEqual(master.json()["credential"], {"type": "master", "expires_at": None, "can_list_tokens": True})
 
     def test_update_extends_and_clears_expiry(self):
         resp = self.client.put("/api-users/tok-expired", json={"ttl_seconds": 600}, headers=self.master)

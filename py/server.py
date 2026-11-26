@@ -981,7 +981,16 @@ def system_status(x_api_key: Optional[str] = Header(default=None), x_user_token:
         "disk_head": disk.splitlines()[0] if disk else "",
         "scoped": bool(auth_context.get("allowed_containers")),
     })
-    return {"status": "operational", "ram": ram, "disk": disk, "containers": containers}
+    user = auth_context["user_record"]
+    permissions = auth_context["permissions"]
+    return {
+        "status": "operational", "ram": ram, "disk": disk, "containers": containers,
+        "credential": {
+            "type": "delegated" if user is not None else "master",
+            "expires_at": format_expiry(parse_expiry(user.get("expires_at"))) if user is not None else None,
+            "can_list_tokens": "*" in permissions or "api_user_admin" in permissions,
+        },
+    }
 
 @app.get("/monitoring/resources")
 def monitoring_resources(
@@ -1447,10 +1456,31 @@ def create_api_user(user: APIUserCreate, x_api_key: Optional[str] = Header(defau
         raise
 
 @app.get("/api-users")
-def list_api_users(x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
+def list_api_users(
+    x_api_key: Optional[str] = Header(default=None),
+    x_user_token: Optional[str] = Header(default=None),
+    expiry_summary: bool = False,
+):
     authorize("api_user_list", "api_user_admin", x_api_key, x_user_token)
     users = load_api_users()
-    response = [_present_api_user(token, info) for token, info in users.items()]
+    if expiry_summary:
+        now = _utcnow()
+        response = []
+        for token, record in users.items():
+            try:
+                expiry = parse_expiry(record.get("expires_at"))
+                expired = expiry is not None and expiry <= now
+            except (TypeError, ValueError):
+                expiry = None
+                expired = True
+            response.append({
+                "username": record.get("username", "api-user"),
+                "token_hint": mask_token(token),
+                "expires_at": format_expiry(expiry),
+                "expired": expired,
+            })
+    else:
+        response = [_present_api_user(token, info) for token, info in users.items()]
     audit_api("api_user_list", details={"count": len(response)})
     return {"users": response}
 

@@ -56,7 +56,9 @@ const state = {
     active: false,
     mode: "none",
     session: false,
+    credential: null,
   },
+  tokenInventory: null,
   admin: {
     active: false,
     username: null,
@@ -2371,10 +2373,46 @@ function renderAppHome(node) {
       ${actionsMarkup ? `<div class="app-home-actions">${actionsMarkup}</div>` : ""}
       ${model.notice ? `<div class="event-item${model.notice.error ? " error" : ""}" role="${model.notice.error ? "alert" : "status"}" data-backup-notice>${escapeHtml(model.notice.message)}</div>` : ""}
       ${node?.id === "monitoring" && !state.monitoringLoading ? renderScheduledTlsRenewal(state.monitoring?.scheduled_tls_renewal) : ""}
+      ${node?.id === "settings" ? renderTokenSettings() : ""}
       <section class="app-home-section">
         <div class="app-home-section-title">${escapeHtml(model.itemsTitle || "Latest Signals")}</div>
         ${itemsMarkup}
       </section>
+    </section>
+  `;
+}
+
+function renderTokenSettings() {
+  const credential = state.auth.credential;
+  if (!credential) return "";
+  const inventory = state.tokenInventory;
+  const expiryTime = (value, fallback) => value
+    ? `<time datetime="${escapeHtml(value)}">${escapeHtml(new Date(value).toLocaleString())}</time>`
+    : fallback;
+  const users = inventory?.users || [];
+  const rows = users.map((user) => `
+    <div class="event-item">
+      <strong>${escapeHtml(user.username)}</strong>
+      ${user.token_hint ? `<span class="muted">${escapeHtml(user.token_hint)}</span>` : ""}
+      <div class="card-meta">
+        <span class="pill ${user.expired ? "danger" : "running"}">${user.expired ? "Expired" : "Active"}</span>
+        ${expiryTime(user.expires_at, user.expired ? "Expiry unavailable" : "No expiry")}
+      </div>
+    </div>
+  `).join("");
+  return `
+    <section class="app-home-section" aria-label="API credentials">
+      <div class="app-home-section-title">API credentials</div>
+      ${credential.type === "delegated" ? `<div>Current delegated token · Expiry ${expiryTime(credential.expires_at, "None")}</div>` : ""}
+      ${credential.can_list_tokens ? `
+        <div class="card-actions">
+          <button type="button" class="action ghost" data-action-id="settings-token-expiry" ${inventory?.loading ? "disabled" : ""}>
+            ${inventory?.loading ? "Loading…" : "Review token expiry"}
+          </button>
+        </div>
+        ${inventory?.error ? `<div class="event-item error" role="alert">${escapeHtml(inventory.error)}</div>` : ""}
+        ${inventory?.users ? rows || '<div class="app-home-empty">No delegated tokens.</div>' : ""}
+      ` : ""}
     </section>
   `;
 }
@@ -6808,7 +6846,9 @@ function setAuthState(payload) {
   state.auth.active = Boolean(payload && payload.active);
   state.auth.mode = payload && payload.mode ? payload.mode : "none";
   state.auth.session = Boolean(payload && payload.session);
+  state.auth.credential = payload?.credential || null;
   if (!state.auth.active) {
+    state.tokenInventory = null;
     state.containerBackups.clear();
     stopImageCatalogRefreshLoop();
   }
@@ -6838,6 +6878,8 @@ function showAuthOverlay(message) {
   state.auth.active = false;
   state.auth.mode = "none";
   state.auth.session = false;
+  state.auth.credential = null;
+  state.tokenInventory = null;
   state.containerBackups.clear();
   if (state.wizard.mode === "container-restore") {
     closeWizardState();
@@ -7745,6 +7787,22 @@ async function handleAction(actionId, node, params = {}) {
       selectNode("settings");
     } else {
       logEvent("error", "Settings app is not available");
+    }
+    return;
+  }
+
+  if (actionId === "settings-token-expiry") {
+    const inventory = { loading: true, users: null, error: null };
+    state.tokenInventory = inventory;
+    refreshSelectedLeafHome();
+    try {
+      const payload = await apiRequest("/api/tokens/expiry");
+      inventory.users = payload.users.sort((a, b) => Number(b.expired) - Number(a.expired));
+    } catch (err) {
+      inventory.error = err.message || "Could not load delegated token expiry.";
+    } finally {
+      inventory.loading = false;
+      if (state.tokenInventory === inventory) refreshSelectedLeafHome();
     }
     return;
   }
@@ -9012,6 +9070,10 @@ async function loadGraph(options = {}) {
   state.rootId = response.rootId || "home";
   state.containers = response.containers || [];
   state.fortress = response.fortress || { status: "unknown" };
+  if (state.fortress.status === "ok") {
+    state.auth.credential = response.credential || null;
+    if (!state.auth.credential?.can_list_tokens) state.tokenInventory = null;
+  }
   syncFortressStatusDebug();
   buildNodeIndex(state.nodes);
   if (state.terminal.sessionId && state.terminal.nodeId && !state.nodesById.has(state.terminal.nodeId)) {

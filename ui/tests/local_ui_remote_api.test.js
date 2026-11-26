@@ -45,10 +45,31 @@ async function fetchJson(url, options = {}) {
 }
 
 function startStubApi(port) {
+  let statusRequests = 0;
   const server = createServer((req, res) => {
     if (req.url === "/status") {
+      statusRequests += 1;
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", containers: [] }));
+      res.end(JSON.stringify({
+        status: "ok", containers: [],
+        credential: {
+          type: "delegated", expires_at: statusRequests === 1 ? "2099-01-01T00:00:00Z" : "2099-02-01T00:00:00Z",
+          can_list_tokens: true, token: "unexpected-upstream-secret",
+        },
+      }));
+      return;
+    }
+    if (req.url === "/api-users?expiry_summary=true") {
+      if (req.headers["x-user-token"] !== "demo-token") {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ detail: "Permission denied" }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ users: [{
+        username: "expired-fixture", token_hint: "exam...mple", expired: true,
+        expires_at: "2001-01-01T00:00:00Z", token: "unexpected-upstream-secret",
+      }] }));
       return;
     }
     res.writeHead(404, { "Content-Type": "application/json" });
@@ -123,6 +144,27 @@ test("local UI + remote API config allows admin bootstrap and delegated session"
       body: JSON.stringify({ token: "demo-token" }),
     });
     assert.equal(tokenResp.status, 200);
+
+    const adminSession = Array.isArray(adminCookie) ? adminCookie[0] : adminCookie;
+    const sessionCookie = tokenResp.headers["set-cookie"];
+    const tokenSession = Array.isArray(sessionCookie) ? sessionCookie[0] : sessionCookie;
+    const headers = { Cookie: [adminSession, tokenSession].map((cookie) => cookie.split(";")[0]).join("; ") };
+    const session = await fetchJson(`${baseUrl}/api/session`, { headers });
+    assert.deepEqual(session.payload.credential, {
+      type: "delegated", expires_at: "2099-01-01T00:00:00.000Z", can_list_tokens: true,
+    });
+    const apps = await fetchJson(`${baseUrl}/api/apps`, { headers });
+    assert.equal(apps.payload.credential.expires_at, "2099-02-01T00:00:00.000Z");
+    const refreshed = await fetchJson(`${baseUrl}/api/session`, { headers });
+    assert.deepEqual(refreshed.payload.credential, apps.payload.credential);
+
+    const inventory = await fetchJson(`${baseUrl}/api/tokens/expiry`, { headers });
+    assert.equal(inventory.status, 200);
+    assert.deepEqual(inventory.payload.users, [{
+      username: "expired-fixture", token_hint: "exam...mple", expires_at: "2001-01-01T00:00:00.000Z", expired: true,
+    }]);
+    const denied = await fetchJson(`${baseUrl}/api/tokens/expiry`, { headers: { Cookie: adminSession.split(";")[0] } });
+    assert.equal(denied.status, 403);
   } finally {
     proc.kill("SIGTERM");
     apiServer.close();

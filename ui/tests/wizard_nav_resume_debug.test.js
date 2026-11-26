@@ -40,7 +40,7 @@ function jsonResponse(res, payload, status = 200) {
   res.end(JSON.stringify(payload));
 }
 
-function startStubApi(port) {
+function startStubApi(port, { tokenExpiry = false } = {}) {
   const upgrades = [];
   const vmQueries = [];
   const vmSnapshotRequests = [];
@@ -48,9 +48,20 @@ function startStubApi(port) {
   let failPreflight = false;
   let failFirewallStatus = false;
   const server = createServer(async (req, res) => {
-    const pathname = new URL(req.url || "/", `http://127.0.0.1:${port}`).pathname;
+    const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
+    const { pathname } = url;
     if (pathname === "/status") {
-      jsonResponse(res, { status: "ok", containers: [] });
+      const credential = tokenExpiry
+        ? { type: "delegated", expires_at: "2099-01-01T00:00:00Z", can_list_tokens: true }
+        : undefined;
+      jsonResponse(res, { status: "ok", containers: [], credential });
+      return;
+    }
+    if (pathname === "/api-users" && tokenExpiry && url.searchParams.get("expiry_summary") === "true") {
+      jsonResponse(res, { users: [
+        { username: "current", expired: false, expires_at: "2099-01-01T00:00:00Z", token_hint: "act1...act2" },
+        { username: "retired", expired: true, expires_at: "2020-01-01T00:00:00Z", token_hint: "old1...old2", token: "private-fixture-token" },
+      ] });
       return;
     }
     if (pathname === "/containers/images/popular") {
@@ -160,11 +171,11 @@ function startStubApi(port) {
   });
 }
 
-async function launchHarness() {
+async function launchHarness(options) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fortress-ui-"));
   const apiPort = await getFreePort();
   const uiPort = await getFreePort();
-  const api = await startStubApi(apiPort);
+  const api = await startStubApi(apiPort, options);
   const proc = spawn("node", ["server.js"], {
     cwd: path.resolve(path.join(__dirname, "..")),
     env: {
@@ -201,6 +212,33 @@ async function loadPuppeteer(t) {
     return null;
   }
 }
+
+test("Settings shows the delegated session expiry and flags expired tokens", async (t) => {
+  const puppeteer = await loadPuppeteer(t);
+  if (!puppeteer) return;
+  const harness = await launchHarness({ tokenExpiry: true });
+  let browser;
+  try {
+    browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 390, height: 844 });
+    await page.goto(`http://127.0.0.1:${harness.uiPort}`, { waitUntil: "networkidle0" });
+    await login(page);
+    await page.locator('.app-card[data-node-id="settings"] .card-icon-button').click();
+    const credentials = '[aria-label="API credentials"]';
+    await page.waitForSelector(`${credentials} time[datetime="2099-01-01T00:00:00.000Z"]`);
+    await page.locator('[data-action-id="settings-token-expiry"]').click();
+    await page.waitForSelector(`${credentials} .pill.danger`);
+    const rows = await page.$$eval(`${credentials} .event-item`, (items) => items.map((item) => item.textContent));
+    assert.match(rows[0], /retired[\s\S]*Expired/);
+    assert.match(rows[1], /current[\s\S]*Active/);
+    assert.doesNotMatch(rows.join(""), /private-fixture-token/);
+  } finally {
+    await browser?.close();
+    harness.proc.kill("SIGTERM");
+    harness.api.server.close();
+  }
+});
 
 test("Firewall displays live connection-limit diagnostics from the session proxy", async (t) => {
   const puppeteer = await loadPuppeteer(t);

@@ -566,6 +566,51 @@ ensure_node_deps() {
   (cd "${UI_DIR}" && npm install)
 }
 
+ensure_nginx_sites_include() (
+  nginx_dir=${1:-/etc/nginx}
+  enabled_dir="${nginx_dir}/sites-enabled"
+  managed_include="${nginx_dir}/conf.d/fortress-sites.conf"
+  candidate=""
+  installed=0
+
+  mkdir -p -m 0755 -- "${nginx_dir}/sites-available" "$enabled_dir" || exit 1
+  # Fortress names route files after domains without a .conf suffix.
+  probe=$(mktemp "${enabled_dir}/fortress-include-check.XXXXXXXX") || exit 1
+  trap '
+    rm -f -- "$probe"
+    if [[ -n "$candidate" ]]; then rm -f -- "$candidate"; fi
+    if (( installed )); then rm -f -- "$managed_include"; fi
+  ' EXIT
+
+  dump=$(nginx -T) || exit 1
+  if grep -Fxq "# configuration file ${probe}:" <<< "$dump"; then
+    exit 0
+  fi
+
+  candidate=$(mktemp "${nginx_dir}/conf.d/.fortress-sites.XXXXXXXX") || exit 1
+  printf 'include %s/*;\n' "$enabled_dir" > "$candidate" || exit 1
+  chmod 0644 "$candidate" || exit 1
+  # Publish without overwriting an existing operator file or following a symlink.
+  ln -T -- "$candidate" "$managed_include" || exit 1
+  installed=1
+  dump=$(nginx -T) || exit 1
+  if ! grep -Fxq "# configuration file ${probe}:" <<< "$dump"; then
+    log "nginx did not load ${managed_include}; include conf.d/*.conf inside its http block."
+    exit 1
+  fi
+
+  rm -f -- "$probe" || exit 1
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
+    if ! systemctl reload nginx; then
+      rm -f -- "$managed_include" || exit 1
+      installed=0
+      systemctl reload nginx || log "Warning: nginx could not reload its previous configuration."
+      exit 1
+    fi
+  fi
+  installed=0
+)
+
 ensure_certbot() {
   local manager=$1
   if command -v certbot >/dev/null 2>&1; then
@@ -1229,6 +1274,9 @@ main() {
     fi
   fi
   ensure_packages_installed "$manager" "${base_packages[@]}"
+  if [[ "$manager" != "apt" ]]; then
+    ensure_nginx_sites_include || fail "Could not activate Fortress sites in nginx; check the nginx configuration and service."
+  fi
   ensure_python_venv_support "$manager"
   if [[ "${is_almalinux}" == "1" ]]; then
     if ! command -v lxc >/dev/null 2>&1 || ! command -v lxd >/dev/null 2>&1; then

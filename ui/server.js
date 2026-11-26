@@ -365,29 +365,33 @@ function buildOtpAuthUrl(username, secret) {
   return `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&digits=${TOTP_DIGITS}&period=${TOTP_STEP_SECONDS}`;
 }
 
-function createSession(token) {
+function createSession(token, credential) {
   const id = crypto.randomBytes(24).toString("hex");
   const ttl = Number.isFinite(SESSION_TTL_SECONDS) && SESSION_TTL_SECONDS > 0 ? SESSION_TTL_SECONDS : 0;
   const expiresAt = ttl ? Date.now() + ttl * 1000 : null;
-  sessions.set(id, { token, expiresAt });
+  sessions.set(id, { token, expiresAt, credential });
   return id;
 }
 
-function getSessionToken(req) {
+function getSession(req) {
   const cookies = parseCookies(req.headers.cookie);
   const sessionId = cookies[SESSION_COOKIE];
   if (!sessionId) {
-    return "";
+    return null;
   }
   const session = sessions.get(sessionId);
   if (!session) {
-    return "";
+    return null;
   }
   if (session.expiresAt && session.expiresAt <= Date.now()) {
     sessions.delete(sessionId);
-    return "";
+    return null;
   }
-  return session.token;
+  return session;
+}
+
+function getSessionToken(req) {
+  return getSession(req)?.token || "";
 }
 
 function clearSession(req) {
@@ -754,8 +758,22 @@ function normalizeContainer(raw) {
   };
 }
 
-async function getContainers(tokenOverride) {
-  const payload = await fortressRequest("GET", "/status", null, tokenOverride);
+function readExpiry(value) {
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return null;
+  return new Date(value).toISOString();
+}
+
+function readCredential(payload) {
+  const credential = payload?.credential;
+  if (credential?.type !== "delegated" && credential?.type !== "master") return undefined;
+  return {
+    type: credential.type,
+    expires_at: readExpiry(credential.expires_at),
+    can_list_tokens: credential.can_list_tokens === true,
+  };
+}
+
+function containersFromStatus(payload) {
   let containers = [];
   if (payload && Array.isArray(payload.containers)) {
     containers = payload.containers;
@@ -1403,10 +1421,12 @@ app.get(
   "/api/session",
   asyncHandler(async (req, res) => {
     const mode = resolveAuthMode(req);
+    const session = getSession(req);
     res.json({
       active: mode !== "none",
       mode,
-      session: Boolean(getSessionToken(req)),
+      session: Boolean(session),
+      credential: session?.credential,
     });
   })
 );
@@ -1422,8 +1442,8 @@ app.post(
       res.status(400).json({ error: "Missing delegated token." });
       return;
     }
-    await fortressRequest("GET", "/status", null, resolvedToken);
-    const sessionId = createSession(resolvedToken);
+    const status = await fortressRequest("GET", "/status", null, resolvedToken);
+    const sessionId = createSession(resolvedToken, readCredential(status));
     setSessionCookie(res, sessionId);
     res.json({ message: "Session established." });
   })
@@ -1445,8 +1465,13 @@ app.get(
     let containers = [];
     let fortressStatus = "ok";
     let fortressError = null;
+    let credential;
     try {
-      containers = await getContainers(getSessionToken(req));
+      const session = getSession(req);
+      const status = await fortressRequest("GET", "/status", null, session?.token);
+      containers = containersFromStatus(status);
+      credential = readCredential(status);
+      if (session) session.credential = credential;
     } catch (err) {
       fortressStatus = "error";
       fortressError = err.message;
@@ -1456,6 +1481,7 @@ app.get(
       rootId,
       nodes,
       containers,
+      credential,
       fortress: {
         status: fortressStatus,
         error: fortressError,
@@ -1468,8 +1494,24 @@ app.get(
 app.get(
   "/api/containers",
   asyncHandler(async (req, res) => {
-    const containers = await getContainers(getSessionToken(req));
-    res.json({ containers });
+    const status = await fortressRequest("GET", "/status", null, getSessionToken(req));
+    res.json({ containers: containersFromStatus(status) });
+  })
+);
+
+app.get(
+  "/api/tokens/expiry",
+  asyncHandler(async (req, res) => {
+    const payload = await fortressRequestFor(req, "GET", "/api-users?expiry_summary=true");
+    const users = Array.isArray(payload?.users) ? payload.users : [];
+    res.json({
+      users: users.map((user) => ({
+        username: typeof user?.username === "string" ? user.username : "api-user",
+        token_hint: typeof user?.token_hint === "string" ? user.token_hint : null,
+        expires_at: readExpiry(user?.expires_at),
+        expired: user?.expired === true,
+      })),
+    });
   })
 );
 

@@ -268,13 +268,15 @@ const SHOTS = [
   {
     id: "settings",
     title: "Settings",
-    caption: "Update + reload, guided system upgrade, and named fast-action profiles.",
+    caption: "Update + reload, guided system upgrade, named fast-action profiles, and delegated token expiry.",
     viewport: DESKTOP,
     prepare: async (page) => {
       await openApp(page, "settings");
       await page.locator("#fast-action-profile-name").fill("Maintenance");
       await page.locator('#fast-action-profile-form button[type="submit"]').click();
       await page.waitForFunction(() => document.getElementById("fast-action-profile")?.value === "Maintenance");
+      await page.locator('[data-action-id="settings-token-expiry"]').click();
+      await page.waitForSelector('[aria-label="API credentials"] .pill.danger');
       await settle(page);
     },
   },
