@@ -2008,6 +2008,10 @@ body {
   color: var(--event-item-error-fg);
 }
 
+.scheduled-tls-renewal {
+  overflow-wrap: anywhere;
+}
+
 .meter {
   position: relative;
   height: 14px;

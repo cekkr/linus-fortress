@@ -1008,7 +1008,7 @@ def monitoring_resources(
     include_history: bool = False,
     history_samples: int = 12,
 ):
-    authorize("monitoring_resources", "read_status", x_api_key, x_user_token)
+    auth_context = authorize("monitoring_resources", "read_status", x_api_key, x_user_token)
     host_thresholds = {
         "memory_percent": host_memory_threshold,
         "disk_percent": host_disk_threshold,
@@ -1054,6 +1054,8 @@ def monitoring_resources(
                 snapshot["history_samples"] = history[-max(1, history_samples) :]
         except Exception:
             snapshot["history_samples"] = []
+    if not auth_context.get("allowed_containers"):
+        snapshot["scheduled_tls_renewal"] = command_logger.scheduled_tls_renewal()
     alert_summary = {
         "host_alerts": len(snapshot.get("alerts", {}).get("host", [])),
         "containers": {name: len(alerts) for name, alerts in snapshot.get("alerts", {}).get("containers", {}).items()},

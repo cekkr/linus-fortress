@@ -10,8 +10,8 @@ Lizard UI, the optional web control deck, rendered against the demo API (placeho
 | --- | --- |
 | ![Control deck: app cards, fast actions, pages tree, and inspector panels](docs/screenshots/deck-home.webp) | ![A LAMP container with its sub-apps and quick actions](docs/screenshots/container-lamp.webp) |
 | **Control deck**: app cards, fast-actions bar, pages tree, and inspector (preview, operation, command log, debug). | **LAMP container**: per-container sub-apps (access, network, packages, recipes, backups, terminal) and lifecycle/snapshot controls. |
-| ![Create-container wizard with step strip and image catalog](docs/screenshots/create-container-wizard.webp) | ![Monitoring home with host metrics and container alerts](docs/screenshots/monitoring.webp) |
-| **Guided wizards**: full-stage slides with step breadcrumbs, validation, ← / → keys and swipe navigation, and resume after a page refresh. | **Monitoring**: host and container CPU/RAM/disk, threshold alerts, and CPU history. |
+| ![Create-container wizard with step strip and image catalog](docs/screenshots/create-container-wizard.webp) | ![Monitoring home with host metrics and a scheduled TLS renewal alert](docs/screenshots/monitoring.webp) |
+| **Guided wizards**: full-stage slides with step breadcrumbs, validation, ← / → keys and swipe navigation, and resume after a page refresh. | **Monitoring** shows host and container metrics, threshold alerts, CPU history, and scheduled TLS renewal failures. |
 | ![Sites home with TLS renewal history, runtime, database, and backups](docs/screenshots/sites.webp) | ![Recipes home with LAMP health-check trend](docs/screenshots/recipes.webp) |
 | **PHP sites**: runtime, TLS status, database binding, and backups with rollback. | **Recipes**: versioned install recipes and LAMP health-check trends. |
 | ![Stored LXD backups with Download, Verify, and Restore actions](docs/screenshots/backups.webp) | |
@@ -297,6 +297,7 @@ All endpoints require either `X-API-Key` or `X-User-Token`. Typed tokens (`api-k
 }
 ```
 - Designed for automation: anomalous usage (memory/disk saturation, runaway processes, high host load) surfaces in `alerts`, while rate spikes (CPU/network deltas) appear in `anomalies` for downstream tooling.
+- With unrestricted container scope, `scheduled_tls_renewal` reports the latest completed Fortress timer run. Its status is `never_run`, `unavailable`, `success`, or `error`. Recorded results include `timestamp`, `run_id`, and `failed_steps`. Lizard UI Monitoring flags a failed run until the next successful run. See [Scheduled TLS renewal](#scheduled-tls-renewal).
 
 #### `POST /routing/add` (permission `manage_routing`, container scoped)
 Body:
@@ -361,6 +362,23 @@ Body:
 - Provide `domain` to target a managed route or site. The token must cover the matching container and any other managed containers using the same certificate.
 - With unrestricted container scope, provide `cert_name` without a domain to target a Certbot certificate, or omit both to renew all certificates.
 - Fortress audits completed and failed calls. Calls that reach the named-certificate renewal step contribute to that certificate's history, including dry runs.
+
+#### Scheduled TLS renewal
+
+Fortress ships opt-in systemd units for a host with running nginx and Certbot-managed certificates. The service runs `certbot renew` non-interactively and validates and reloads nginx. It reloads after a partial Certbot failure so nginx can pick up certificates that did renew, and retries a prior reload failure on later runs. The timer checks twice daily with up to one hour of jitter and catches up after downtime.
+
+Use a root-owned installation and Python environment. From the repository root, install and enable the units. If your installation lives outside `/opt/linus-fortress`, adjust `WorkingDirectory` and `ExecStart` in the service. Disable any existing Certbot timer or cron renewal job for the same certificate store to avoid duplicate work and lock contention.
+
+```bash
+sudo install -m 0644 scripts/systemd/fortress-tls-renewal.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now fortress-tls-renewal.timer
+sudo systemctl start fortress-tls-renewal.service
+systemctl list-timers fortress-tls-renewal.timer
+sudo journalctl -u fortress-tls-renewal.service
+```
+
+The service shares the API's SQLite audit register and runs without API credentials. If the API uses a custom `FORTRESS_COMMAND_LOG_DB`, supply the same setting in the renewal service's `[Service]` drop-in. Lizard UI shows the last recorded outcome, failed steps, and run ID in Monitoring. For host-side alert delivery, monitor failed units or configure systemd `OnFailure=` with your notifier. Inspect the service journal and Certbot's own log for renewal issues, or run `sudo nginx -t` for nginx configuration errors.
 
 ### Website Management
 

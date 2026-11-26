@@ -57,6 +57,12 @@ class CommandLogger:
                     WHERE category = 'api' AND action = 'tls_renew' AND target IS NOT NULL
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS command_log_tls_renewal_scheduled ON command_log (id DESC)
+                    WHERE category = 'internal' AND action = 'tls_renew_scheduled'
+                    """
+                )
         except (OSError, sqlite3.Error) as exc:
             logging.error("Unable to initialize command log database: %s", exc)
 
@@ -92,6 +98,41 @@ class CommandLogger:
             })
         return history
 
+    def scheduled_tls_renewal(self) -> Dict[str, Any]:
+        """Read the latest completed scheduler run without exposing command output."""
+        try:
+            uri = Path(self.db_path).absolute().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as conn:
+                row = conn.execute(
+                    """
+                    SELECT strftime('%Y-%m-%dT%H:%M:%SZ', timestamp), status, details, request_id
+                    FROM command_log
+                    WHERE category = 'internal' AND action = 'tls_renew_scheduled'
+                    ORDER BY id DESC LIMIT 1
+                    """
+                ).fetchone()
+        except sqlite3.Error as exc:
+            logging.error("Unable to read scheduled TLS renewal: %s", exc)
+            return {"status": "unavailable"}
+        if row is None:
+            return {"status": "never_run"}
+
+        timestamp, status, details, run_id = row
+        try:
+            metadata = json.loads(details or "{}")
+        except ValueError:
+            metadata = {}
+        steps = metadata.get("failed_steps") if isinstance(metadata, dict) else None
+        return {
+            "timestamp": timestamp,
+            "status": status,
+            "run_id": run_id,
+            "failed_steps": [
+                step for step in ("certbot", "nginx_config", "nginx_reload")
+                if isinstance(steps, list) and step in steps
+            ],
+        }
+
     def log(
         self,
         actor: str,
@@ -102,7 +143,7 @@ class CommandLogger:
         details: Optional[Dict[str, Any]] = None,
         status: str = "success",
         request_id: Optional[str] = None,
-    ):
+    ) -> bool:
         payload = json.dumps(details, default=str) if details is not None else None
         try:
             with self._lock:
@@ -114,5 +155,7 @@ class CommandLogger:
                         """,
                         (actor, endpoint, category, action, target, payload, status, request_id),
                     )
+            return True
         except (OSError, sqlite3.Error) as exc:
             logging.error("Failed to persist audit log entry: %s", exc)
+            return False

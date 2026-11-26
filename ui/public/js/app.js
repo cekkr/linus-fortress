@@ -2061,7 +2061,8 @@ function buildAppHomeModel(node) {
     const snapshot = state.monitoring || null;
     const host = snapshot && snapshot.host ? snapshot.host : {};
     const alerts = snapshot && snapshot.alerts ? snapshot.alerts : {};
-    const hostAlerts = Array.isArray(alerts.host) ? alerts.host.length : 0;
+    const hostAlerts = (Array.isArray(alerts.host) ? alerts.host.length : 0)
+      + Number(snapshot?.scheduled_tls_renewal?.status === "error");
     const containerAlerts = alerts.containers && typeof alerts.containers === "object" ? alerts.containers : {};
     const containerAlertCount = Object.values(containerAlerts).reduce(
       (sum, value) => sum + (Array.isArray(value) ? value.length : 0),
@@ -2369,6 +2370,7 @@ function renderAppHome(node) {
       ${metricsMarkup}
       ${actionsMarkup ? `<div class="app-home-actions">${actionsMarkup}</div>` : ""}
       ${model.notice ? `<div class="event-item${model.notice.error ? " error" : ""}" role="${model.notice.error ? "alert" : "status"}" data-backup-notice>${escapeHtml(model.notice.message)}</div>` : ""}
+      ${node?.id === "monitoring" && !state.monitoringLoading ? renderScheduledTlsRenewal(state.monitoring?.scheduled_tls_renewal) : ""}
       <section class="app-home-section">
         <div class="app-home-section-title">${escapeHtml(model.itemsTitle || "Latest Signals")}</div>
         ${itemsMarkup}
@@ -3179,6 +3181,37 @@ function renderPackagesPreview(node) {
   `;
 }
 
+function renderScheduledTlsRenewal(run, announce = true) {
+  if (!run) return "";
+  const messages = {
+    success: "Latest run succeeded",
+    error: "Latest run failed",
+    never_run: "No runs recorded",
+    unavailable: "Audit register unavailable",
+  };
+  const steps = {
+    certbot: "Certbot renewal",
+    nginx_config: "nginx configuration check",
+    nginx_reload: "nginx reload",
+  };
+  const failed = run.status === "error";
+  const failures = Array.isArray(run.failed_steps)
+    ? run.failed_steps.filter((step) => Object.hasOwn(steps, step)).map((step) => steps[step])
+    : [];
+  const tone = failed ? "danger" : run.status === "success" ? "running" : "soon";
+  return `
+    <section class="event-item scheduled-tls-renewal${failed ? " error" : ""}" aria-label="Scheduled TLS renewal" ${failed && announce ? 'role="alert"' : ""}>
+      <strong>Scheduled TLS renewal</strong>
+      <div class="card-meta">
+        <span class="pill ${tone}">${escapeHtml(messages[run.status] || "Unknown status")}</span>
+        ${run.timestamp ? `<time datetime="${escapeHtml(run.timestamp)}">${escapeHtml(run.timestamp)}</time>` : ""}
+      </div>
+      ${failures.length ? `<div>${escapeHtml(failures.join(" · "))}</div>` : ""}
+      ${run.run_id ? `<div class="muted">Run ID ${escapeHtml(run.run_id)}</div>` : ""}
+    </section>
+  `;
+}
+
 function renderMonitoringPreview(node) {
   if (state.monitoringLoading) {
     elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>Loading monitoring snapshot...</div>`;
@@ -3191,7 +3224,7 @@ function renderMonitoringPreview(node) {
   }
   const host = snapshot.host || {};
   const alerts = snapshot.alerts || {};
-  const hostAlerts = (alerts.host || []).length;
+  const hostAlerts = (alerts.host || []).length + Number(snapshot.scheduled_tls_renewal?.status === "error");
   const containerAlerts = alerts.containers || {};
   const chartBar = (value, label, max = 100) => {
     const width = Math.max(0, Math.min(100, Math.round((Number(value) || 0) / max * 100)));
@@ -3217,9 +3250,10 @@ function renderMonitoringPreview(node) {
     <div class="preview-title">${node.title}</div>
     <div>Host CPU ${host.cpu_percent ?? "?"}% • RAM ${host.memory_percent ?? "?"}% • Disk ${host.disk_percent ?? "?"}%</div>
     <div class="card-meta">
-      ${hostAlerts ? `<span class="pill danger">${hostAlerts} host alerts</span>` : `<span class="pill running">host ok</span>`}
+      ${hostAlerts ? `<span class="pill danger">${hostAlerts} host alert${hostAlerts === 1 ? "" : "s"}</span>` : `<span class="pill running">host ok</span>`}
       <span class="pill">${Object.keys(containerAlerts).length} container alerts tracked</span>
     </div>
+    ${renderScheduledTlsRenewal(snapshot.scheduled_tls_renewal, false)}
     ${chartBar(host.cpu_percent, "CPU")}
     ${chartBar(host.memory_percent, "RAM")}
     ${chartBar(host.disk_percent, "Disk")}

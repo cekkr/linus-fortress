@@ -111,6 +111,12 @@ export function buildDemoData() {
       containers: { "lamp-shop": [], "api-gateway": [], "worker-queue": ["cpu_percent above 85"] },
     },
     anomalies: { containers: { "worker-queue": ["cpu delta spike"] } },
+    scheduled_tls_renewal: {
+      status: "error",
+      timestamp: "2026-11-11T00:36:12Z",
+      run_id: "demo-renewal-06",
+      failed_steps: ["certbot"],
+    },
     history_samples: [28, 31, 35, 33, 38, 44, 40, 37, 42, 41.6].map((cpu) => ({ host: { cpu_percent: cpu } })),
   };
 

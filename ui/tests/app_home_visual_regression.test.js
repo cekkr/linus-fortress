@@ -66,7 +66,7 @@ function makeStatusPayload() {
   };
 }
 
-function makeStubApi(port) {
+function makeStubApi(port, monitoringState) {
   const routes = [
     {
       domain: "app.example.com",
@@ -238,7 +238,7 @@ function makeStubApi(port) {
       return;
     }
     if (cleanPath === "/monitoring/resources") {
-      jsonResponse(res, monitoring);
+      jsonResponse(res, { ...monitoring, ...monitoringState });
       return;
     }
     if (cleanPath === "/firewall/status") {
@@ -333,9 +333,9 @@ async function openAppHome(page, appId, expectedTitle) {
     {},
     selector
   );
-  await page.$eval(selector, (el) => {
-    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-  });
+  await page.evaluate((target) => {
+    document.querySelector(target)?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  }, selector);
   await page.waitForSelector("#app-grid .app-home-shell", { visible: true });
   await page.waitForFunction(
     (title) => {
@@ -477,7 +477,8 @@ test("visual regression for all top-level app homes and per-item actions", async
   const adminLog = path.join(tmpDir, "ui_admin_audit.log");
   const apiPort = await getFreePort();
   const uiPort = await getFreePort();
-  const apiServer = await makeStubApi(apiPort);
+  const monitoringState = {};
+  const apiServer = await makeStubApi(apiPort, monitoringState);
 
   const env = {
     ...process.env,
@@ -628,6 +629,33 @@ test("visual regression for all top-level app homes and per-item actions", async
           `Visual regression detected for ${app.id} home. Run with UPDATE_VISUAL_BASELINES=1 if change is expected.`
         );
       }
+    });
+
+    await t.test("Monitoring shows scheduled TLS failure and clears it after recovery", async () => {
+      await page.setViewport({ width: 390, height: 844 });
+      const report = '#app-grid [aria-label="Scheduled TLS renewal"]';
+      const refresh = '#app-grid [data-action-id="monitoring-refresh"]';
+      const runId = "0123456789abcdef0123456789abcdef";
+      monitoringState.scheduled_tls_renewal = {
+        status: "error", timestamp: "2026-02-10T04:00:00Z",
+        run_id: runId, failed_steps: ["certbot", "nginx_reload"],
+      };
+      await openAppHome(page, "monitoring", "Monitoring Home");
+      await page.waitForSelector(`${report}[role="alert"]`);
+      const text = await page.$eval(report, (el) => el.textContent);
+      assert.match(text, /Latest run failed/);
+      assert.match(text, /Certbot renewal · nginx reload/);
+      assert.match(text, /2026-02-10T04:00:00Z/);
+      assert.ok(text.includes(`Run ID ${runId}`));
+      assert.ok(await page.$eval(report, (el) => el.scrollWidth <= el.clientWidth + 1), "Run ID fits the card at phone width");
+
+      monitoringState.scheduled_tls_renewal = {
+        status: "success", timestamp: "2026-02-10T12:00:00Z",
+        run_id: "scheduled-run-2", failed_steps: [],
+      };
+      await page.locator(refresh).click();
+      await page.waitForFunction((selector) => document.querySelector(selector)?.textContent.includes("Latest run succeeded"), {}, report);
+      assert.equal(await page.$(`${report}[role="alert"]`), null);
     });
   } finally {
     if (browser) {

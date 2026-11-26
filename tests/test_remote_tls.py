@@ -182,7 +182,7 @@ class TLSTests(unittest.TestCase):
         with mock.patch.object(tls.shutil, "which", return_value="/usr/bin/certbot"), \
                 mock.patch.object(tls, "run_command", return_value="renewed") as run:
             self.assertEqual(tls.renew_letsencrypt("a.example.com", dry_run=True), "renewed")
-        run.assert_called_once_with(["certbot", "renew", "--cert-name", "a.example.com", "--dry-run"])
+        run.assert_called_once_with(["certbot", "renew", "--non-interactive", "--cert-name", "a.example.com", "--dry-run"])
 
 
 if __name__ == "__main__":

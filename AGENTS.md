@@ -71,6 +71,7 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 - **Delegated tokens are stored in plaintext** as the keys of `/var/lib/fortress/api_users.json` (`users[token] = record`). Responses and audit details MUST use `mask_token`. `PUT/DELETE /api-users/{token}` take the raw token in the path. All `/api-users` writes go through `update_api_users` (locked `update_json`); route persistence after nginx changes goes through `update_routes`. Both helpers mutate in place and ignore the callback's return value.
 - **Routing domain conflicts:** `/routing/add` MUST call `find_domain_conflicts` (primary, aliases, and wildcard overlap via `domains_conflict`) and return **409** on conflict. Tests: [`tests/test_routing.py`](tests/test_routing.py).
 - **Let's Encrypt bootstrap order:** for `tls.mode=letsencrypt` the route first writes an HTTP-only config with the ACME location (`_build_acme_location`), then runs certbot, then writes the TLS config; a certbot failure restores the previous nginx config. Do not reorder.
+- **Scheduled TLS:** the opt-in systemd timer runs `fortress.tls_schedule` locally without API credentials. Certbot may renew some certificates before exiting with an error, so test and reload nginx even after a Certbot failure. Only unrestricted `read_status` callers see the latest aggregate outcome under `scheduled_tls_renewal`. Site history remains scoped to named API attempts.
 - **Recipe bundles:** export/import use format `fortress.recipe-bundle.v1` with SHA-256 checksum and optional HMAC-SHA256 signature. Verification tries the active key `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` then every key in `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS`. Unsigned import requires explicit `require_signature=false` (CLI `--allow-unsigned`). Tests: [`tests/test_recipes.py`](tests/test_recipes.py), permission matrix.
 - **Recipe templating:** `{{param}}` placeholders (`PLACEHOLDER_PATTERN`) are rendered by `render_template`; a missing parameter is a `ValueError` → HTTP 400. Recipe dependency cycles are rejected by `resolve_recipe_plan`.
 - **Migrations:** every JSON store registered in `MIGRATION_ENGINE` (server.py) MUST have a matching `schemas/<store>.json`, and its `fields` MUST list every key the code writes — otherwise `migrate_record` parks it under `_legacy` (this silently revoked terminal policies and recipe history before schema v2; guarded by `SchemaFieldCoverageTests`). `_promote_legacy_fields` moves now-known fields back out of `_legacy` on the next apply. `apply` takes a file lock (`migrations.lock`), backs up each store, appends to `ledger.jsonl`, and updates `versions.json`. Unknown fields are preserved under `_legacy` unless `prune_unknown`. Tests: [`tests/test_migrations.py`](tests/test_migrations.py).
@@ -214,6 +215,10 @@ Certbot HTTP-01 integration: `ensure_certbot_available`, `ensure_acme_challenge_
 
 - **Called by:** routing and sites flows plus `POST /tls/renew` in [`py/server.py`](py/server.py).
 - **Tests:** [`tests/test_remote_tls.py`](tests/test_remote_tls.py) (certbot mocked).
+
+### [`py/fortress/tls_schedule.py`](py/fortress/tls_schedule.py) and [`scripts/systemd/`](scripts/systemd/)
+
+Opt-in host-wide TLS renewal. The persistent, randomized timer starts a oneshot service twice daily. It uses the API's `FORTRESS_COMMAND_LOG_DB` setting or the default shared register. The `tls_renew_scheduled` audit result and sanitized command events use a generated run ID in the existing request ID column. Failures leave the unit in failed state. [`tests/test_tls_schedule.py`](tests/test_tls_schedule.py) mocks host commands and verifies audit correlation and reload behavior.
 
 ### [`py/fortress/firewall.py`](py/fortress/firewall.py)
 
@@ -453,7 +458,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 - **Behavior:** nginx reverse proxy per domain with aliases/wildcards, conflict detection, manual or Let's Encrypt TLS (HTTP-01), `/routing/refresh` to re-resolve container IPs, `/tls/renew`. Renewal by domain checks the scope of the matching container and other managed containers using the certificate. Renewal by certificate name or for all certificates requires unrestricted scope. Named attempts write the certificate target and success/error to the SQLite register.
 - **Flow and owners:** `add_domain_routing` ([`py/server.py`](py/server.py)) → [`py/fortress/routing.py`](py/fortress/routing.py) + [`py/fortress/tls.py`](py/fortress/tls.py) → `/etc/nginx`, `routes.json`.
-- **Tests and gaps:** [`tests/test_routing.py`](tests/test_routing.py), matrix; no scheduled renewals, no DNS-01/wildcard certs, IP drift needs a manual refresh.
+- **Tests and gaps:** [`tests/test_routing.py`](tests/test_routing.py), matrix, and [`tests/test_tls_schedule.py`](tests/test_tls_schedule.py). DNS-01/wildcard certificates and automatic upstream IP refresh remain roadmap items.
 
 ### Recipes (install blueprints) — Shipped
 
@@ -481,7 +486,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 ### Monitoring — Shipped
 
-- **Behavior:** `/monitoring/resources` returns host + container metrics, threshold alerts, and rate anomalies against a persisted baseline.
+- **Behavior:** `/monitoring/resources` returns host + container metrics, threshold alerts, and rate anomalies against a persisted baseline. With unrestricted container scope, Lizard UI Monitoring counts an unsuccessful latest scheduled TLS run as a host alert.
 - **Owners:** [`py/fortress/monitoring.py`](py/fortress/monitoring.py). **Tests:** [`tests/test_monitoring.py`](tests/test_monitoring.py). **Gaps:** no alert delivery (webhooks).
 
 ### Encrypted backups and restore — Shipped
@@ -697,7 +702,7 @@ Detailed sequencing lives in [`ROADMAP.md`](ROADMAP.md). Highest-leverage next s
 
 1. Close the remaining Known Gaps above (tracked in ROADMAP Path 11).
 2. Path 11: pin `requirements.txt` across the supported Python runtimes.
-3. Path 7 / production checklist: scheduled certbot renewals with failure alerts; automatic upstream refresh on container IP change.
+3. Path 7 / production checklist: automatic upstream refresh on container IP change.
 4. Path 10.5: register remaining JSON stores (firewall state) in schemas/migrations.
 
 ## Task Start and Handoff Checklist

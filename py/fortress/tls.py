@@ -108,7 +108,7 @@ def issue_letsencrypt_certificate(
 
 def renew_letsencrypt(cert_name: Optional[str] = None, dry_run: bool = False) -> str:
     ensure_certbot_available()
-    cmd = ["certbot", "renew"]
+    cmd = ["certbot", "renew", "--non-interactive"]
     if cert_name:
         cmd.extend(["--cert-name", cert_name])
     if dry_run:

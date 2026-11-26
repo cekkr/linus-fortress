@@ -8,7 +8,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - [x] Let's Encrypt automation (HTTP-01 via certbot) for routes and sites, with ACME challenge location in nginx configs.
 - [x] Routing conflict detection across primary/alias/wildcard domains with 409 responses.
 - [x] System upgrade endpoint (package updates + migrations) with dry-run planning.
-- [ ] Scheduled TLS renewals (systemd timer/cron) with alerting on failures.
+- [x] Scheduled TLS renewals via an opt-in systemd timer, with failure alerts in Lizard UI Monitoring and systemd.
 - [ ] DNS-01 wildcard support for Let's Encrypt.
 - [x] WebUI surfaces site TLS certificate status and recent named renewal outcomes.
 
@@ -53,7 +53,8 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Support multi-domain routes and wildcard server names for routing entries.
 - Done: Add `/routing/refresh` to rebuild nginx configs when container IPs drift.
 - Done: Add automatic TLS issuance/renewal (Let's Encrypt) for routing entries.
-- Next: Schedule automated certbot renewals and alert on failures.
+- Done: Add an opt-in persistent systemd timer for Certbot renewal, validate and reload nginx after each run, and report the latest outcome in Lizard UI Monitoring with its audit run ID.
+- Done: Install AlmaLinux 10.2 x86_64 from the minimal ISO in QEMU and boot with SELinux enforcing. Verify the systemd timer, nginx configuration rejection, Certbot lock contention, and matching audit run IDs through desktop and phone Chromium. The browser lab uses an empty LXD inventory fixture.
 - Next: Automate upstream refresh on IP change (polling or LXD DNS-based upstreams).
 - Next: Verify and configure the managed `sites-enabled` include during nginx bootstrap on RPM distributions.
 

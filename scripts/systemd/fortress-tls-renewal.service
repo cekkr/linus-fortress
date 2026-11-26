@@ -1,0 +1,13 @@
+[Unit]
+Description=Renew Let's Encrypt certificates and reload Fortress nginx
+Wants=network-online.target
+After=network-online.target nginx.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/linus-fortress/py
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+ExecStart=/opt/linus-fortress/.venv/bin/python -m fortress.tls_schedule
+TimeoutStartSec=45min
+PrivateTmp=true
+UMask=0077

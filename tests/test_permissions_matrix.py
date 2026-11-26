@@ -103,6 +103,33 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
             fn()
         self.assertEqual(exc.exception.status_code, 403)
 
+    def test_scheduled_tls_renewal_report_is_host_only(self) -> None:
+        from fastapi.testclient import TestClient
+
+        self._write_users({
+            "host-view": {"username": "operator", "permissions": ["read_status"], "allowed_containers": []},
+            "scoped-view": {"username": "viewer", "permissions": ["read_status"], "allowed_containers": ["alpha"]},
+            "no-view": {"username": "other", "permissions": ["manage_routing"]},
+        })
+        logger = self.module.command_logger
+        url = "/monitoring/resources"
+        with TestClient(self.module.app) as client, \
+                mock.patch.object(self.module, "gather_resource_snapshot", return_value={}), \
+                mock.patch.object(self.module, "record_resource_snapshot", side_effect=lambda snapshot, *a, **k: snapshot.copy()):
+            host = {"X-User-Token": "host-view"}
+            self.assertEqual(client.get(url, headers=host).json()["scheduled_tls_renewal"], {"status": "never_run"})
+            logger.log("systemd", "service", "internal", "tls_renew_scheduled", status="error",
+                       request_id="schedule-run", details={"failed_steps": ["certbot", "private info"], "output": "private info"})
+            logger.log("operator", "tls_renew", "api", "tls_renew", status="success")
+            response = client.get(url, headers=host)
+            self.assertEqual(response.status_code, 200)
+            result = response.json()["scheduled_tls_renewal"]
+            self.assertTrue(result.pop("timestamp").endswith("Z"))
+            self.assertEqual(result, {"status": "error", "run_id": "schedule-run", "failed_steps": ["certbot"]})
+            self.assertNotIn("private info", response.text)
+            self.assertNotIn("scheduled_tls_renewal", client.get(url, headers={"X-User-Token": "scoped-view"}).json())
+            self.assertEqual(client.get(url, headers={"X-User-Token": "no-view"}).status_code, 403)
+
     def test_site_tls_history_records_only_named_attempts_and_respects_scope(self) -> None:
         from fastapi.testclient import TestClient
 

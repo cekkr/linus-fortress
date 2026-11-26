@@ -51,6 +51,7 @@ paths:
     get:
       summary: Capture host and container resource usage with alert flags
       tags: [Status]
+      description: Requires `read_status`. Scheduled TLS renewal status is included for tokens with unrestricted container scope.
       security:
         - ApiKeyAuth: []
         - UserTokenAuth: []
@@ -2917,6 +2918,27 @@ components:
       properties:
         timestamp:
           type: string
+        scheduled_tls_renewal:
+          type: object
+          required: [status]
+          description: Latest completed Fortress systemd renewal, independent of the timer's current activation state.
+          properties:
+            status:
+              type: string
+              enum: [never_run, unavailable, success, error]
+            timestamp:
+              type: string
+              format: date-time
+              description: UTC completion time, present for recorded runs.
+            run_id:
+              type: string
+              description: Correlation ID in the systemd journal and SQLite register, present for recorded runs.
+            failed_steps:
+              type: array
+              description: Failed stages of the recorded run. An empty list indicates success.
+              items:
+                type: string
+                enum: [certbot, nginx_config, nginx_reload]
         host:
           $ref: "#/components/schemas/HostMetrics"
         containers:
