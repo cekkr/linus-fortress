@@ -159,6 +159,34 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
             host = client.get(url, headers={"X-User-Token": "monitor-host"})
             self.assertEqual(host.json()["containers"], containers)
 
+    def test_monitoring_recipe_alerts_require_opt_in_and_recipe_permission(self) -> None:
+        from fastapi.testclient import TestClient
+
+        self._write_users({
+            "reader": {"username": "reader", "permissions": ["read_status"]},
+            "operator": {"username": "operator", "permissions": ["read_status", "recipes_apply"], "allowed_containers": ["alpha"]},
+        })
+        self._write_json(self.module.RECIPE_HEALTH_HISTORY_DB, {"entries": [
+            {"container_name": name, "requested_recipe": "lamp", "timestamp": f"2026-11-27T00:00:0{second}Z",
+             "summary": {"passed": 0, "failed": 1}}
+            for name in ("alpha", "private-beta") for second in (0, 1)
+        ]})
+        with TestClient(self.module.app) as client, \
+                mock.patch.object(self.module, "gather_resource_snapshot", side_effect=lambda *args: {}), \
+                mock.patch.object(self.module, "record_resource_snapshot", side_effect=lambda snapshot, *a, **k: snapshot):
+            url = "/monitoring/resources"
+            operator = {"X-User-Token": "operator"}
+            with mock.patch.object(self.module, "RECIPE_HEALTH_ALERT_FAILURE_STREAK", 0):
+                self.assertNotIn("recipe_health_alerts", client.get(url, headers=operator).json())
+            with mock.patch.object(self.module, "RECIPE_HEALTH_ALERT_FAILURE_STREAK", 2):
+                self.assertNotIn("recipe_health_alerts", client.get(url, headers={"X-User-Token": "reader"}).json())
+                response = client.get(url, headers=operator)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("private-beta", response.text)
+        self.assertEqual(response.json()["recipe_health_alerts"], [{
+            "container_name": "alpha", "recipe_name": "lamp", "failed_runs": 2, "last_failed_at": "2026-11-27T00:00:01Z",
+        }])
+
     def test_recipe_bundle_reports_only_the_locally_verified_key_id(self) -> None:
         from fastapi.testclient import TestClient
 

@@ -25,7 +25,7 @@ Lizard UI, the optional web control deck, rendered against the demo API (placeho
 | ![Domain routing](docs/screenshots/routing.webp) | ![Firewall rules](docs/screenshots/firewall.webp) |
 | **Domain routing**: nginx routes, TLS modes, wildcard domains. | **Firewall**: backend status and rule inventory. |
 | ![VM labs](docs/screenshots/vms.webp) | ![Settings](docs/screenshots/settings.webp) |
-| **VM labs**: QEMU/VirtualBox VMs with start/stop/snapshot and configuration checks. | **Settings** shows delegated token expiry and includes update + reload, system upgrade, and named fast-action profiles. |
+| **VM labs**: QEMU/VirtualBox VMs with start/stop/snapshot and configuration checks. | **Settings** includes image presets, delegated-token expiry, and update controls. |
 | ![App card details panel](docs/screenshots/app-card-details.webp) | ![Admin sign-in overlay](docs/screenshots/admin-login.webp) |
 | **App card details**: the more-info panel opened from a card title. | **Admin sign-in**: UI admin gate (password policy, lockout, optional TOTP). |
 | ![Containers home with image catalog](docs/screenshots/containers.webp) | <img src="docs/screenshots/mobile-deck.webp" alt="Mobile layout" width="260"> |
@@ -301,6 +301,7 @@ All endpoints require either `X-API-Key` or `X-User-Token`. Typed tokens (`api-k
 ```
 - Designed for automation: anomalous usage (memory/disk saturation, runaway processes, high host load) surfaces in `alerts`, while rate spikes (CPU/network deltas) appear in `anomalies` for downstream tooling.
 - `include_history=true` returns up to `history_samples` recent samples (default `12`). Consecutive usable samples provide host `cpu.used_percent` and container `cpu.usage_cores`. Lizard UI shows these rates alongside memory, disk usage, and alert details. Scoped tokens see current and historical metrics and signals only for their allowed containers.
+- Set `FORTRESS_RECIPE_HEALTH_ALERT_FAILURE_STREAK` to the number of consecutive failed recipe health-check runs that triggers an alert. The default `0` disables alerts. Fortress evaluates each recipe and container independently using retained history. An all-skipped run leaves the streak as it was, and a passing run clears it. The response includes `recipe_health_alerts` for in-scope containers when the token also has `recipes_apply`. Monitoring displays active streaks.
 - With unrestricted container scope, `scheduled_tls_renewal` reports the latest completed Fortress timer run. Its status is `never_run`, `unavailable`, `success`, or `error`. Recorded results include `timestamp`, `run_id`, and `failed_steps`. Lizard UI Monitoring flags a failed run until the next successful run. See [Scheduled TLS renewal](#scheduled-tls-renewal).
 
 #### `POST /routing/add` (permission `manage_routing`, container scoped)
@@ -495,6 +496,7 @@ Body fields (defaults shown):
 - Uses direct `lxc image list ... --format json` lookups against configured remotes (`ubuntu`, `debian`, `images`) and falls back to direct public simplestream index discovery when those remotes are incomplete.
 - Merges live LXD-discovered entries with saved custom presets from `/var/lib/fortress/container_images.json`.
 - Each entry includes `source` (`lxd-cli`, `lxd-repo`, `custom`, or `fallback`), resolved alias, and availability metadata.
+- The separate `presets` list includes every saved alias with its current availability. `latest.ubuntu_lts` reports the latest LTS alias found by LXD. Lizard UI Settings uses these fields for its preset editor and availability refresh.
 
 #### `POST /containers/images/popular` (permission `manage_containers`)
 Body:
@@ -502,6 +504,7 @@ Body:
 {"name": "images:almalinux/9/cloud", "label": "AlmaLinux 9"}
 ```
 - Adds or updates a preset (saved in `/var/lib/fortress/container_images.json`).
+- Requires unrestricted container scope. Saving by an existing alias updates its label when a label is supplied.
 
 #### `POST /containers/images/popular/remove` (permission `manage_containers`)
 Body:
@@ -509,6 +512,7 @@ Body:
 {"name": "images:almalinux/9/cloud"}
 ```
 - Removes a preset entry.
+- Requires unrestricted container scope. Records saved in older preset formats are also matched by alias.
 
 #### `POST /containers/probe` (permission `manage_containers`, container scoped)
 Body (example):
@@ -1195,6 +1199,7 @@ Register only a trusted standalone QCOW2 disk from a stopped VM. Flatten disk ch
 - Configure `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` as the active signing key for recipe exports; optional `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS` supports signature verification during key rotation.
 - Set `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY_IDS` to optional comma-separated public labels in verification order. List the active key first, then previous keys in their configured order after removing duplicates. Use an empty position to skip a key. Each label starts with an ASCII letter or digit and can contain letters, digits, periods, underscores, and hyphens up to 64 characters. Use unique labels such as `release-2026-11,release-2026-08`.
 - Optional runtime paths: `FORTRESS_LOG_PATH` overrides the API log file target and `FORTRESS_COMMAND_LOG_DB` overrides the SQLite audit DB path.
+- `FORTRESS_RECIPE_HEALTH_ALERT_FAILURE_STREAK` enables recipe health alerts in Monitoring. Set a positive run count such as `3`, or use the default `0` to disable them.
 - `FORTRESS_RESTORE_MAX_BYTES` checks `POST /restore` uploads in bytes (default `0` = unlimited). V2 decryption reads bounded chunks while legacy Fernet decryption reads the whole archive into memory.
 - `FORTRESS_VM_ROOT` (default `/var/lib/fortress/vms`) is the directory that must contain every VM `vm_dir`/`disk_path`; it is read per request.
 - ACME HTTP-01 challenges are served from `/var/lib/fortress/acme-challenges`; override via `FORTRESS_ACME_CHALLENGE_DIR`.

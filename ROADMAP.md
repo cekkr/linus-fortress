@@ -67,7 +67,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add a dedicated Settings app for global operations and a customizable fast-actions horizontal menu.
 - Done: Add a destination and confirmation wizard for stored container restores. The Backups app lists, verifies, downloads, and restores accessible archives even when the source container has been removed. The per-container view also queues exports and shows request IDs.
 - Flesh out container sub-apps (Access, Network, Packages, Recipes) with live API wiring.
-- Add a settings panel to manage popular LXD image presets, show remote availability, and refresh latest LTS aliases.
+- Done: Manage saved LXD image presets in Settings, inspect availability, and refresh the latest Ubuntu LTS alias. Validate the browser controls and unrestricted-scope write requirement against the AlmaLinux 10.2 QEMU API with a fixture for LXD remotes.
 - Done: Render live host and container metrics, CPU history, threshold alerts, and anomaly details in Monitoring. Filter current and historical container telemetry by token scope, and clear the browser snapshot on sign-out. Validate the dashboard in desktop and phone Chromium against the AlmaLinux QEMU API with live host metrics and an LXD inventory fixture.
 - Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
@@ -149,8 +149,9 @@ Done:
 - Lizard UI recipe apply flow now surfaces `probe.health_checks` with pass/fail/skipped severity badges and check summaries.
 - Add persisted recipe health history storage (`/var/lib/fortress/recipe_health_history.json`) and `/recipes/health-history` trend endpoint.
 - Surface recipe health history trend cards in Lizard UI (run totals, pass rate, failure trend sparkline, recent runs).
+- Add opt-in recipe health failure streak alerts in Monitoring. Apply recipe permissions and container scope, and show failures per recipe and container. Verify scoped alert display in Chromium against the AlmaLinux QEMU API.
 Next:
-- Add optional trend-based alerts (for repeated failed runs) into monitoring cards/webhooks.
+- Add optional webhook delivery for recipe health failure alerts.
 
 ### Path 10.3: WebUI admin authentication hardening
 Milestones:

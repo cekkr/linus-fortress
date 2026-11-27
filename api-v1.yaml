@@ -69,6 +69,8 @@ paths:
       description: |
         Requires `read_status`. Container metrics, history, alerts, and anomalies are filtered by token scope.
         Scheduled TLS renewal status is included for tokens with unrestricted container scope.
+        Recipe health alerts are included when enabled by `FORTRESS_RECIPE_HEALTH_ALERT_FAILURE_STREAK`
+        and the current credential also has `recipes_apply`.
       security:
         - ApiKeyAuth: []
         - UserTokenAuth: []
@@ -237,6 +239,7 @@ paths:
     get:
       summary: List live popular images from LXD remotes/public catalog plus saved presets
       tags: [Containers]
+      description: Requires `manage_containers`. Saved presets are returned separately from the deduplicated catalog.
       responses:
         "200":
           description: Image preset inventory
@@ -247,6 +250,7 @@ paths:
     post:
       summary: Add or update a popular image preset
       tags: [Containers]
+      description: Requires `manage_containers` and unrestricted container scope because presets are shared.
       requestBody:
         required: true
         content:
@@ -271,6 +275,7 @@ paths:
     post:
       summary: Remove a popular image preset
       tags: [Containers]
+      description: Requires `manage_containers` and unrestricted container scope because presets are shared.
       requestBody:
         required: true
         content:
@@ -2983,6 +2988,22 @@ components:
               items:
                 type: string
                 enum: [certbot, nginx_config, nginx_reload]
+        recipe_health_alerts:
+          type: array
+          description: Active failure streaks among retained health-check runs for in-scope containers.
+          items:
+            type: object
+            required: [container_name, recipe_name, failed_runs, last_failed_at]
+            properties:
+              container_name:
+                type: string
+              recipe_name:
+                type: string
+              failed_runs:
+                type: integer
+              last_failed_at:
+                type: string
+                format: date-time
         host:
           $ref: "#/components/schemas/HostMetrics"
         containers:
@@ -3166,11 +3187,23 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ContainerImageInfo"
+        presets:
+          type: array
+          description: Saved presets by requested alias, with resolved alias and current availability.
+          items:
+            $ref: "#/components/schemas/ContainerImageInfo"
+        can_manage_presets:
+          type: boolean
+          description: Whether this credential has unrestricted container scope.
+        refreshed_at:
+          type: string
+          format: date-time
         latest:
           type: object
           properties:
             ubuntu_lts:
               type: string
+              nullable: true
         remotes:
           type: array
           items:

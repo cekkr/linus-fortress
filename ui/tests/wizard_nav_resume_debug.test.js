@@ -40,13 +40,15 @@ function jsonResponse(res, payload, status = 200) {
   res.end(JSON.stringify(payload));
 }
 
-function startStubApi(port, { tokenExpiry = false } = {}) {
+function startStubApi(port, { tokenExpiry = false, imagePresets = false } = {}) {
   const upgrades = [];
   const vmQueries = [];
   const vmSnapshotRequests = [];
   const snapshots = [];
   let failPreflight = false;
   let failFirewallStatus = false;
+  let latestLts = "ubuntu:24.04";
+  const presets = new Map([["ubuntu:lts", "Rolling Ubuntu"]]);
   const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
     const { pathname } = url;
@@ -64,11 +66,25 @@ function startStubApi(port, { tokenExpiry = false } = {}) {
       ] });
       return;
     }
+    if (imagePresets && req.method === "POST" && ["/containers/images/popular", "/containers/images/popular/remove"].includes(pathname)) {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const { name, label } = JSON.parse(body);
+      if (pathname.endsWith("/remove")) presets.delete(name);
+      else presets.set(name, label);
+      jsonResponse(res, { message: pathname.endsWith("/remove") ? "Image preset removed" : "Image preset saved" });
+      return;
+    }
     if (pathname === "/containers/images/popular") {
       jsonResponse(res, {
         images: [{ name: "ubuntu:lts", label: "Ubuntu LTS", resolved_name: "ubuntu:lts", available: true, remote: "ubuntu" }],
         remotes: ["ubuntu"],
-        latest: { ubuntu_lts: "ubuntu:lts" },
+        latest: { ubuntu_lts: imagePresets ? latestLts : "ubuntu:lts" },
+        presets: imagePresets ? [...presets].map(([name, label]) => ({
+          name, label, resolved_name: name === "ubuntu:lts" ? latestLts : name,
+          remote: name.split(":")[0], available: name.startsWith("ubuntu:"),
+        })) : undefined,
+        can_manage_presets: imagePresets,
         refreshed_at: "2026-02-11T00:00:00Z",
       });
       return;
@@ -166,6 +182,7 @@ function startStubApi(port, { tokenExpiry = false } = {}) {
       vmSnapshotRequests,
       setPreflightFailure: (enabled) => { failPreflight = enabled; },
       setFirewallStatusFailure: () => { failFirewallStatus = true; },
+      setLatestLts: (alias) => { latestLts = alias; },
     }));
     server.on("error", reject);
   });
@@ -233,6 +250,49 @@ test("Settings shows the delegated session expiry and flags expired tokens", asy
     assert.match(rows[0], /retired[\s\S]*Expired/);
     assert.match(rows[1], /current[\s\S]*Active/);
     assert.doesNotMatch(rows.join(""), /private-fixture-token/);
+  } finally {
+    await browser?.close();
+    harness.proc.kill("SIGTERM");
+    harness.api.server.close();
+  }
+});
+
+test("Settings saves, edits, and removes image presets and refreshes remote availability", async (t) => {
+  const puppeteer = await loadPuppeteer(t);
+  if (!puppeteer) return;
+  const harness = await launchHarness({ imagePresets: true });
+  let browser;
+  try {
+    browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 390, height: 844 });
+    await page.goto(`http://127.0.0.1:${harness.uiPort}`, { waitUntil: "networkidle0" });
+    await login(page);
+    await page.locator('.app-card[data-node-id="settings"] .card-icon-button').click();
+    const section = '[aria-label="Image presets"]';
+    const save = '#image-preset-form button[type="submit"]';
+    const alias = "images:almalinux/10/cloud";
+    const edit = `[data-action-id="settings-image-edit"][data-image-name="${alias}"]`;
+    const remove = `[data-action-id="settings-image-remove"][data-image-name="${alias}"]`;
+    await page.locator("#settings-image-alias").fill(alias);
+    await page.locator("#settings-image-label").fill("AlmaLinux lab");
+    await page.locator(save).click();
+    await page.waitForSelector(edit);
+    assert.match(await page.$eval(section, (panel) => panel.textContent), /AlmaLinux lab[\s\S]*Unavailable/);
+    await page.locator(edit).click();
+    assert.equal(await page.$eval("#settings-image-alias", (input) => input.value), alias);
+    await page.locator("#settings-image-label").fill("AlmaLinux candidate");
+    await page.locator(save).click();
+    await page.waitForFunction((selector) => document.querySelector(selector)?.textContent.includes("AlmaLinux candidate"), {}, section);
+    harness.api.setLatestLts("ubuntu:26.04");
+    await page.locator(`${section} [data-action-id="image-catalog-refresh"]`).click();
+    await page.waitForFunction((selector) => document.querySelector(selector)?.textContent.includes("Latest Ubuntu LTS ubuntu:26.04"), {}, section);
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await page.locator(remove).click();
+    await page.waitForSelector(remove, { visible: true });
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.locator(remove).click();
+    await page.waitForSelector(remove, { hidden: true });
   } finally {
     await browser?.close();
     harness.proc.kill("SIGTERM");

@@ -408,6 +408,49 @@ def strip_recipe_history(record: Dict[str, Any]) -> Dict[str, Any]:
     return stripped
 
 
+def recipe_health_failure_alerts(
+    entries: List[Any], threshold: int, allowed_containers: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Track consecutive conclusive health-check failures per recipe and container."""
+    if threshold <= 0:
+        return []
+    allowed = set(allowed_containers or [])
+    streaks: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    ordered = sorted(
+        (entry for entry in entries if isinstance(entry, dict)),
+        key=lambda entry: str(entry.get("timestamp") or ""),
+    )
+    for entry in ordered:
+        container = entry.get("container_name")
+        recipe = entry.get("requested_recipe")
+        timestamp = entry.get("timestamp")
+        if not all(isinstance(value, str) and value for value in (container, recipe, timestamp)):
+            continue
+        if allowed and container not in allowed:
+            continue
+        summary = entry.get("summary")
+        if not isinstance(summary, dict):
+            continue
+        failed = summary.get("failed")
+        passed = summary.get("passed")
+        target = (container, recipe)
+        if isinstance(failed, int) and failed > 0:
+            previous = streaks.get(target)
+            streaks[target] = {
+                "container_name": container,
+                "recipe_name": recipe,
+                "failed_runs": (previous["failed_runs"] if previous else 0) + 1,
+                "last_failed_at": timestamp,
+            }
+        elif failed == 0 and isinstance(passed, int) and passed > 0:
+            streaks.pop(target, None)
+    return sorted(
+        (entry for entry in streaks.values() if entry["failed_runs"] >= threshold),
+        key=lambda entry: entry["last_failed_at"],
+        reverse=True,
+    )
+
+
 def _bundle_payload_for_digest(bundle: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "format": bundle.get("format"),

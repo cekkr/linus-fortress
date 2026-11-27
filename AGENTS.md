@@ -81,6 +81,8 @@ Source-of-truth order (higher wins; report and fix mismatches in the same change
 - **Update-reload:** `/system/update-reload` runs `git pull --ff-only` in the repo root, auto-stashes local changes by default, applies pending migrations only when HEAD changed, then schedules `restart.sh --no-pull --mode <mode>` in a detached process. It refuses to restart if the stash could not be restored cleanly.
 - **Firewall anti-DDoS ordering:** allowlist ACCEPT rules MUST be inserted *before* conn-limit DROP rules. iptables is preferred; nftables fallback uses table `inet fortress`, chain `input`, and comment tags from `_build_nft_rule_tag`. Tests: [`tests/test_firewall.py`](tests/test_firewall.py).
 - **Container image canonicalization:** popular image lists merge discovered LXD images, saved presets (`/var/lib/fortress/container_images.json`, legacy bare-list and `alias` key supported), and fallbacks; stale aliases (`ubuntu:lts`, `debian:12`) are resolved via the public simplestream index (`FORTRESS_PUBLIC_IMAGE_INDEX_URL`). `_run_lxc_image_list_json` retries without `--limit` for old LXD CLIs. Tests: [`tests/test_container_images.py`](tests/test_container_images.py).
+- **Image preset editor:** Catalog responses include a separate `presets` list with live availability and `can_manage_presets`. The API requires unrestricted container scope for shared writes and uses one locked `update_json` operation per write. Lizard UI manages presets in Settings.
+- **Recipe health alerts:** `FORTRESS_RECIPE_HEALTH_ALERT_FAILURE_STREAK` defaults to `0`. When enabled, Monitoring returns active streaks per recipe and container from retained health-check runs. Require `read_status` and `recipes_apply`, and filter by container scope. Passing runs clear the streak and all-skipped runs leave it intact.
 - **Lizard UI admin gate:** with `FORTRESS_UI_ADMIN_ENABLED` on (default), every `/api/*` request except `/api/admin/*` and `/api/health` needs an admin session — except while no admin exists, when `/api/session` and token-session requests are allowed (bootstrap window). Tests: [`ui/tests/admin_bootstrap.test.js`](ui/tests/admin_bootstrap.test.js).
 
 ## Architecture and Data/Control Flow
@@ -468,7 +470,7 @@ Reference material only: `lizardim-main/` (legacy Lizardim PHP/jQuery UI, ~1.4k 
 
 - **Behavior:** CRUD, seed (`lamp`), plan, apply (host or container, `dry_run`), versioned history, signed export/import, LAMP post-apply health checks, persisted health history with trends.
 - **Flow and owners:** recipe routes ([`py/server.py`](py/server.py)) → [`py/fortress/recipes.py`](py/fortress/recipes.py) → package manager + `bash -lc` commands (in container via `lxc exec`).
-- **Tests and gaps:** [`tests/test_recipes.py`](tests/test_recipes.py), matrix; no key identifiers in bundles, no trend alerts.
+- **Tests and gaps:** [`tests/test_recipes.py`](tests/test_recipes.py) and the permission matrix cover signing-key identifiers and opt-in health alerts. Health alert webhooks remain a roadmap item.
 
 ### Sites (PHP website lifecycle) — Shipped
 

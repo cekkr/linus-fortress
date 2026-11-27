@@ -111,6 +111,9 @@ export function buildDemoData() {
       containers: { "worker-queue": [{ type: "container_memory_high", message: "Container memory consumption is above the configured threshold." }] },
     },
     anomalies: { containers: { "worker-queue": [{ type: "container_cpu_spike", message: "Container CPU usage spiked above baseline." }] } },
+    recipe_health_alerts: [{
+      container_name: "lamp-shop", recipe_name: "lamp-stack", failed_runs: 3, last_failed_at: "2026-11-11T08:19:00Z",
+    }],
     scheduled_tls_renewal: {
       status: "error",
       timestamp: "2026-11-11T00:36:12Z",
@@ -188,6 +191,10 @@ export function buildDemoData() {
   };
 
   const images = {
+    can_manage_presets: true,
+    presets: [{
+      name: "ubuntu:lts", label: "Ubuntu LTS", resolved_name: "ubuntu:24.04", remote: "ubuntu", available: true,
+    }],
     images: [
       { name: "ubuntu:lts", label: "Ubuntu (latest LTS)", resolved_name: "ubuntu:24.04", available: true, remote: "ubuntu", source: "lxd-cli" },
       { name: "debian:12", label: "Debian 12", resolved_name: "images:debian/12/cloud", available: true, remote: "images", source: "lxd-cli" },

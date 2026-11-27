@@ -79,6 +79,10 @@ const state = {
   probeInFlight: false,
   images: {
     popular: [],
+    presets: null,
+    canManagePresets: false,
+    presetEditor: { name: "", label: "", busy: false, message: "", error: false },
+    request: null,
     remotes: [],
     latest: null,
     refreshedAt: null,
@@ -2104,6 +2108,7 @@ function buildAppHomeModel(node) {
       (sum, value) => sum + (Array.isArray(value) ? value.length : 0),
       0
     );
+    const alertCount = hostAlerts + containerAlertCount + (snapshot?.recipe_health_alerts?.length || 0);
     model.kicker = "Main App";
     model.metrics = [
       { label: "CPU", value: snapshot ? formatPercentValue(host.cpu_percent) : state.monitoringRequest ? "loading..." : "n/a" },
@@ -2111,8 +2116,8 @@ function buildAppHomeModel(node) {
       { label: "Disk", value: snapshot ? formatPercentValue(host.disk_percent) : "n/a" },
       {
         label: "Alerts",
-        value: snapshot ? String(hostAlerts + containerAlertCount) : "0",
-        tone: hostAlerts + containerAlertCount > 0 ? "stopped" : "running",
+        value: snapshot ? String(alertCount) : "0",
+        tone: alertCount > 0 ? "stopped" : "running",
       },
     ];
     model.itemsTitle = "Container Telemetry";
@@ -2412,6 +2417,7 @@ function renderAppHome(node) {
       ${model.notice ? `<div class="event-item${model.notice.error ? " error" : ""}" role="${model.notice.error ? "alert" : "status"}" data-backup-notice>${escapeHtml(model.notice.message)}</div>` : ""}
       ${node?.id === "monitoring" && !state.monitoringRequest ? renderScheduledTlsRenewal(state.monitoring?.scheduled_tls_renewal) : ""}
       ${node?.id === "monitoring" && !state.monitoringRequest ? renderMonitoringSignals(state.monitoring) : ""}
+      ${node?.id === "settings" ? renderImagePresetSettings() : ""}
       ${node?.id === "settings" ? renderTokenSettings() : ""}
       <section class="app-home-section">
         <div class="app-home-section-title">${escapeHtml(model.itemsTitle || "Latest Signals")}</div>
@@ -2419,6 +2425,46 @@ function renderAppHome(node) {
       </section>
     </section>
   `;
+}
+
+function renderImagePresetSettings() {
+  const { presets, presetEditor: editor, canManagePresets, loading, latest, error } = state.images;
+  if (!presets) return "";
+  const disabled = editor.busy ? "disabled" : "";
+  const rows = presets.map((item) => `
+    <div class="event-item">
+      <strong>${escapeHtml(item.label || item.name)}</strong>
+      <div class="catalog-item-code">${escapeHtml(item.name)}${item.resolved_name && item.resolved_name !== item.name
+        ? ` → ${escapeHtml(item.resolved_name)}` : ""}</div>
+      <div class="card-meta">
+        <span class="pill ${item.available ? "running" : "danger"}">${item.available ? "Available" : "Unavailable"}</span>
+        ${item.remote ? `<span class="pill">${escapeHtml(item.remote)}</span>` : ""}
+      </div>
+      ${canManagePresets ? `<div class="card-actions">
+        <button class="action ghost mini" data-action-id="settings-image-edit" data-image-name="${escapeHtml(item.name)}" ${disabled}>Edit</button>
+        <button class="action danger ghost mini" data-action-id="settings-image-remove" data-image-name="${escapeHtml(item.name)}" ${disabled}>Remove</button>
+      </div>` : ""}
+    </div>`).join("");
+  return `
+    <section class="app-home-section" aria-label="Image presets">
+      <div class="app-home-section-title">Image presets</div>
+      <div class="card-actions">
+        <button class="action ghost" data-action-id="image-catalog-refresh" ${loading || editor.busy ? "disabled" : ""}>
+          ${loading ? "Checking images…" : "Refresh availability"}
+        </button>
+        ${latest?.ubuntu_lts ? `<span class="pill">Latest Ubuntu LTS ${escapeHtml(latest.ubuntu_lts)}</span>` : ""}
+      </div>
+      ${error ? `<div class="event-item error" role="alert">${escapeHtml(error)}</div>` : ""}
+      ${editor.message ? `<div class="event-item${editor.error ? " error" : ""}" role="${editor.error ? "alert" : "status"}">${escapeHtml(editor.message)}</div>` : ""}
+      ${canManagePresets ? `<form id="image-preset-form" class="event-item settings-fast-profile">
+        <label for="settings-image-alias">LXD image alias</label>
+        <div class="settings-fast-profile-controls"><input id="settings-image-alias" name="name" value="${escapeHtml(editor.name)}" required ${disabled}></div>
+        <label for="settings-image-label">Label</label>
+        <div class="settings-fast-profile-controls"><input id="settings-image-label" name="label" value="${escapeHtml(editor.label)}" ${disabled}></div>
+        <div class="card-actions"><button type="submit" class="action" ${disabled}>Save preset</button></div>
+      </form>` : ""}
+      ${rows || '<div class="app-home-empty">No saved image presets.</div>'}
+    </section>`;
 }
 
 function renderTokenSettings() {
@@ -3306,6 +3352,16 @@ function renderMonitoringSignals(snapshot) {
           </div>`);
       }
     }
+  }
+  for (const alert of snapshot?.recipe_health_alerts || []) {
+    rows.push(`
+      <div class="event-item">
+        <div class="card-meta">
+          <span class="pill danger">Recipe health</span>
+          <strong>${escapeHtml(alert.container_name)}</strong>
+        </div>
+        <div>${escapeHtml(alert.recipe_name)} had ${escapeHtml(alert.failed_runs)} consecutive runs with failed health checks.</div>
+      </div>`);
   }
   return rows.length ? `
     <section class="app-home-section" aria-label="Alerts and anomalies">
@@ -6898,6 +6954,7 @@ function updateAdminUI() {
 function showAdminOverlay(message) {
   state.admin.active = false;
   clearMonitoringSnapshot();
+  clearImagePresetState();
   const msg = (message || "").toLowerCase();
   state.admin.bootstrapRequired = msg.includes("bootstrap");
   updateAdminUI();
@@ -6914,6 +6971,7 @@ function setAuthState(payload) {
   state.auth.credential = payload?.credential || null;
   if (!state.auth.active) {
     clearMonitoringSnapshot();
+    clearImagePresetState();
     state.tokenInventory = null;
     state.containerBackups.clear();
     stopImageCatalogRefreshLoop();
@@ -6946,6 +7004,7 @@ function showAuthOverlay(message) {
   state.auth.session = false;
   state.auth.credential = null;
   clearMonitoringSnapshot();
+  clearImagePresetState();
   state.tokenInventory = null;
   state.containerBackups.clear();
   if (state.wizard.mode === "container-restore") {
@@ -7123,6 +7182,7 @@ async function handleLogin(event) {
 
 async function handleLogout() {
   clearMonitoringSnapshot();
+  clearImagePresetState();
   stopImageCatalogRefreshLoop();
   await disconnectTerminalSession({ log: false, disposeTerm: true, detachNode: true });
   try {
@@ -7314,8 +7374,41 @@ async function autoProbeContainers() {
   await loadGraph({ skipProbe: true });
 }
 
+function clearImagePresetState() {
+  state.images.presets = null;
+  state.images.canManagePresets = false;
+  state.images.presetEditor = { name: "", label: "", busy: false, message: "", error: false };
+  state.images.request = null;
+  state.images.loading = false;
+  if (state.selectedId === "settings") refreshSelectedLeafHome();
+}
+
+async function saveImagePreset(name, label, remove = false) {
+  const editor = state.images.presetEditor;
+  if (editor.busy) return;
+  editor.busy = true;
+  editor.message = "";
+  refreshSelectedLeafHome();
+  try {
+    const path = remove ? "/api/containers/images/popular/remove" : "/api/containers/images/popular";
+    const payload = await apiRequest(path, { method: "POST", body: JSON.stringify({ name, label }) });
+    if (state.images.presetEditor !== editor) return;
+    Object.assign(editor, { name: "", label: "", message: payload.message, error: false });
+    await loadPopularImages();
+  } catch (err) {
+    editor.message = err.message;
+    editor.error = true;
+  } finally {
+    editor.busy = false;
+    if (state.images.presetEditor === editor) refreshSelectedLeafHome();
+  }
+}
+
 async function loadPopularImages(options = {}) {
   const background = Boolean(options.background);
+  if (background && state.images.loading) return;
+  const request = {};
+  state.images.request = request;
   if (!background) {
     state.images.loading = true;
     state.images.error = null;
@@ -7326,7 +7419,10 @@ async function loadPopularImages(options = {}) {
     const payload = await apiRequest("/api/containers/images/popular", {
       suppressAuthOverlay: options.suppressAuthOverlay === true,
     });
+    if (state.images.request !== request) return;
     state.images.popular = Array.isArray(payload.images) ? payload.images : [];
+    state.images.presets = Array.isArray(payload.presets) ? payload.presets : null;
+    state.images.canManagePresets = payload.can_manage_presets === true;
     state.images.remotes = Array.isArray(payload.remotes) ? payload.remotes : [];
     state.images.latest = payload.latest || null;
     state.images.refreshedAt = payload && payload.refreshed_at ? payload.refreshed_at : new Date().toISOString();
@@ -7345,17 +7441,23 @@ async function loadPopularImages(options = {}) {
       logEvent("success", "Image catalog refreshed");
     }
   } catch (err) {
+    if (state.images.request !== request) return;
+    if (err.status === 403) {
+      state.images.presets = null;
+      state.images.canManagePresets = false;
+    }
     state.images.error = err.message || "Failed to load image catalog";
     if (options.log) {
       logEvent("error", state.images.error);
     }
   } finally {
-    if (!background) {
+    if (state.images.request === request) {
+      state.images.request = null;
       state.images.loading = false;
+      renderImageCatalog();
+      renderWizard();
+      refreshSelectedLeafHome();
     }
-    renderImageCatalog();
-    renderWizard();
-    refreshSelectedLeafHome();
   }
 }
 
@@ -7862,6 +7964,19 @@ async function handleAction(actionId, node, params = {}) {
 
   if (actionId === "image-catalog-refresh") {
     await loadPopularImages({ log: true });
+    return;
+  }
+
+  if (actionId === "settings-image-edit" || actionId === "settings-image-remove") {
+    const preset = state.images.presets?.find((item) => item.name === params.imageName);
+    if (!preset) return;
+    if (actionId === "settings-image-edit") {
+      Object.assign(state.images.presetEditor, { name: preset.name, label: preset.label || "", message: "" });
+      refreshSelectedLeafHome();
+      document.getElementById("settings-image-label")?.focus();
+    } else if (window.confirm(`Remove the image preset “${preset.name}”?`)) {
+      await saveImagePreset(preset.name, undefined, true);
+    }
     return;
   }
 
@@ -9318,6 +9433,19 @@ function bindEvents() {
       state.wizard.form[target.name] = value;
     }
     persistWizardProgress();
+  });
+
+  elements.grid?.addEventListener("input", (event) => {
+    const { form, name, value } = event.target;
+    if (form?.id === "image-preset-form" && (name === "name" || name === "label")) {
+      state.images.presetEditor[name] = value;
+    }
+  });
+  elements.grid?.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (form.id !== "image-preset-form") return;
+    event.preventDefault();
+    saveImagePreset(form.elements.name.value.trim(), form.elements.label.value.trim() || undefined);
   });
 
   if (elements.preview) {

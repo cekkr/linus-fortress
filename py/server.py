@@ -88,6 +88,7 @@ from fortress.recipes import (
     parse_recipe_key_ids,
     save_recipes,
     prepare_import_recipe_record,
+    recipe_health_failure_alerts,
     resolve_recipe_plan,
     verify_recipe_bundle,
     update_recipe_record,
@@ -238,6 +239,7 @@ FIREWALL_ROLLBACK_DIR = os.path.join(FIREWALL_STATE_DIR, "rollbacks")
 FIREWALL_DDOS_POLICY_PATH = os.path.join(FIREWALL_STATE_DIR, "ddos_policy.json")
 POPULAR_IMAGES_DB = "/var/lib/fortress/container_images.json"
 RECIPE_HEALTH_HISTORY_MAX = max(1, int(os.environ.get("FORTRESS_RECIPE_HEALTH_HISTORY_MAX", "500")))
+RECIPE_HEALTH_ALERT_FAILURE_STREAK = max(0, int(os.environ.get("FORTRESS_RECIPE_HEALTH_ALERT_FAILURE_STREAK", "0") or "0"))
 RECIPE_BUNDLE_SIGNING_KEY = os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEY")
 RECIPE_BUNDLE_SIGNING_KEYS = _parse_signing_key_list(os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS"))
 
@@ -1073,6 +1075,11 @@ def monitoring_resources(
         snapshot = scope_resource_snapshot(snapshot, set(allowed))
     else:
         snapshot["scheduled_tls_renewal"] = command_logger.scheduled_tls_renewal()
+    permissions = auth_context["permissions"]
+    if RECIPE_HEALTH_ALERT_FAILURE_STREAK and ("recipes_apply" in permissions or "*" in permissions):
+        snapshot["recipe_health_alerts"] = recipe_health_failure_alerts(
+            _load_recipe_health_history_store()["entries"], RECIPE_HEALTH_ALERT_FAILURE_STREAK, allowed,
+        )
     alert_summary = {
         "host_alerts": len(snapshot.get("alerts", {}).get("host", [])),
         "containers": {name: len(alerts) for name, alerts in snapshot.get("alerts", {}).get("containers", {}).items()},

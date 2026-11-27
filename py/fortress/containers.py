@@ -1116,6 +1116,8 @@ def discover_popular_images() -> List[Dict[str, Any]]:
 def ensure_image_available(alias: str) -> Dict[str, Any]:
     """Validate that an image alias exists on a configured remote and return metadata."""
     remote, image_alias = parse_image_alias(alias)
+    if alias.startswith("-") or image_alias.startswith("-"):
+        raise HTTPException(status_code=400, detail="Enter a valid LXD image alias")
     remotes = list_lxd_remotes()
     if remote and remote not in remotes:
         known_remotes = ", ".join(sorted(remotes)) if remotes else "none"

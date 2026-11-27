@@ -643,6 +643,7 @@ test("visual regression for all top-level app homes and per-item actions", async
         ],
         alerts: { host: [], containers: { "worker-beta": [{ message: "Disk usage exceeded the threshold." }] } },
         anomalies: { host: [{ message: "Host CPU usage spiked above baseline." }], containers: {} },
+        recipe_health_alerts: [{ container_name: "worker-beta", recipe_name: "lamp", failed_runs: 3 }],
         history_samples: [{ host: { cpu: { used_percent: 32 } } }, { host: { cpu: { used_percent: 37 } } }],
       });
       monitoringState.scheduled_tls_renewal = {
@@ -663,6 +664,7 @@ test("visual regression for all top-level app homes and per-item actions", async
       const signals = await page.$eval('[aria-label="Alerts and anomalies"]', (el) => el.textContent);
       assert.match(signals, /worker-beta[\s\S]*Disk usage exceeded the threshold/);
       assert.match(signals, /Host CPU usage spiked above baseline/);
+      assert.match(signals, /lamp had 3 consecutive runs with failed health checks/);
       assert.match(await page.$eval(".sparkline-label", (el) => el.textContent), /Host CPU history \(37\.0%\)/);
 
       monitoringState.scheduled_tls_renewal = {

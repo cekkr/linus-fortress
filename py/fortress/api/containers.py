@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from fortress import containers as container_ops
 from fortress.firewall import apply_firewall_rule
-from fortress.storage import load_json, save_json
+from fortress.storage import load_json, update_json
 
 AuthorizeFn = Callable[..., Dict[str, Any]]
 AuditFn = Callable[..., None]
@@ -187,9 +187,6 @@ def build_container_router(
     def _load_image_store() -> Any:
         return load_json(popular_images_db, {"popular": []}, label="popular images")
 
-    def _save_image_store(payload: Dict[str, Any]) -> None:
-        save_json(popular_images_db, payload, indent=2)
-
     def _extract_popular_store_entries(store_payload: Any) -> List[Any]:
         if isinstance(store_payload, list):
             # Legacy format: store file was a bare list of entries.
@@ -200,6 +197,11 @@ def build_container_router(
                 return popular
         return []
 
+    def _popular_preset_name(item: Any) -> str:
+        if isinstance(item, dict):
+            item = item.get("name") if item.get("name") is not None else item.get("alias")
+        return _normalize_popular_name(item)
+
     def _normalize_popular_name(value: Any) -> str:
         if isinstance(value, str):
             return value.strip()
@@ -207,8 +209,7 @@ def build_container_router(
             return ""
         return str(value).strip()
 
-    def _fallback_popular_images() -> List[Dict[str, str]]:
-        latest = container_ops.find_latest_ubuntu_lts_alias()
+    def _fallback_popular_images(latest: Optional[str]) -> List[Dict[str, str]]:
         latest_label = f"Ubuntu {latest.split(':', 1)[1]} LTS" if latest and ":" in latest else "Ubuntu LTS pinned"
         return [
             {"name": "ubuntu:lts", "label": "Ubuntu (latest LTS)"},
@@ -223,22 +224,13 @@ def build_container_router(
         seen = set()
         entries: List[Dict[str, str]] = []
         for item in popular:
-            if isinstance(item, dict):
-                raw_name = item.get("name")
-                if raw_name is None:
-                    # Legacy key used by older presets.
-                    raw_name = item.get("alias")
-                raw_label = item.get("label")
-            else:
-                raw_name = item
-                raw_label = None
-            normalized = _normalize_popular_name(raw_name)
+            normalized = _popular_preset_name(item)
             if not normalized:
                 continue
             if normalized in seen:
                 continue
             seen.add(normalized)
-            label = _normalize_popular_name(raw_label) if raw_label is not None else ""
+            label = _normalize_popular_name(item.get("label")) if isinstance(item, dict) else ""
             resolved = normalized
             try:
                 resolved = container_ops.resolve_image_alias(normalized)
@@ -250,14 +242,12 @@ def build_container_router(
             entries.append(payload)
         return entries
 
-    def _list_popular_entries() -> List[Dict[str, Any]]:
+    def _list_popular_entries(custom: List[Dict[str, str]], latest_lts: Optional[str]) -> List[Dict[str, Any]]:
         try:
             discovered = container_ops.discover_popular_images()
         except Exception:
             logger.exception("Failed to discover popular images from LXD; falling back to saved presets/defaults")
             discovered = []
-        custom = _list_custom_popular_entries()
-        fallback = _fallback_popular_images()
         seen = set()
         entries: List[Dict[str, Any]] = []
 
@@ -285,7 +275,7 @@ def build_container_router(
         for item in discovered:
             add_entry(item, source="lxd-cli")
         if not entries:
-            for item in fallback:
+            for item in _fallback_popular_images(latest_lts):
                 add_entry(item, source="fallback")
         return entries
 
@@ -343,14 +333,25 @@ def build_container_router(
         x_api_key: Optional[str] = Header(default=None),
         x_user_token: Optional[str] = Header(default=None),
     ):
-        authorize("container_create", "manage_containers", x_api_key, x_user_token)
+        auth_context = authorize("container_create", "manage_containers", x_api_key, x_user_token)
         remotes = sorted(container_ops.list_lxd_remotes())
         latest_lts = container_ops.find_latest_ubuntu_lts_alias()
-        entries = _list_popular_entries()
+        custom = _list_custom_popular_entries()
+        entries = _list_popular_entries(custom, latest_lts)
         inspected = [_inspect_entry(entry, remotes=remotes) for entry in entries]
+        by_resolved_name = {item["resolved_name"].lower(): item for item in inspected}
+        presets = []
+        for entry in custom:
+            resolved = entry.get("resolved_name") or entry["name"]
+            status = by_resolved_name[resolved.lower()]
+            presets.append({
+                **entry, "resolved_name": status["resolved_name"], "available": status["available"], "remote": status["remote"],
+            })
         audit_api("container_images_list", details={"count": len(inspected)})
         return {
             "images": inspected,
+            "presets": presets,
+            "can_manage_presets": not auth_context.get("allowed_containers"),
             "latest": {"ubuntu_lts": latest_lts},
             "remotes": remotes,
             "refreshed_at": datetime.now(timezone.utc).isoformat(),
@@ -362,21 +363,28 @@ def build_container_router(
         x_api_key: Optional[str] = Header(default=None),
         x_user_token: Optional[str] = Header(default=None),
     ):
-        authorize("container_create", "manage_containers", x_api_key, x_user_token)
-        store = _load_image_store()
-        popular = store.get("popular") or []
-        updated = False
-        for item in popular:
-            if isinstance(item, dict) and item.get("name") == payload.name:
-                if payload.label:
-                    item["label"] = payload.label
-                updated = True
-                break
-        if not updated:
-            popular.append(payload.dict())
-        _save_image_store({"popular": popular})
-        audit_api("container_images_add", target=payload.name)
-        return {"message": "Image preset saved", "popular": popular}
+        auth_context = authorize("container_create", "manage_containers", x_api_key, x_user_token)
+        name = payload.name.strip()
+        label = (payload.label or "").strip()
+
+        def upsert(store):
+            popular = _extract_popular_store_entries(store)
+            previous = next((item for item in popular if _popular_preset_name(item) == name), None)
+            if previous is None:
+                popular.append({"name": name, "label": label or None})
+            elif label:
+                index = popular.index(previous)
+                popular[index] = {**(previous if isinstance(previous, dict) else {}), "name": name, "label": label}
+            return {**(store if isinstance(store, dict) else {}), "popular": popular}
+
+        with audit_mutation("container_images_add", name):
+            if auth_context.get("allowed_containers"):
+                raise HTTPException(status_code=403, detail="Editing shared image presets requires unrestricted container scope")
+            _, alias = container_ops.parse_image_alias(name)
+            if not alias or alias.startswith("-") or name.startswith("-") or any(char.isspace() for char in name):
+                raise HTTPException(status_code=400, detail="Enter a valid LXD image alias")
+            store = update_json(popular_images_db, {"popular": []}, upsert, label="popular images")
+        return {"message": "Image preset saved", "popular": store["popular"]}
 
     @router.post("/containers/images/popular/remove")
     def remove_popular_image(
@@ -384,13 +392,20 @@ def build_container_router(
         x_api_key: Optional[str] = Header(default=None),
         x_user_token: Optional[str] = Header(default=None),
     ):
-        authorize("container_create", "manage_containers", x_api_key, x_user_token)
-        store = _load_image_store()
-        popular = store.get("popular") or []
-        filtered = [item for item in popular if not (isinstance(item, dict) and item.get("name") == payload.name)]
-        _save_image_store({"popular": filtered})
-        audit_api("container_images_remove", target=payload.name)
-        return {"message": "Image preset removed", "popular": filtered}
+        auth_context = authorize("container_create", "manage_containers", x_api_key, x_user_token)
+        name = payload.name.strip()
+
+        def remove(store):
+            popular = [item for item in _extract_popular_store_entries(store) if _popular_preset_name(item) != name]
+            return {**(store if isinstance(store, dict) else {}), "popular": popular}
+
+        with audit_mutation("container_images_remove", name):
+            if auth_context.get("allowed_containers"):
+                raise HTTPException(status_code=403, detail="Editing shared image presets requires unrestricted container scope")
+            if not name:
+                raise HTTPException(status_code=400, detail="Enter an image alias")
+            store = update_json(popular_images_db, {"popular": []}, remove, label="popular images")
+        return {"message": "Image preset removed", "popular": store["popular"]}
 
     @router.post("/container/create")
     def create_container(

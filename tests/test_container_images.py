@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
 from fastapi import HTTPException
@@ -279,9 +280,11 @@ class PopularImageEndpointTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
         self.store_path = os.path.join(self.tmpdir.name, "container_images.json")
+        self.auth_context = {}
+        self.audit = mock.Mock()
         self.router = build_container_router(
-            authorize=lambda *args, **kwargs: {},
-            audit_api=lambda *args, **kwargs: None,
+            authorize=lambda *args, **kwargs: self.auth_context,
+            audit_api=self.audit,
             sanitize_payload=lambda payload: payload if isinstance(payload, dict) else {},
             shared_storage_dir=self.tmpdir.name,
             popular_images_db=self.store_path,
@@ -321,6 +324,51 @@ class PopularImageEndpointTests(unittest.TestCase):
         self.assertIn("ubuntu:lts", names)
         self.assertIn("debian:12", names)
         self.assertIn("2404", names)
+
+    def test_presets_retain_distinct_saved_aliases_that_resolve_to_the_same_image(self):
+        self._write_store(["ubuntu:lts", {"alias": "ubuntu:24.04", "label": "Pinned"}])
+        self.auth_context["allowed_containers"] = ["alpha"]
+        endpoint = self._get_endpoint("/containers/images/popular", "GET")
+        with (
+            mock.patch.object(container_ops, "discover_popular_images", return_value=[]),
+            mock.patch.object(container_ops, "list_lxd_remotes", return_value={"ubuntu"}),
+            mock.patch.object(container_ops, "find_latest_ubuntu_lts_alias", return_value="ubuntu:24.04"),
+            mock.patch.object(container_ops, "resolve_image_alias", return_value="ubuntu:24.04"),
+            mock.patch.object(container_ops, "ensure_image_available", return_value={}) as lookup,
+        ):
+            response = endpoint()
+        self.assertEqual(len(response["images"]), 1)
+        self.assertEqual([item["name"] for item in response["presets"]], ["ubuntu:lts", "ubuntu:24.04"])
+        self.assertTrue(all(item["available"] for item in response["presets"]))
+        self.assertFalse(response["can_manage_presets"])
+        lookup.assert_called_once_with("ubuntu:24.04")
+
+    def test_presets_update_and_remove_legacy_rows_without_losing_concurrent_saves(self):
+        self._write_store(["ubuntu:lts", {"alias": "debian:12", "label": "Old"}])
+        save = self._get_endpoint("/containers/images/popular", "POST")
+        remove = self._get_endpoint("/containers/images/popular/remove", "POST")
+        updated = save(container_api.PopularImage(name=" debian:12 ", label="Current"))
+        self.assertEqual(updated["popular"][1]["label"], "Current")
+        result = remove(container_api.PopularImageRemove(name="ubuntu:lts"))
+        self.assertEqual(len(result["popular"]), 1)
+        with ThreadPoolExecutor(max_workers=5) as workers:
+            list(workers.map(lambda idx: save(container_api.PopularImage(name=f"local-{idx}")), range(10)))
+        with open(self.store_path) as fh:
+            saved = json.load(fh)
+        self.assertEqual({item["name"] for item in saved["popular"]}, {"debian:12", *(f"local-{idx}" for idx in range(10))})
+
+    def test_scoped_tokens_cannot_write_shared_presets_and_denials_are_audited(self):
+        self.auth_context["allowed_containers"] = ["alpha"]
+        operations = [
+            ("add", "/containers/images/popular", container_api.PopularImage(name="ubuntu:lts")),
+            ("remove", "/containers/images/popular/remove", container_api.PopularImageRemove(name="ubuntu:lts")),
+        ]
+        for action, path, payload in operations:
+            with self.subTest(action=action), self.assertRaises(HTTPException) as caught:
+                self._get_endpoint(path, "POST")(payload)
+            self.assertEqual(caught.exception.status_code, 403)
+            self.audit.assert_called_with(f"container_images_{action}", target="ubuntu:lts", details={"status_code": 403}, status="error")
+        self.assertFalse(os.path.exists(self.store_path))
 
     def test_list_popular_images_falls_back_when_discovery_fails(self) -> None:
         endpoint = self._get_endpoint("/containers/images/popular", "GET")

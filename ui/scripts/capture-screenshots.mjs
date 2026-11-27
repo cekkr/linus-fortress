@@ -223,7 +223,7 @@ const SHOTS = [
   {
     id: "monitoring",
     title: "Monitoring",
-    caption: "Host and container resource metrics, threshold alerts, anomalies, and a scheduled TLS renewal failure.",
+    caption: "Host and container metrics with threshold, anomaly, and recipe health alerts.",
     viewport: DESKTOP,
     prepare: (page) => openApp(page, "monitoring"),
   },
@@ -268,15 +268,17 @@ const SHOTS = [
   {
     id: "settings",
     title: "Settings",
-    caption: "Update + reload, guided system upgrade, named fast-action profiles, and delegated token expiry.",
+    caption: "Image presets, delegated token expiry, update controls, and named fast-action profiles.",
     viewport: DESKTOP,
     prepare: async (page) => {
       await openApp(page, "settings");
+      await page.waitForSelector('[aria-label="Image presets"]');
       await page.locator("#fast-action-profile-name").fill("Maintenance");
       await page.locator('#fast-action-profile-form button[type="submit"]').click();
       await page.waitForFunction(() => document.getElementById("fast-action-profile")?.value === "Maintenance");
       await page.locator('[data-action-id="settings-token-expiry"]').click();
       await page.waitForSelector('[aria-label="API credentials"] .pill.danger');
+      await page.evaluate(() => window.scrollTo(0, 0));
       await settle(page);
     },
   },

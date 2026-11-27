@@ -14,6 +14,7 @@ from fortress.recipes import (
     create_recipe_record,
     extract_recipe_bundle,
     prepare_import_recipe_record,
+    recipe_health_failure_alerts,
     resolve_recipe_plan,
     update_recipe_record,
     validate_recipe_name,
@@ -31,6 +32,26 @@ class RecipeValidationTests(unittest.TestCase):
         for name in invalid:
             with self.assertRaises(ValueError):
                 validate_recipe_name(name)
+
+
+class RecipeHealthAlertTests(unittest.TestCase):
+    def test_streaks_are_independent_and_passes_clear_only_the_matching_alert(self):
+        def run(second, recipe="lamp", container="alpha", failed=1, passed=0):
+            return {
+                "container_name": container, "requested_recipe": recipe,
+                "timestamp": f"2026-11-27T00:00:{second:02d}Z",
+                "summary": {"failed": failed, "passed": passed},
+            }
+
+        entries = [
+            run(0), run(1, recipe="other"), run(2, container="beta"), run(3, failed=0),
+            run(4), run(5, recipe="other", failed=0, passed=1), run(6, container="beta"),
+        ]
+        alerts = recipe_health_failure_alerts(entries, 2)
+        self.assertEqual([(entry["container_name"], entry["failed_runs"]) for entry in alerts], [("beta", 2), ("alpha", 2)])
+        self.assertEqual(recipe_health_failure_alerts(entries, 2, ["alpha"]), [alerts[1]])
+        self.assertEqual(recipe_health_failure_alerts(entries + [run(7, failed=0, passed=1)], 2, ["alpha"]), [])
+        self.assertEqual(recipe_health_failure_alerts(entries, 0), [])
 
 
 class RecipeResolutionTests(unittest.TestCase):
