@@ -85,6 +85,7 @@ from fortress.recipes import (
     extract_recipe_bundle,
     load_recipes,
     normalize_recipe_record,
+    parse_recipe_key_ids,
     save_recipes,
     prepare_import_recipe_record,
     resolve_recipe_plan,
@@ -144,6 +145,7 @@ from fortress.monitoring import (
     DEFAULT_HOST_THRESHOLDS,
     gather_resource_snapshot,
     record_resource_snapshot,
+    scope_resource_snapshot,
 )
 from fortress.storage import json_store_lock, load_json, load_json_dict, save_json, update_json
 from fortress.vms import (
@@ -259,6 +261,9 @@ if RECIPE_BUNDLE_SIGNING_KEY:
     ]
 elif RECIPE_BUNDLE_SIGNING_KEYS:
     RECIPE_BUNDLE_SIGNING_KEY = RECIPE_BUNDLE_SIGNING_KEYS[0]
+RECIPE_BUNDLE_SIGNING_KEY_IDS = parse_recipe_key_ids(
+    os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEY_IDS"), RECIPE_BUNDLE_SIGNING_KEYS,
+)
 
 app = FastAPI(title="VPS Fortress Manager")
 REQUEST_CONTEXT = ContextVar("REQUEST_CONTEXT", default=None)
@@ -1063,7 +1068,10 @@ def monitoring_resources(
                 snapshot["history_samples"] = history[-max(1, history_samples) :]
         except Exception:
             snapshot["history_samples"] = []
-    if not auth_context.get("allowed_containers"):
+    allowed = auth_context.get("allowed_containers")
+    if allowed:
+        snapshot = scope_resource_snapshot(snapshot, set(allowed))
+    else:
         snapshot["scheduled_tls_renewal"] = command_logger.scheduled_tls_renewal()
     alert_summary = {
         "host_alerts": len(snapshot.get("alerts", {}).get("host", [])),
@@ -2882,6 +2890,7 @@ def seed_recipes(payload: RecipeSeedRequest, x_api_key: Optional[str] = Header(d
 def export_recipes(payload: RecipeExportRequest, x_api_key: Optional[str] = Header(default=None), x_user_token: Optional[str] = Header(default=None)):
     authorize("recipes_export", "recipes_manage", x_api_key, x_user_token)
     if payload.include_signature and not RECIPE_BUNDLE_SIGNING_KEY:
+        audit_api("recipes_export", details={"reason": "signing_key_unavailable"}, status="error")
         raise HTTPException(status_code=400, detail="Recipe bundle signing key is not configured on this server")
     recipes = _load_recipe_store()
     try:
@@ -2890,8 +2899,10 @@ def export_recipes(payload: RecipeExportRequest, x_api_key: Optional[str] = Head
             names=payload.names,
             include_history=payload.include_history,
             signing_key=RECIPE_BUNDLE_SIGNING_KEY if payload.include_signature else None,
+            signing_key_id=RECIPE_BUNDLE_SIGNING_KEY_IDS.get(RECIPE_BUNDLE_SIGNING_KEY),
         )
     except ValueError as exc:
+        audit_api("recipes_export", details={"reason": "invalid_bundle_selection"}, status="error")
         detail = str(exc)
         if "not found" in detail:
             raise HTTPException(status_code=404, detail=detail)
@@ -2904,6 +2915,7 @@ def export_recipes(payload: RecipeExportRequest, x_api_key: Optional[str] = Head
             "recipes": exported_names,
             "include_history": payload.include_history,
             "signed": bool(bundle.get("signature")),
+            "key_id": bundle.get("key_id"),
         },
     )
     return {"bundle": bundle, "count": bundle.get("count", len(exported_names))}
@@ -2919,9 +2931,11 @@ def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Head
             signing_key=RECIPE_BUNDLE_SIGNING_KEY,
             signing_keys=RECIPE_BUNDLE_SIGNING_KEYS,
             require_signature=payload.require_signature,
+            key_ids=RECIPE_BUNDLE_SIGNING_KEY_IDS,
         )
         bundle_records = extract_recipe_bundle(payload.bundle)
     except ValueError as exc:
+        audit_api("recipes_import", details={"reason": "bundle_validation_failed"}, status="error")
         raise HTTPException(status_code=400, detail=str(exc))
     staged = dict(recipes)
     imported: List[str] = []
@@ -2940,14 +2954,19 @@ def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Head
                 preserve_history=payload.preserve_history,
             )
         except ValueError as exc:
+            audit_api("recipes_import", target=name, details={"reason": "invalid_recipe"}, status="error")
             raise HTTPException(status_code=400, detail=f"Invalid recipe '{name}': {exc}")
         if existing:
             overwritten.append(name)
         else:
             imported.append(name)
-    _validate_recipe_graph(staged, targets=imported + overwritten)
-    if imported or overwritten:
-        save_recipes(RECIPES_DB, staged)
+    try:
+        _validate_recipe_graph(staged, targets=imported + overwritten)
+        if imported or overwritten:
+            save_recipes(RECIPES_DB, staged)
+    except (HTTPException, OSError):
+        audit_api("recipes_import", details={"reason": "import_not_applied"}, status="error")
+        raise
     audit_api(
         "recipes_import",
         details={
@@ -2960,6 +2979,7 @@ def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Head
             "signed": verification.get("signed", False),
             "verified_with_primary": verification.get("verified_with_primary"),
             "verified_with_index": verification.get("verified_with_index"),
+            "verified_with_key_id": verification.get("verified_with_key_id"),
         },
     )
     return {
@@ -2968,6 +2988,7 @@ def import_recipes(payload: RecipeImportRequest, x_api_key: Optional[str] = Head
         "overwritten": overwritten,
         "skipped": skipped,
         "total_changed": len(imported) + len(overwritten),
+        "verification": verification,
     }
 
 @app.put("/recipes/{name}")

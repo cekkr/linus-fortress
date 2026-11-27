@@ -100,24 +100,24 @@ export function buildDemoData() {
   };
 
   const monitoring = {
-    host: { cpu_percent: 41.6, memory_percent: 63.2, disk_percent: 48.9, load_average: [0.82, 0.71, 0.66] },
-    containers: {
-      "lamp-shop": { cpu_percent: 23.4, memory_percent: 45.1, disk_percent: 41.0, process_count: 61 },
-      "api-gateway": { cpu_percent: 12.9, memory_percent: 31.8, disk_percent: 22.4, process_count: 18 },
-      "worker-queue": { cpu_percent: 87.2, memory_percent: 52.7, disk_percent: 35.6, process_count: 24 },
-    },
+    host: { cpu: { used_percent: 41.6 }, memory: { used_percent: 63.2 }, disk: { used_percent: 48.9 } },
+    containers: [
+      { name: "lamp-shop", cpu: { usage_cores: 0.23 }, memory: { used_percent: 45.1 }, disk: { used_percent: 41 }, processes: 61 },
+      { name: "api-gateway", cpu: { usage_cores: 0.13 }, memory: { used_percent: 31.8 }, disk: { used_percent: 22.4 }, processes: 18 },
+      { name: "worker-queue", cpu: { usage_cores: 1.87 }, memory: { used_percent: 92.7 }, disk: { used_percent: 35.6 }, processes: 24 },
+    ],
     alerts: {
       host: [],
-      containers: { "lamp-shop": [], "api-gateway": [], "worker-queue": ["cpu_percent above 85"] },
+      containers: { "worker-queue": [{ type: "container_memory_high", message: "Container memory consumption is above the configured threshold." }] },
     },
-    anomalies: { containers: { "worker-queue": ["cpu delta spike"] } },
+    anomalies: { containers: { "worker-queue": [{ type: "container_cpu_spike", message: "Container CPU usage spiked above baseline." }] } },
     scheduled_tls_renewal: {
       status: "error",
       timestamp: "2026-11-11T00:36:12Z",
       run_id: "demo-renewal-06",
       failed_steps: ["certbot"],
     },
-    history_samples: [28, 31, 35, 33, 38, 44, 40, 37, 42, 41.6].map((cpu) => ({ host: { cpu_percent: cpu } })),
+    history_samples: [28, 31, 35, 33, 38, 44, 40, 37, 42, 41.6].map((usage) => ({ host: { cpu: { used_percent: usage } } })),
   };
 
   const firewallRules = [

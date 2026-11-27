@@ -15,6 +15,7 @@ SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 RECIPE_BUNDLE_FORMAT = "fortress.recipe-bundle.v1"
 RECIPE_BUNDLE_CHECKSUM_ALGORITHM = "sha256"
 RECIPE_BUNDLE_SIGNATURE_ALGORITHM = "hmac-sha256"
+RECIPE_BUNDLE_KEY_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 RECIPE_VERSION_BUMPS = {"major", "minor", "patch", "none"}
 RECIPE_MUTABLE_FIELDS = {
     "description",
@@ -443,11 +444,25 @@ def _normalize_signing_keys(signing_key: Optional[str], signing_keys: Optional[L
     return normalized
 
 
+def parse_recipe_key_ids(value: Optional[str], keys: List[str]) -> Dict[str, str]:
+    """Associate optional public labels with the already normalized signing keys."""
+    if not value or not value.strip():
+        return {}
+    identifiers = [part.strip() for part in value.split(",")]
+    named = [identifier for identifier in identifiers if identifier]
+    if len(identifiers) > len(keys) or len(named) != len(set(named)) or any(
+        identifier in keys or not RECIPE_BUNDLE_KEY_ID_PATTERN.fullmatch(identifier) for identifier in named
+    ):
+        raise ValueError("Invalid FORTRESS_RECIPE_BUNDLE_SIGNING_KEY_IDS: use unique public identifiers in key order")
+    return {key: identifier for key, identifier in zip(keys, identifiers) if identifier}
+
+
 def build_recipe_export_bundle(
     recipes: Dict[str, Dict[str, Any]],
     names: Optional[List[str]] = None,
     include_history: bool = True,
     signing_key: Optional[str] = None,
+    signing_key_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if names:
         selected_names = sorted({str(name).strip() for name in names if str(name).strip()})
@@ -478,6 +493,10 @@ def build_recipe_export_bundle(
     if signing_key:
         bundle["signature_algorithm"] = RECIPE_BUNDLE_SIGNATURE_ALGORITHM
         bundle["signature"] = _bundle_signature(bundle["checksum"], signing_key)
+        if signing_key_id:
+            if signing_key_id == signing_key or not RECIPE_BUNDLE_KEY_ID_PATTERN.fullmatch(signing_key_id):
+                raise ValueError("Invalid recipe bundle signing key identifier")
+            bundle["key_id"] = signing_key_id
     return bundle
 
 
@@ -486,6 +505,7 @@ def verify_recipe_bundle(
     signing_key: Optional[str] = None,
     signing_keys: Optional[List[str]] = None,
     require_signature: bool = True,
+    key_ids: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     if not isinstance(bundle, dict):
         raise ValueError("Bundle must be an object")
@@ -496,7 +516,7 @@ def verify_recipe_bundle(
     if not checksum:
         raise ValueError("Bundle checksum is missing")
     expected_checksum = _bundle_checksum(bundle)
-    if not hmac.compare_digest(checksum, expected_checksum):
+    if not checksum.isascii() or not hmac.compare_digest(checksum, expected_checksum):
         raise ValueError("Bundle checksum mismatch")
 
     signature = str(bundle.get("signature", "")).strip()
@@ -506,6 +526,8 @@ def verify_recipe_bundle(
     if require_signature and not signature:
         raise ValueError("Bundle signature required")
     if signature:
+        if not signature.isascii():
+            raise ValueError("Bundle signature verification failed")
         candidates = _normalize_signing_keys(signing_key, signing_keys)
         if not candidates:
             raise ValueError("Recipe bundle signing key is not configured on this server")
@@ -517,12 +539,18 @@ def verify_recipe_bundle(
                 break
         if matched_index is None:
             raise ValueError("Bundle signature verification failed")
-        return {
+        result = {
             "checksum": expected_checksum,
             "signed": True,
             "verified_with_index": matched_index,
             "verified_with_primary": matched_index == 0,
         }
+        # Labels in incoming bundles are advisory. Only report the local ID of
+        # the key that actually verified the signature.
+        key_id = (key_ids or {}).get(candidates[matched_index])
+        if key_id:
+            result["verified_with_key_id"] = key_id
+        return result
     return {"checksum": expected_checksum, "signed": False}
 
 

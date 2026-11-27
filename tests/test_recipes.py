@@ -8,6 +8,7 @@ from fortress.recipes import (
     RECIPE_BUNDLE_FORMAT,
     build_recipe_execution,
     build_recipe_export_bundle,
+    parse_recipe_key_ids,
     bump_semver,
     collect_lamp_health_targets,
     create_recipe_record,
@@ -223,6 +224,26 @@ class RecipeLifecycleTests(unittest.TestCase):
         self.assertTrue(verify["signed"])
         self.assertEqual(verify["verified_with_index"], 1)
         self.assertFalse(verify["verified_with_primary"])
+
+    def test_recipe_key_ids_are_optional_and_do_not_change_v1_signatures(self) -> None:
+        keys = ["new-key", "old-key", "older-key"]
+        ids = parse_recipe_key_ids("Release-2,,release-0", keys)
+        self.assertEqual(ids, {"new-key": "Release-2", "older-key": "release-0"})
+        bundle = build_recipe_export_bundle({}, signing_key="older-key", signing_key_id="public-label")
+        self.assertEqual(bundle["key_id"], "public-label")
+        self.assertTrue(verify_recipe_bundle(bundle, signing_keys=keys)["signed"])
+        bundle["key_id"] = "tampered-label"
+        verified = verify_recipe_bundle(bundle, signing_keys=keys, key_ids=ids)
+        self.assertEqual(verified["verified_with_key_id"], "release-0")
+        del bundle["key_id"]
+        self.assertEqual(verify_recipe_bundle(bundle, signing_keys=keys, key_ids=ids), verified)
+        unsigned = build_recipe_export_bundle({}, signing_key_id="public-label")
+        self.assertNotIn("key_id", unsigned)
+
+    def test_recipe_key_ids_reject_ambiguous_or_invalid_labels(self) -> None:
+        for value in ("repeat,repeat", "invalid space", "one,two,three", "étiquette", "test-key-two"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "FORTRESS_RECIPE_BUNDLE_SIGNING_KEY_IDS"):
+                parse_recipe_key_ids(value, ["test-key-one", "test-key-two"])
 
     def test_extract_recipe_bundle_and_import_record(self) -> None:
         bundle = {

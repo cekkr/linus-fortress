@@ -39,12 +39,14 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
             "FORTRESS_COMMAND_LOG_DB": os.environ.get("FORTRESS_COMMAND_LOG_DB"),
             "FORTRESS_RECIPE_BUNDLE_SIGNING_KEY": os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEY"),
             "FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS": os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS"),
+            "FORTRESS_RECIPE_BUNDLE_SIGNING_KEY_IDS": os.environ.get("FORTRESS_RECIPE_BUNDLE_SIGNING_KEY_IDS"),
             "FORTRESS_API_KEY": os.environ.get("FORTRESS_API_KEY"),
         }
         os.environ["FORTRESS_LOG_PATH"] = os.path.join(self.tmpdir.name, "fortress.log")
         os.environ["FORTRESS_COMMAND_LOG_DB"] = os.path.join(self.tmpdir.name, "command_log.db")
         os.environ["FORTRESS_RECIPE_BUNDLE_SIGNING_KEY"] = "integration-signing-key"
         os.environ["FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS"] = "integration-previous-signing-key"
+        os.environ.pop("FORTRESS_RECIPE_BUNDLE_SIGNING_KEY_IDS", None)
         os.environ["FORTRESS_API_KEY"] = "integration-master-key"
         self.module, self.module_name = load_server_module(self.tmpdir.name)
         self.addCleanup(self._cleanup_module)
@@ -129,6 +131,50 @@ class PermissionMatrixIntegrationTests(unittest.TestCase):
             self.assertNotIn("private info", response.text)
             self.assertNotIn("scheduled_tls_renewal", client.get(url, headers={"X-User-Token": "scoped-view"}).json())
             self.assertEqual(client.get(url, headers={"X-User-Token": "no-view"}).status_code, 403)
+
+    def test_monitoring_scope_filters_current_history_and_signals(self) -> None:
+        from fastapi.testclient import TestClient
+
+        self._write_users({
+            "monitor-alpha": {"username": "viewer", "permissions": ["read_status"], "allowed_containers": ["alpha"]},
+            "monitor-host": {"username": "operator", "permissions": ["read_status"], "allowed_containers": []},
+        })
+        containers = [{"name": "alpha"}, {"name": "private-beta"}]
+        signals = {"host": [], "containers": {"alpha": [{"message": "alpha"}], "private-beta": [{"message": "private-beta"}]}}
+        sample = {"containers": containers, "alerts": signals}
+        recorded = {**sample, "anomalies": signals}
+        with TestClient(self.module.app) as client, \
+                mock.patch.object(self.module, "gather_resource_snapshot", return_value=sample), \
+                mock.patch.object(self.module, "record_resource_snapshot", return_value=recorded) as record, \
+                mock.patch.object(self.module, "load_json", return_value=[sample]):
+            url = "/monitoring/resources?include_history=true"
+            response = client.get(url, headers={"X-User-Token": "monitor-alpha"})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertNotIn("private-beta", response.text)
+            self.assertEqual(response.json()["containers"], [{"name": "alpha"}])
+            self.assertEqual(list(response.json()["anomalies"]["containers"]), ["alpha"])
+            self.assertEqual(response.json()["history_samples"][0]["containers"], [{"name": "alpha"}])
+            self.assertIs(record.call_args.args[0], sample)
+            self.assertEqual(sample["containers"], containers)
+            host = client.get(url, headers={"X-User-Token": "monitor-host"})
+            self.assertEqual(host.json()["containers"], containers)
+
+    def test_recipe_bundle_reports_only_the_locally_verified_key_id(self) -> None:
+        from fastapi.testclient import TestClient
+
+        self._write_users({"bundle-manager": {"username": "operator", "permissions": ["recipes_manage"]}})
+        key_ids = {"integration-signing-key": "new-key", "integration-previous-signing-key": "old-key"}
+        old_bundle = build_recipe_export_bundle({}, signing_key="integration-previous-signing-key", signing_key_id="foreign-label")
+        headers = {"X-User-Token": "bundle-manager"}
+        with TestClient(self.module.app) as client, mock.patch.object(self.module, "RECIPE_BUNDLE_SIGNING_KEY_IDS", key_ids):
+            exported = client.post("/recipes/export", headers=headers, json={})
+            self.assertEqual(exported.status_code, 200, exported.text)
+            self.assertEqual(exported.json()["bundle"]["key_id"], "new-key")
+            imported = client.post("/recipes/import", headers=headers, json={"bundle": old_bundle})
+            self.assertEqual(imported.status_code, 200, imported.text)
+            self.assertEqual(imported.json()["verification"]["verified_with_key_id"], "old-key")
+            self.assertFalse(imported.json()["verification"]["verified_with_primary"])
+            self.assertNotIn("foreign-label", imported.text)
 
     def test_site_tls_history_records_only_named_attempts_and_respects_scope(self) -> None:
         from fastapi.testclient import TestClient

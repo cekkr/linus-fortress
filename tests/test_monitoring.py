@@ -151,6 +151,25 @@ class HistoryPersistenceTests(unittest.TestCase):
         snap = mon.record_resource_snapshot(_snap(1, total=0, idle=0), self.path, history_limit="bogus")
         self.assertEqual(snap["history"], {"count": 1, "limit": mon.DEFAULT_HISTORY_LIMIT})
 
+    def test_cpu_usage_uses_consecutive_counter_samples(self):
+        previous = _container("web01", 2_000_000_000, 0)
+        previous["pid"] = 123
+        first = mon.record_resource_snapshot(_snap(0, total=100, idle=75, containers=[previous]), self.path)
+        self.assertNotIn("used_percent", first["host"]["cpu"])
+        current = _container("web01", 17_000_000_000, 0)
+        current["pid"] = 123
+        second = mon.record_resource_snapshot(_snap(1, total=200, idle=125, containers=[current]), self.path)
+        self.assertEqual(second["host"]["cpu"]["used_percent"], 50.0)
+        self.assertEqual(second["containers"][0]["cpu"]["usage_cores"], 1.5)
+        with open(self.path) as fh:
+            self.assertEqual(json.load(fh)[-1]["host"]["cpu"]["used_percent"], 50.0)
+
+        restarted = _container("web01", 30_000_000_000, 0)
+        restarted["pid"] = 456
+        third = mon.record_resource_snapshot(_snap(2, total=300, idle=115, containers=[restarted]), self.path)
+        self.assertNotIn("used_percent", third["host"]["cpu"])
+        self.assertNotIn("usage_cores", third["containers"][0]["cpu"])
+
     def test_concurrent_records_do_not_drop_samples(self):
         def _record(i):
             mon.record_resource_snapshot(_snap(i, total=100 * i, idle=80 * i), self.path, history_limit=100)

@@ -223,7 +223,7 @@ const SHOTS = [
   {
     id: "monitoring",
     title: "Monitoring",
-    caption: "Host and container resource metrics, threshold alerts, and a scheduled TLS renewal failure.",
+    caption: "Host and container resource metrics, threshold alerts, anomalies, and a scheduled TLS renewal failure.",
     viewport: DESKTOP,
     prepare: (page) => openApp(page, "monitoring"),
   },

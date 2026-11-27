@@ -11,7 +11,7 @@ Lizard UI, the optional web control deck, rendered against the demo API (placeho
 | ![Control deck: app cards, fast actions, pages tree, and inspector panels](docs/screenshots/deck-home.webp) | ![A LAMP container with its sub-apps and quick actions](docs/screenshots/container-lamp.webp) |
 | **Control deck**: app cards, fast-actions bar, pages tree, and inspector (preview, operation, command log, debug). | **LAMP container**: per-container sub-apps (access, network, packages, recipes, backups, terminal) and lifecycle/snapshot controls. |
 | ![Create-container wizard with step strip and image catalog](docs/screenshots/create-container-wizard.webp) | ![Monitoring home with host metrics and a scheduled TLS renewal alert](docs/screenshots/monitoring.webp) |
-| **Guided wizards**: full-stage slides with step breadcrumbs, validation, ← / → keys and swipe navigation, and resume after a page refresh. | **Monitoring** shows host and container metrics, threshold alerts, CPU history, and scheduled TLS renewal failures. |
+| **Guided wizards**: full-stage slides with step breadcrumbs, validation, ← / → keys and swipe navigation, and resume after a page refresh. | **Monitoring** shows live host and container metrics, CPU history, threshold alerts, anomalies, and scheduled TLS renewal failures. |
 | ![Sites home with TLS renewal history, runtime, database, and backups](docs/screenshots/sites.webp) | ![Recipes home with LAMP health-check trend](docs/screenshots/recipes.webp) |
 | **PHP sites**: runtime, TLS status, database binding, and backups with rollback. | **Recipes**: versioned install recipes and LAMP health-check trends. |
 | ![Stored LXD backups with Download, Verify, and Restore actions](docs/screenshots/backups.webp) | |
@@ -300,6 +300,7 @@ All endpoints require either `X-API-Key` or `X-User-Token`. Typed tokens (`api-k
 }
 ```
 - Designed for automation: anomalous usage (memory/disk saturation, runaway processes, high host load) surfaces in `alerts`, while rate spikes (CPU/network deltas) appear in `anomalies` for downstream tooling.
+- `include_history=true` returns up to `history_samples` recent samples (default `12`). Consecutive usable samples provide host `cpu.used_percent` and container `cpu.usage_cores`. Lizard UI shows these rates alongside memory, disk usage, and alert details. Scoped tokens see current and historical metrics and signals only for their allowed containers.
 - With unrestricted container scope, `scheduled_tls_renewal` reports the latest completed Fortress timer run. Its status is `never_run`, `unavailable`, `success`, or `error`. Recorded results include `timestamp`, `run_id`, and `failed_steps`. Lizard UI Monitoring flags a failed run until the next successful run. See [Scheduled TLS renewal](#scheduled-tls-renewal).
 
 #### `POST /routing/add` (permission `manage_routing`, container scoped)
@@ -981,6 +982,7 @@ Body:
 - Exports recipes to a portable bundle payload (`format: fortress.recipe-bundle.v1`) for backup/transfer.
 - Omitting `names` exports all recipes.
 - Bundles include `checksum` by default; set `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` (active key) to enable HMAC signatures, and optionally `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS` (comma-separated previous keys) for rotation-aware verification.
+- When the active key has a configured public identifier, signed exports include it as a `key_id` hint. The v1 checksum and signature retain their existing format.
 
 #### `POST /recipes/import` (permission `recipes_manage`)
 Body:
@@ -1003,6 +1005,7 @@ Body:
 - `overwrite=true` replaces existing definitions; `preserve_history=false` resets imported history to a single import event.
 - `require_signature=true` enforces signature verification; use `false` only for trusted unsigned bundles.
 - Signature verification checks the active key first, then any keys provided in `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS`.
+- `verification.verified_with_key_id` and the import audit record report the locally configured identifier of the key that actually verified the signature, when available.
 
 #### `PUT /recipes/{name}` (permission `recipes_manage`)
 - Updates the recipe fields you provide; send empty arrays to clear lists.
@@ -1190,6 +1193,7 @@ Register only a trusted standalone QCOW2 disk from a stopped VM. Flatten disk ch
 - Site backups default to `/var/lib/fortress/site_backups`; ensure the service user can read/write.
 - Configure secrets via env vars (`FORTRESS_API_KEY`, `FORTRESS_BACKUP_PASSWORD`) instead of hardcoding defaults.
 - Configure `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY` as the active signing key for recipe exports; optional `FORTRESS_RECIPE_BUNDLE_SIGNING_KEYS` supports signature verification during key rotation.
+- Set `FORTRESS_RECIPE_BUNDLE_SIGNING_KEY_IDS` to optional comma-separated public labels in verification order. List the active key first, then previous keys in their configured order after removing duplicates. Use an empty position to skip a key. Each label starts with an ASCII letter or digit and can contain letters, digits, periods, underscores, and hyphens up to 64 characters. Use unique labels such as `release-2026-11,release-2026-08`.
 - Optional runtime paths: `FORTRESS_LOG_PATH` overrides the API log file target and `FORTRESS_COMMAND_LOG_DB` overrides the SQLite audit DB path.
 - `FORTRESS_RESTORE_MAX_BYTES` checks `POST /restore` uploads in bytes (default `0` = unlimited). V2 decryption reads bounded chunks while legacy Fernet decryption reads the whole archive into memory.
 - `FORTRESS_VM_ROOT` (default `/var/lib/fortress/vms`) is the directory that must contain every VM `vm_dir`/`disk_path`; it is read per request.

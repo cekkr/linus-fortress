@@ -66,7 +66,9 @@ paths:
     get:
       summary: Capture host and container resource usage with alert flags
       tags: [Status]
-      description: Requires `read_status`. Scheduled TLS renewal status is included for tokens with unrestricted container scope.
+      description: |
+        Requires `read_status`. Container metrics, history, alerts, and anomalies are filtered by token scope.
+        Scheduled TLS renewal status is included for tokens with unrestricted container scope.
       security:
         - ApiKeyAuth: []
         - UserTokenAuth: []
@@ -179,6 +181,17 @@ paths:
             type: integer
             default: 5242880
           description: Minimum container network throughput (bytes/sec) to consider when evaluating spikes.
+        - in: query
+          name: include_history
+          schema:
+            type: boolean
+            default: false
+        - in: query
+          name: history_samples
+          schema:
+            type: integer
+            default: 12
+          description: Number of recent samples to return when history is requested.
       responses:
         "200":
           description: Resource snapshot including alerts
@@ -2781,6 +2794,9 @@ components:
     HostCpuLoad:
       type: object
       properties:
+        used_percent:
+          type: number
+          description: CPU utilization calculated from consecutive samples when counters are available.
         load_1m:
           type: number
         load_5m:
@@ -2827,6 +2843,9 @@ components:
     ContainerCpu:
       type: object
       properties:
+        usage_cores:
+          type: number
+          description: Average CPU cores used between consecutive samples of this container process.
         usage_seconds:
           type: number
         usage_nanoseconds:
@@ -3003,6 +3022,10 @@ components:
               type: integer
             limit:
               type: integer
+        history_samples:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonitoringResourceSample"
         thresholds:
           type: object
           properties:
@@ -3012,6 +3035,17 @@ components:
               $ref: "#/components/schemas/ContainerMonitoringThresholds"
             anomalies:
               $ref: "#/components/schemas/MonitoringAnomalyThresholds"
+    MonitoringResourceSample:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        host:
+          $ref: "#/components/schemas/HostMetrics"
+        containers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContainerMetrics"
     MonitoringAnomaly:
       type: object
       required: [type, message]
@@ -3915,6 +3949,10 @@ components:
           example: hmac-sha256
         signature:
           type: string
+        key_id:
+          type: string
+          description: Optional public signing key label provided by the exporter as a hint.
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'
         recipes:
           type: array
           items:
@@ -3961,6 +3999,21 @@ components:
             type: string
         total_changed:
           type: integer
+        verification:
+          type: object
+          required: [checksum, signed]
+          properties:
+            checksum:
+              type: string
+            signed:
+              type: boolean
+            verified_with_index:
+              type: integer
+            verified_with_primary:
+              type: boolean
+            verified_with_key_id:
+              type: string
+              description: Local label for the key that verified the signature, when configured.
     HostSSHConfig:
       type: object
       properties:

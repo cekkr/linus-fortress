@@ -480,12 +480,14 @@ def _rate_delta(current: Optional[int], previous: Optional[int], elapsed: float)
 def _host_cpu_usage_percent(current: Dict[str, Any], previous: Dict[str, Any]) -> Optional[float]:
     current_stat = (current.get("host") or {}).get("cpu", {}).get("stat") or {}
     previous_stat = (previous.get("host") or {}).get("cpu", {}).get("stat") or {}
-    total_delta = (current_stat.get("total_ticks") or 0) - (previous_stat.get("total_ticks") or 0)
-    idle_delta = (current_stat.get("idle_ticks") or 0) - (previous_stat.get("idle_ticks") or 0)
-    if total_delta <= 0:
+    current_total, current_idle = (_to_int(current_stat.get(key)) for key in ("total_ticks", "idle_ticks"))
+    previous_total, previous_idle = (_to_int(previous_stat.get(key)) for key in ("total_ticks", "idle_ticks"))
+    if None in (current_total, current_idle, previous_total, previous_idle):
         return None
+    total_delta = current_total - previous_total
+    idle_delta = current_idle - previous_idle
     active_delta = total_delta - idle_delta
-    if active_delta < 0:
+    if total_delta <= 0 or idle_delta < 0 or active_delta < 0:
         return None
     usage_ratio = max(min(active_delta / total_delta, 1.0), 0.0)
     return round(usage_ratio * 100, 2)
@@ -502,6 +504,8 @@ def _host_network_rate(current: Dict[str, Any], previous: Dict[str, Any], elapse
 
 
 def _container_cpu_rate(current: Dict[str, Any], previous: Dict[str, Any], elapsed: float) -> Optional[float]:
+    if current.get("pid") and previous.get("pid") and current["pid"] != previous["pid"]:
+        return None
     current_ns = (current.get("cpu") or {}).get("usage_nanoseconds")
     previous_ns = (previous.get("cpu") or {}).get("usage_nanoseconds")
     if current_ns is None or previous_ns is None:
@@ -531,6 +535,44 @@ def _strip_alerts(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         container.pop("alerts", None)
         containers.append(container)
     return {"timestamp": snapshot.get("timestamp"), "host": host, "containers": containers}
+
+
+def _add_cpu_usage(snapshot: Dict[str, Any], previous: Dict[str, Any]) -> None:
+    elapsed = _elapsed_seconds(previous, snapshot)
+    if elapsed is None:
+        return
+    usage = _host_cpu_usage_percent(snapshot, previous)
+    if usage is not None:
+        snapshot["host"]["cpu"]["used_percent"] = usage
+    previous_containers = {entry.get("name"): entry for entry in previous.get("containers") or []}
+    for entry in snapshot.get("containers") or []:
+        prior = previous_containers.get(entry.get("name"))
+        if prior is not None:
+            cores = _container_cpu_rate(entry, prior, elapsed)
+            if cores is not None:
+                entry["cpu"]["usage_cores"] = cores
+
+
+def scope_resource_snapshot(snapshot: Dict[str, Any], allowed: set[str]) -> Dict[str, Any]:
+    """Filter a response while retaining the full samples used for shared baselines."""
+    result = dict(snapshot)
+    if "containers" in result:
+        result["containers"] = [
+            entry for entry in snapshot["containers"] or [] if isinstance(entry, dict) and entry.get("name") in allowed
+        ]
+    for kind in ("alerts", "anomalies"):
+        if kind in result:
+            result[kind] = {
+                **snapshot[kind],
+                "containers": {
+                    name: entries for name, entries in snapshot[kind].get("containers", {}).items() if name in allowed
+                },
+            }
+    if "history_samples" in result:
+        result["history_samples"] = [
+            scope_resource_snapshot(sample, allowed) for sample in snapshot["history_samples"] if isinstance(sample, dict)
+        ]
+    return result
 
 
 def _history_pairs(
@@ -714,6 +756,8 @@ def record_resource_snapshot(
         result["anomalies"] = detect_rate_anomalies(
             snapshot, history, baseline_samples=baseline_samples, thresholds=merged_thresholds
         )
+        if history:
+            _add_cpu_usage(snapshot, history[-1])
         history.append(_strip_alerts(snapshot))
         history = history[-history_limit:]
         result["count"] = len(history)

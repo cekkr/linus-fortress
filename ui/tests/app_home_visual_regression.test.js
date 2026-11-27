@@ -631,11 +631,20 @@ test("visual regression for all top-level app homes and per-item actions", async
       }
     });
 
-    await t.test("Monitoring shows scheduled TLS failure and clears it after recovery", async () => {
+    await t.test("Monitoring renders live metrics, signals, and scheduled TLS recovery", async () => {
       await page.setViewport({ width: 390, height: 844 });
       const report = '#app-grid [aria-label="Scheduled TLS renewal"]';
       const refresh = '#app-grid [data-action-id="monitoring-refresh"]';
       const runId = "0123456789abcdef0123456789abcdef";
+      Object.assign(monitoringState, {
+        host: { cpu: { used_percent: 37 }, memory: { used_percent: 58 }, disk: { used_percent: 46 } },
+        containers: [
+          { name: "worker-beta", cpu: { usage_cores: 1.25 }, memory: { used_percent: null }, disk: { used_percent: 33 }, processes: 12 },
+        ],
+        alerts: { host: [], containers: { "worker-beta": [{ message: "Disk usage exceeded the threshold." }] } },
+        anomalies: { host: [{ message: "Host CPU usage spiked above baseline." }], containers: {} },
+        history_samples: [{ host: { cpu: { used_percent: 32 } } }, { host: { cpu: { used_percent: 37 } } }],
+      });
       monitoringState.scheduled_tls_renewal = {
         status: "error", timestamp: "2026-02-10T04:00:00Z",
         run_id: runId, failed_steps: ["certbot", "nginx_reload"],
@@ -648,6 +657,13 @@ test("visual regression for all top-level app homes and per-item actions", async
       assert.match(text, /2026-02-10T04:00:00Z/);
       assert.ok(text.includes(`Run ID ${runId}`));
       assert.ok(await page.$eval(report, (el) => el.scrollWidth <= el.clientWidth + 1), "Run ID fits the card at phone width");
+      const metrics = await page.$eval("#app-grid .app-home-shell", (el) => el.textContent);
+      assert.match(metrics, /CPU\s*37%/);
+      assert.match(metrics, /CPU 1\.25 cores • RAM n\/a • Disk 33%/);
+      const signals = await page.$eval('[aria-label="Alerts and anomalies"]', (el) => el.textContent);
+      assert.match(signals, /worker-beta[\s\S]*Disk usage exceeded the threshold/);
+      assert.match(signals, /Host CPU usage spiked above baseline/);
+      assert.match(await page.$eval(".sparkline-label", (el) => el.textContent), /Host CPU history \(37\.0%\)/);
 
       monitoringState.scheduled_tls_renewal = {
         status: "success", timestamp: "2026-02-10T12:00:00Z",
@@ -656,6 +672,10 @@ test("visual regression for all top-level app homes and per-item actions", async
       await page.locator(refresh).click();
       await page.waitForFunction((selector) => document.querySelector(selector)?.textContent.includes("Latest run succeeded"), {}, report);
       assert.equal(await page.$(`${report}[role="alert"]`), null);
+      await page.locator("#logout").click();
+      await page.waitForFunction(() => document.querySelector("#logout")?.hidden);
+      assert.equal(await page.$('[aria-label="Alerts and anomalies"]'), null);
+      assert.equal(await page.$(report), null);
     });
   } finally {
     if (browser) {

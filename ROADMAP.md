@@ -41,7 +41,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Track semantic versions and change history for recipe updates.
 - Done: Add signed/verified recipe bundles (checksum + optional HMAC signature) before import.
 - Done: Add key rotation support (active + previous signing keys) for bundle signature verification.
-- Next: Add optional key identifiers in bundle metadata to improve rotation observability during verification.
+- Done: Include optional public key labels in signed exports. Imports report and audit the local label of the key that verified the signature. Verify active and retired key labels on the AlmaLinux 10.2 QEMU guest.
 
 ## Path 6: External server cloning and migration (mid term)
 - Add a secure "clone external server" workflow using FTP/SFTP and database credentials (MySQL, MongoDB, etc.).
@@ -68,7 +68,7 @@ Security posture: assume capable attackers and prioritize least privilege, audit
 - Done: Add a destination and confirmation wizard for stored container restores. The Backups app lists, verifies, downloads, and restores accessible archives even when the source container has been removed. The per-container view also queues exports and shows request IDs.
 - Flesh out container sub-apps (Access, Network, Packages, Recipes) with live API wiring.
 - Add a settings panel to manage popular LXD image presets, show remote availability, and refresh latest LTS aliases.
-- Add monitoring dashboards powered by `/monitoring/resources` with alert overlays.
+- Done: Render live host and container metrics, CPU history, threshold alerts, and anomaly details in Monitoring. Filter current and historical container telemetry by token scope, and clear the browser snapshot on sign-out. Validate the dashboard in desktop and phone Chromium against the AlmaLinux QEMU API with live host metrics and an LXD inventory fixture.
 - Define and document a stable module manifest schema + hot-reload for `ui/apps` modules.
 - LAMP module: add opt-in auto-probe toggle, hardening for the file manager credentials flow, and routing wizard validation hints.
 - Done: Add keyboard + touch navigation for wizard step transitions (← / → outside form fields, horizontal swipe on the wizard viewport); gestures never submit the final step.

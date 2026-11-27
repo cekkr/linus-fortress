@@ -6,7 +6,7 @@ const state = {
   containers: [],
   containerIndex: new Map(),
   monitoring: null,
-  monitoringLoading: false,
+  monitoringRequest: null,
   firewall: { backend: null, rules: [] },
   firewallLoading: false,
   firewallPreviousRules: [],
@@ -1747,11 +1747,44 @@ function renderMoreInfoPanel(node) {
 }
 
 function formatPercentValue(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
+  if (!Number.isFinite(value)) {
     return "n/a";
   }
-  return `${Math.round(parsed)}%`;
+  return `${Math.round(value)}%`;
+}
+
+function monitoringHostMetrics(host) {
+  return {
+    cpu_percent: host?.cpu?.used_percent ?? host?.cpu_percent,
+    memory_percent: host?.memory?.used_percent ?? host?.memory_percent,
+    disk_percent: host?.disk?.used_percent ?? host?.disk_percent,
+  };
+}
+
+function normalizeMonitoringSnapshot(snapshot) {
+  const entries = Array.isArray(snapshot.containers)
+    ? snapshot.containers.filter((entry) => entry?.name).map((entry) => [entry.name, entry])
+    : Object.entries(snapshot.containers || {});
+  return {
+    ...snapshot,
+    host: monitoringHostMetrics(snapshot.host),
+    containers: Object.fromEntries(entries.filter(([, data]) => data).map(([name, data]) => [name, {
+      cpu_percent: data.cpu_percent,
+      cpu_cores: data.cpu?.usage_cores,
+      memory_percent: data.memory?.used_percent ?? data.memory_percent,
+      disk_percent: data.disk?.used_percent ?? data.disk_percent,
+      process_count: data.processes ?? data.process_count,
+    }])),
+    history_samples: Array.isArray(snapshot.history_samples)
+      ? snapshot.history_samples.map((sample) => ({ host: monitoringHostMetrics(sample?.host) }))
+      : [],
+  };
+}
+
+function formatContainerCpu(data) {
+  return Number.isFinite(data.cpu_cores)
+    ? `${Number(data.cpu_cores.toFixed(2))} cores`
+    : formatPercentValue(data.cpu_percent);
 }
 
 function routeUsesTls(route) {
@@ -2066,13 +2099,14 @@ function buildAppHomeModel(node) {
     const hostAlerts = (Array.isArray(alerts.host) ? alerts.host.length : 0)
       + Number(snapshot?.scheduled_tls_renewal?.status === "error");
     const containerAlerts = alerts.containers && typeof alerts.containers === "object" ? alerts.containers : {};
+    const containerAnomalies = snapshot?.anomalies?.containers || {};
     const containerAlertCount = Object.values(containerAlerts).reduce(
       (sum, value) => sum + (Array.isArray(value) ? value.length : 0),
       0
     );
     model.kicker = "Main App";
     model.metrics = [
-      { label: "CPU", value: snapshot ? formatPercentValue(host.cpu_percent) : state.monitoringLoading ? "loading..." : "n/a" },
+      { label: "CPU", value: snapshot ? formatPercentValue(host.cpu_percent) : state.monitoringRequest ? "loading..." : "n/a" },
       { label: "RAM", value: snapshot ? formatPercentValue(host.memory_percent) : "n/a" },
       { label: "Disk", value: snapshot ? formatPercentValue(host.disk_percent) : "n/a" },
       {
@@ -2094,20 +2128,24 @@ function buildAppHomeModel(node) {
       const containerAlertList = Array.isArray(containerAlerts[name]) ? containerAlerts[name] : [];
       return {
         title: name,
-        detail: `CPU ${formatPercentValue(data.cpu_percent)} • RAM ${formatPercentValue(data.memory_percent)} • Disk ${formatPercentValue(
+        detail: `CPU ${formatContainerCpu(data)} • RAM ${formatPercentValue(data.memory_percent)} • Disk ${formatPercentValue(
           data.disk_percent
         )}`,
         pills: [
           containerAlertList.length
-            ? { label: `${containerAlertList.length} alerts`, tone: "stopped" }
+              ? { label: `${containerAlertList.length} alerts`, tone: "stopped" }
             : { label: "ok", tone: "running" },
-          data.process_count ? { label: `${data.process_count} procs` } : null,
+          containerAnomalies[name]?.length ? {
+            label: `${containerAnomalies[name].length} ${containerAnomalies[name].length === 1 ? "anomaly" : "anomalies"}`,
+            tone: "soon",
+          } : null,
+          Number.isFinite(data.process_count) ? { label: `${data.process_count} procs` } : null,
         ].filter(Boolean),
       };
     });
-    model.emptyText = state.monitoringLoading
+    model.emptyText = state.monitoringRequest
       ? "Loading monitoring snapshot..."
-      : "No monitoring snapshot loaded yet. Refresh to fetch current metrics.";
+      : snapshot ? "No containers to display." : "No monitoring snapshot loaded yet. Refresh to fetch current metrics.";
     return model;
   }
 
@@ -2372,7 +2410,8 @@ function renderAppHome(node) {
       ${metricsMarkup}
       ${actionsMarkup ? `<div class="app-home-actions">${actionsMarkup}</div>` : ""}
       ${model.notice ? `<div class="event-item${model.notice.error ? " error" : ""}" role="${model.notice.error ? "alert" : "status"}" data-backup-notice>${escapeHtml(model.notice.message)}</div>` : ""}
-      ${node?.id === "monitoring" && !state.monitoringLoading ? renderScheduledTlsRenewal(state.monitoring?.scheduled_tls_renewal) : ""}
+      ${node?.id === "monitoring" && !state.monitoringRequest ? renderScheduledTlsRenewal(state.monitoring?.scheduled_tls_renewal) : ""}
+      ${node?.id === "monitoring" && !state.monitoringRequest ? renderMonitoringSignals(state.monitoring) : ""}
       ${node?.id === "settings" ? renderTokenSettings() : ""}
       <section class="app-home-section">
         <div class="app-home-section-title">${escapeHtml(model.itemsTitle || "Latest Signals")}</div>
@@ -3250,8 +3289,33 @@ function renderScheduledTlsRenewal(run, announce = true) {
   `;
 }
 
+function renderMonitoringSignals(snapshot) {
+  const rows = [];
+  for (const [kind, group] of [["Threshold alert", snapshot?.alerts], ["Anomaly", snapshot?.anomalies]]) {
+    const targets = [["Host", group?.host], ...Object.entries(group?.containers || {})];
+    for (const [target, signals] of targets) {
+      for (const signal of Array.isArray(signals) ? signals : []) {
+        if (!signal?.message) continue;
+        rows.push(`
+          <div class="event-item">
+            <div class="card-meta">
+              <span class="pill ${kind === "Anomaly" ? "soon" : "danger"}">${kind}</span>
+              <strong>${escapeHtml(target)}</strong>
+            </div>
+            <div>${escapeHtml(signal.message)}</div>
+          </div>`);
+      }
+    }
+  }
+  return rows.length ? `
+    <section class="app-home-section" aria-label="Alerts and anomalies">
+      <div class="app-home-section-title">Alerts and anomalies</div>
+      ${rows.join("")}
+    </section>` : "";
+}
+
 function renderMonitoringPreview(node) {
-  if (state.monitoringLoading) {
+  if (state.monitoringRequest) {
     elements.preview.innerHTML = `<div class="preview-title">${node.title}</div><div>Loading monitoring snapshot...</div>`;
     return;
   }
@@ -3269,24 +3333,24 @@ function renderMonitoringPreview(node) {
     return `
       <div class="meter">
         <div class="meter-fill" style="width:${width}%;"></div>
-        <span class="meter-label">${label}: ${value ?? "?"}%</span>
+        <span class="meter-label">${label} ${formatPercentValue(value)}</span>
       </div>
     `;
   };
   const containerRows = Object.entries(snapshot.containers || {}).map(
     ([name, data]) => `
       <div class="event-item">
-        <div><strong>${name}</strong> — CPU ${data.cpu_percent ?? "?"}% / RAM ${data.memory_percent ?? "?"}% / Disk ${data.disk_percent ?? "?"}%</div>
+        <div><strong>${escapeHtml(name)}</strong> · CPU ${formatContainerCpu(data)} / RAM ${formatPercentValue(data.memory_percent)} / Disk ${formatPercentValue(data.disk_percent)}</div>
         <div class="card-meta">
           ${containerAlerts[name] && containerAlerts[name].length ? `<span class="pill danger">${containerAlerts[name].length} alerts</span>` : `<span class="pill running">ok</span>`}
-          ${data.process_count ? `<span class="pill">${data.process_count} procs</span>` : ""}
+          ${Number.isFinite(data.process_count) ? `<span class="pill">${data.process_count} procs</span>` : ""}
         </div>
       </div>
     `
   );
   elements.preview.innerHTML = `
     <div class="preview-title">${node.title}</div>
-    <div>Host CPU ${host.cpu_percent ?? "?"}% • RAM ${host.memory_percent ?? "?"}% • Disk ${host.disk_percent ?? "?"}%</div>
+    <div>Host CPU ${formatPercentValue(host.cpu_percent)} • RAM ${formatPercentValue(host.memory_percent)} • Disk ${formatPercentValue(host.disk_percent)}</div>
     <div class="card-meta">
       ${hostAlerts ? `<span class="pill danger">${hostAlerts} host alert${hostAlerts === 1 ? "" : "s"}</span>` : `<span class="pill running">host ok</span>`}
       <span class="pill">${Object.keys(containerAlerts).length} container alerts tracked</span>
@@ -6833,6 +6897,7 @@ function updateAdminUI() {
 
 function showAdminOverlay(message) {
   state.admin.active = false;
+  clearMonitoringSnapshot();
   const msg = (message || "").toLowerCase();
   state.admin.bootstrapRequired = msg.includes("bootstrap");
   updateAdminUI();
@@ -6848,6 +6913,7 @@ function setAuthState(payload) {
   state.auth.session = Boolean(payload && payload.session);
   state.auth.credential = payload?.credential || null;
   if (!state.auth.active) {
+    clearMonitoringSnapshot();
     state.tokenInventory = null;
     state.containerBackups.clear();
     stopImageCatalogRefreshLoop();
@@ -6879,6 +6945,7 @@ function showAuthOverlay(message) {
   state.auth.mode = "none";
   state.auth.session = false;
   state.auth.credential = null;
+  clearMonitoringSnapshot();
   state.tokenInventory = null;
   state.containerBackups.clear();
   if (state.wizard.mode === "container-restore") {
@@ -7055,6 +7122,7 @@ async function handleLogin(event) {
 }
 
 async function handleLogout() {
+  clearMonitoringSnapshot();
   stopImageCatalogRefreshLoop();
   await disconnectTerminalSession({ log: false, disposeTerm: true, detachNode: true });
   try {
@@ -7394,23 +7462,38 @@ async function seedRecipes(overwrite = false) {
   return response;
 }
 
+function clearMonitoringSnapshot() {
+  if (!state.monitoring && !state.monitoringRequest) return;
+  state.monitoring = null;
+  state.monitoringRequest = null;
+  if (state.selectedId === "monitoring") {
+    renderPreview();
+    refreshSelectedLeafHome();
+  }
+}
+
 async function loadMonitoring(options = {}) {
-  state.monitoringLoading = true;
+  const request = {};
+  state.monitoringRequest = request;
   renderPreview();
   try {
     const payload = await apiRequest("/api/monitoring/resources?include_history=1&history_samples=24");
-    state.monitoring = payload || null;
+    if (state.monitoringRequest !== request) return null;
+    state.monitoring = payload ? normalizeMonitoringSnapshot(payload) : null;
     if (options.log) {
       logEvent("success", "Monitoring snapshot refreshed");
     }
     return state.monitoring;
   } catch (err) {
+    if (state.monitoringRequest !== request) return null;
     logEvent("error", err.message || "Failed to load monitoring");
     throw err;
   } finally {
-    state.monitoringLoading = false;
-    renderPreview();
-    refreshSelectedLeafHome();
+    if (state.monitoringRequest === request) {
+      state.monitoringRequest = null;
+      renderPreview();
+      refreshSelectedLeafHome();
+    }
   }
 }
 
